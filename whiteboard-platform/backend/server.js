@@ -4,7 +4,7 @@ const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3003;
 
 app.use(cors({ origin: 'http://localhost:3000' }));
 app.use(express.json({ limit: '10mb' }));
@@ -112,7 +112,7 @@ Use OrbitControls. Make it visually faithful, interactive, and genuinely educati
       };
     }
     return { role: m.role, content: m.content };
-  }).filter(m => m.content && m.content.trim());
+  }).filter(m => m.content && (Array.isArray(m.content) ? m.content.length > 0 : m.content.trim()));
 
   try {
     const response = await anthropic.messages.create({

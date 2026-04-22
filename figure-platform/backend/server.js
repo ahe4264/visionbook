@@ -41,7 +41,8 @@ const CURRENT_CRITIC_MODEL = 'gpt-4o';       // model used by evaluator by defau
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || CORS_ORIGINS.includes('*') || CORS_ORIGINS.includes(origin)) {
+    // Allow no-origin requests (server-to-server / curl) and any localhost origin
+    if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin) || CORS_ORIGINS.includes('*') || CORS_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`Origin not allowed by CORS: ${origin}`));
@@ -952,6 +953,13 @@ if (fs.existsSync(frontendBuild)) {
   app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
   console.log('Serving React build from', frontendBuild);
 }
+
+// ── Global JSON error handler (must be after all routes) ─────────────────────
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err?.message || err);
+  res.status(err.status || err.statusCode || 500).json({ error: err?.message || 'Internal server error.' });
+});
 
 // ── Start server ──────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

@@ -10,7 +10,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
-const BACKEND = 'http://localhost:3001';
+const BACKEND = 'http://localhost:3003';
 
 // ── Viz renderer ─────────────────────────────────────────
 const BG = '#1e1e1e';
@@ -24,7 +24,7 @@ function injectBg(html) {
 
 function MessageContent({ content }) {
   const parts = [];
-  const regex = /```html\n([\s\S]*?)```/g;
+  const regex = /```html\r?\n([\s\S]*?)```/g;
   let last = 0, match;
   while ((match = regex.exec(content)) !== null) {
     if (match.index > last) parts.push({ type: 'md', content: content.slice(last, match.index) });
