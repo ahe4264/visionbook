@@ -38,12 +38,15 @@ BANNED from the default view:
   ✗ Any UI chrome that wasn't in the original figure
 
 ━━━ SIZING — MANDATORY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-The iframe is already sized to the original figure. Your HTML must fill it 100%.
+The iframe dimensions are provided in the prompt. Your HTML MUST fill every pixel of it.
 
   html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#fff; }
 
-For SVG: <svg width="100%" height="100%" viewBox="0 0 W H"> — choose W/H to match the
-  figure's aspect ratio. NEVER use fixed pixel sizes on the svg element.
+SVG SIZING:
+  Use the exact viewBox told to you in the prompt: <svg width="100%" height="100%" viewBox="0 0 W H">
+  Lay out elements so they span edge-to-edge with only 8px padding — no empty space around the content.
+  NEVER use fixed pixel width/height on the <svg> element itself.
+
 For canvas/Three.js: renderer.setSize(window.innerWidth, window.innerHeight)
   + resize listener that updates renderer and camera on window resize.
 For multi-panel: outer container width:100%; height:100%; display:grid — no fixed px sizes.
@@ -55,22 +58,142 @@ For multi-panel: outer container width:100%; height:100%; display:grid — no fi
   • Font: small sans-serif, 10–13px, matching the textbook style
   • 8px inner padding inside the SVG viewBox (not on html/body)
 
-━━━ INTERACTIVITY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Add interactions directly on figure elements. Never add chrome outside the figure.
+EDGES AND ARROWS — critical:
+  • If the original has arrowheads on edges, you MUST define SVG <marker> elements and apply
+    marker-end (or marker-start) to every edge line/path. Example:
+      <defs>
+        <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L6,3 z" fill="#999"/>
+        </marker>
+      </defs>
+      <line ... marker-end="url(#arr)" stroke="#999" stroke-width="1"/>
+  • Match arrowhead color and edge color EXACTLY to what you see in the original image
+  • Do NOT default to blue — read the actual edge color from the figure
 
-  • Hover → tooltip near cursor + subtle highlight (color shift or stroke thickens)
-  • Click → popup pinned to BOTTOM of iframe (never over the figure) + dismiss on outside-click/Escape
+NODE DECORATIONS — critical:
+  • If nodes have symbols inside them (activation squiggles, checkmarks, icons), reproduce
+    them as SVG <path> or <polyline> elements centered inside the node circle
+  • Read node fill colors directly from the image — do not assume or substitute
+  • Read every text label character-for-character from the original — do NOT invent or paraphrase
 
-Tooltip (copy exactly):
-  position:fixed; background:rgba(0,0,0,0.55); color:#fff;
-  font:11px/1.4 sans-serif; padding:5px 8px; border-radius:4px;
-  pointer-events:none; z-index:100; max-width:220px;
+━━━ INTERACTIVITY & ANIMATION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Default view looks exactly like the original. Interactivity reveals on hover/click only.
 
-Popup (copy exactly):
-  position:fixed; bottom:0; left:0; right:0;
-  background:rgba(245,245,245,0.95); backdrop-filter:blur(6px);
-  border-top:1px solid rgba(0,0,0,0.1);
-  padding:8px 12px; font:12px/1.5 sans-serif; color:#333; z-index:101;
+Store connectivity as a JS object — required for all graph interactions:
+  const graph = {
+    'x':  { out:['h1','h2'], in:[],           label:'x',  role:'Input — raw data' },
+    'h1': { out:['y1'],      in:['x'],         label:'h₁', role:'Hidden unit 1' },
+    'y1': { out:[],          in:['h1','h2'],   label:'y₁', role:'Output' },
+  }
+
+── HOVER ───────────────────────────────────────────────────────────────────────
+  • Node hover: stroke-width +1.5px, subtle fill-opacity change.
+  • Only highlight OUTGOING edges from hovered node — NOT all connected edges.
+    Use stroke:#e07b30, stroke-width +1px on outgoing edges only.
+    (Highlighting all edges makes dense networks unreadable.)
+  • Edge hover: highlight that one edge only.
+  • Tooltip — SMALL, near cursor, label + one short phrase only (max 6 words of description):
+
+  Tooltip CSS (copy verbatim — ~50% transparent, small, single line):
+    position:fixed; background:rgba(0,0,0,0.50); backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px); color:#fff; font:11px/1.3 sans-serif;
+    padding:3px 8px; border-radius:4px; border:1px solid rgba(255,255,255,0.15);
+    pointer-events:none; z-index:100; max-width:150px; white-space:nowrap;
+    box-shadow:0 2px 6px rgba(0,0,0,0.25);
+
+  Tooltip positioning — follow cursor exactly:
+    document.addEventListener('mousemove', e => {
+      tt.style.left = (e.clientX + 12) + 'px';
+      tt.style.top  = (e.clientY - 28) + 'px';
+    });
+  Tooltip content: just the short label, e.g. "h₁ — hidden unit" (not a paragraph).
+
+── CLICK → POPUP ────────────────────────────────────────────────────────────────
+  Click shows a dark glass panel pinned to the bottom. Full explanation goes here.
+  Dismiss: Escape key OR click anywhere outside the popup.
+
+  Popup CSS (copy verbatim — ~50% transparent dark glass, compact):
+    position:fixed; bottom:8px; left:8px; right:8px;
+    background:rgba(0,0,0,0.52); backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);
+    border:1px solid rgba(255,255,255,0.12); border-radius:9px;
+    padding:8px 12px; font:11px/1.5 sans-serif; color:#f0f0f0; z-index:101;
+    max-height:28%; overflow-y:auto; box-shadow:0 4px 20px rgba(0,0,0,0.3);
+
+  Popup has a close ×: float:right; cursor:pointer; color:rgba(255,255,255,0.35);
+    font-size:15px; line-height:1; margin-left:8px;
+  Popup title: font-weight:600; font-size:12px; color:#fff; display:block; margin-bottom:3px;
+
+── CLICK → SIGNAL FLOW ANIMATION ────────────────────────────────────────────────
+  On click, animate edges layer by layer using stroke-dashoffset. This visualises
+  the forward pass (click) or backward pass (Shift+click, use red #e05050).
+
+  CRITICAL — SVG node pulse must NOT cause nodes to fly to wrong positions:
+  Use this exact pattern for scale pulse on a <circle> or <g> node:
+    // For <circle cx=CX cy=CY>: use CSS transform with transform-box+transform-origin
+    node.style.transformBox = 'fill-box';
+    node.style.transformOrigin = 'center';
+    node.style.transition = 'transform 0.15s ease';
+    node.style.transform = 'scale(1.18)';
+    setTimeout(() => { node.style.transform = 'scale(1)'; }, 200);
+
+  Edge dash animation pattern (call per layer, pass delay in ms):
+    function animateEdges(edgeEls, color, delay) {
+      setTimeout(() => {
+        edgeEls.forEach(e => {
+          const len = e.getTotalLength ? e.getTotalLength() : 200;
+          e.style.transition = 'none';
+          e.style.strokeDasharray = len;
+          e.style.strokeDashoffset = len;
+          e.style.stroke = color;
+          requestAnimationFrame(() => {
+            e.style.transition = 'stroke-dashoffset 0.35s ease';
+            e.style.strokeDashoffset = '0';
+          });
+        });
+      }, delay);
+    }
+  Cascade: layer 0 at delay 0, layer 1 at delay 380, layer 2 at delay 760, etc.
+  After full cascade (+1200ms total), restore all edges to original stroke color/width.
+
+── DRAGGABLE NODES ───────────────────────────────────────────────────────────────
+  Nodes in network diagrams should be draggable. Use this coordinate pattern exactly
+  to avoid nodes flying to wrong positions:
+
+    let dragNode = null, dragOffX = 0, dragOffY = 0;
+    // Get SVG coordinate from mouse event:
+    function svgPt(svg, e) {
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      return pt.matrixTransform(svg.getScreenCTM().inverse());
+    }
+    nodeEl.addEventListener('mousedown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const p = svgPt(svg, e);
+      dragOffX = p.x - parseFloat(nodeEl.getAttribute('cx'));
+      dragOffY = p.y - parseFloat(nodeEl.getAttribute('cy'));
+      dragNode = nodeEl; nodeEl.style.cursor = 'grabbing';
+    });
+    svg.addEventListener('mousemove', e => {
+      if (!dragNode) return;
+      const p = svgPt(svg, e);
+      const nx = p.x - dragOffX, ny = p.y - dragOffY;
+      dragNode.setAttribute('cx', nx); dragNode.setAttribute('cy', ny);
+      // Update label position and all connected edges here
+    });
+    svg.addEventListener('mouseup', () => { dragNode = null; });
+
+── FIGURE-TYPE SPECIFIC ─────────────────────────────────────────────────────────
+  Neural network / computational graph:
+    • Click → forward pass cascade (blue #4a7ef5), Shift+click → backward (red #e05050)
+    • Pulse destination nodes as signal arrives (use transformBox/transformOrigin pattern above)
+
+  Flow chart / pipeline:
+    • Click any step → dim all others to 0.5 opacity, highlight that step + its outgoing arrow
+
+  Scatter / line plot:
+    • On first hover, draw lines with stroke-dashoffset animation
+    • Hover point → tooltip with x,y values
 
 ━━━ RENDERING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   • Diagrams, graphs, matrices, flow charts → inline SVG
@@ -82,9 +205,10 @@ Before outputting, verify:
   1. Default view matches original figure — layout, colors, every label?
   2. html/body have no margin/padding and background is #fff?
   3. SVG uses width="100%" height="100%" — no fixed pixel dimensions?
-  4. No title, toolbar, or description visible by default?
-  5. All hover/click handlers reference elements that exist in the DOM?
-If any answer is NO — fix it first.
+  4. Figure content fills the viewBox edge-to-edge (only 8px padding)? No empty whitespace borders?
+  5. No title, toolbar, or description visible by default?
+  6. All hover/click handlers reference elements that exist in the DOM?
+If any answer is NO — fix it first, especially #4 (empty space = figure looks tiny in the iframe).
 
 ━━━ JAVASCRIPT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Vanilla JS only (no libraries except Three.js when explicitly needed for 3D).
@@ -150,7 +274,7 @@ For multi-panel with mixed 2D+3D:
 /**
  * Generate a figure-faithful interactive HTML page.
  */
-async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, maxTokens = 16000 }) {
+async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, iframeWidth, iframeHeight, maxTokens = 16000 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
 
@@ -179,11 +303,15 @@ async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText
   // Inject Three.js boilerplate into user message only when needed
   const threeSection = has3d ? THREEJS_BOILERPLATE : '';
 
+  const dimHint = (iframeWidth && iframeHeight)
+    ? `\nIFRAME SIZE: ${iframeWidth}×${iframeHeight}px — set viewBox="0 0 ${iframeWidth} ${iframeHeight}" and fill ALL of it (8px padding only, no empty borders).`
+    : '';
+
   const message = userText
     ? `${userText}${planSection}${threeSection}`
-    : `Reconstruct this figure as an interactive HTML page.${planSection}${threeSection}
+    : `Reconstruct this figure as an interactive HTML page.${dimHint}${planSection}${threeSection}
 
-REMEMBER: The default view must look exactly like this figure — same layout, labels, colors, proportions. No title, no description text, no buttons visible by default. Interactivity lives on the elements themselves (hover → tooltip, click → bottom popup). Do NOT embed the image.`;
+REMEMBER: Fill the entire viewBox edge-to-edge (only 8px padding). No title, no description text, no buttons visible by default. Interactivity on elements only (hover highlights connected edges, click shows bottom popup). Do NOT embed the image.`;
 
   const userContent = [
     { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },

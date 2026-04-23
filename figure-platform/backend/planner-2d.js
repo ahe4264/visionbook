@@ -34,14 +34,22 @@ Output this exact JSON structure:
       },
       "series": [
         {
-          "type": "scatter | line | contour | surface | path",
-          "color": "#hex or description",
+          "type": "scatter | line | contour | surface | path | network_edges | network_nodes",
+          "color": "#hex — read the exact color from the image, e.g. '#999999'",
           "opacity": 1.0,
           "label": "series label if any",
           "points": [[x1,y1],[x2,y2]],
           "note": "describe if too many points to list — give distribution pattern"
         }
       ],
+      "edgeStyle": {
+        "directed": true,
+        "arrowhead": "triangle | open | none",
+        "arrowColor": "#999",
+        "strokeColor": "#999",
+        "strokeWidth": 1
+      },
+      "nodeDecorations": "describe any symbols inside nodes (e.g. 'teal squiggle activation symbol', 'gray fill for dropped nodes', 'white fill with black border for active')",
       "annotations": ["list any text annotations, arrows, numbered labels visible in this panel"],
       "cameraAnalysis": "For 3D panels only: axis directions, elevation ~Xdeg, azimuth ~Ydeg, camera.position.set(x,y,z)"
     }

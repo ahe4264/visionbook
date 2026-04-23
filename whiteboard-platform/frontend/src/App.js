@@ -48,6 +48,29 @@ function MessageContent({ content }) {
   );
 }
 
+// ── Parse / strip [HIGHLIGHT:"..."] tags from tutor replies ──
+const HIGHLIGHT_RE = /\[HIGHLIGHT:"([^"]{3,120})"\]/g;
+function parseHighlights(text) {
+  const out = [];
+  let m;
+  HIGHLIGHT_RE.lastIndex = 0;
+  while ((m = HIGHLIGHT_RE.exec(text)) !== null) out.push(m[1]);
+  return out;
+}
+function stripHighlights(text) {
+  return text.replace(HIGHLIGHT_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ── Parse / strip [GOTO:N] cross-page navigation tags ────
+const GOTO_RE = /\[GOTO:(\d+)\]/;
+function parseGoto(text) {
+  const m = GOTO_RE.exec(text);
+  return m ? parseInt(m[1], 10) : null;
+}
+function stripGoto(text) {
+  return text.replace(GOTO_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // ── Extract section text at a scroll fraction ────────────
 function getSectionAtFraction(text, fraction) {
   if (!text) return '';
@@ -55,6 +78,15 @@ function getSectionAtFraction(text, fraction) {
   const raw = text.slice(Math.max(0, pos - 50), Math.min(text.length, pos + 400));
   const dot = raw.indexOf('. ');
   return (dot > 0 && dot < 80) ? raw.slice(dot + 2) : raw;
+}
+
+// ── Flatten PDF outline into p.N: Title lines for tutor ──
+function flattenOutline(items, depth = 0, out = []) {
+  items.forEach(item => {
+    if (item.pageNum) out.push(`p.${item.pageNum}: ${'  '.repeat(depth)}${item.title}`);
+    if (item.items?.length) flattenOutline(item.items, depth + 1, out);
+  });
+  return out;
 }
 
 // ── Flatten all outline page numbers ─────────────────────
@@ -137,6 +169,15 @@ export default function App() {
   const [figureOverlays, setFigureOverlaysRaw] = useState([]);
   const overlayIdRef = useRef(0);
 
+  // Figure customization — tracks which overlay the user is currently modifying via chat
+  const [customizeOverlayId, setCustomizeOverlayId] = useState(null);
+
+  // PDF text highlights — phrases the tutor wants to highlight in the PDF
+  const [pdfHighlights, setPdfHighlights] = useState([]);
+
+  // Back-navigation state — saved before a cross-page jump so user can return
+  const [backState, setBackState] = useState(null); // { page, scrollTop }
+
   const setFigureOverlays = useCallback((updater) => {
     setFigureOverlaysRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -157,22 +198,27 @@ export default function App() {
   const scrollContainerRef = useRef(null);
   const pageVisibility     = useRef(new Map());
   const pdfDocRef          = useRef(null);
-  const tutorTimerRef      = useRef(null);
-  const dwellTimerRef      = useRef(null);
-  const scrollFractionRef  = useRef(0);
-  const lastCheckinRef     = useRef(0);
+  const tutorTimerRef       = useRef(null);
+  const dwellTimerRef       = useRef(null);
+  const scrollFractionRef   = useRef(0);
+  const lastCheckinRef      = useRef(0);
+  const chapterQCountRef    = useRef({});   // { chapterPage: count } — max 4 per chapter
+  const totalTutorAsksRef   = useRef(0);    // total auto-questions fired this session
 
   // Stable refs so dwell callback reads current values without re-attaching scroll listeners
-  const tutorModeRef    = useRef(tutorMode);
-  const loadingRef      = useRef(loading);
-  const messagesRef     = useRef(messages);
-  const titleRef        = useRef(title);
-  const currentPageRef  = useRef(currentPage);
+  const tutorModeRef        = useRef(tutorMode);
+  const loadingRef          = useRef(loading);
+  const messagesRef         = useRef(messages);
+  const titleRef            = useRef(title);
+  const currentPageRef      = useRef(currentPage);
+  const outlineRef          = useRef(outline);
+  const navigateWithBackRef = useRef(null); // filled after navigateWithBack is defined
   tutorModeRef.current   = tutorMode;
   loadingRef.current     = loading;
   messagesRef.current    = messages;
   titleRef.current       = title;
   currentPageRef.current = currentPage;
+  outlineRef.current     = outline;
 
   // ── File open ────────────────────────────────────────────
   const onFileChange = useCallback((e) => {
@@ -246,6 +292,29 @@ export default function App() {
     pageRefs.current[clamped - 1]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [numPages]);
 
+  // Navigate to a page (saving back state if changing page) and apply highlights
+  const navigateWithBack = useCallback((targetPage, phrases) => {
+    const curPage = currentPageRef.current;
+    if (targetPage && targetPage !== curPage) {
+      setBackState({ page: curPage, scrollTop: scrollContainerRef.current?.scrollTop || 0 });
+      goTo(targetPage);
+    }
+    if (phrases?.length) setPdfHighlights(phrases);
+  }, [goTo]);
+  navigateWithBackRef.current = navigateWithBack;
+
+  const goBack = useCallback(() => {
+    if (!backState) return;
+    const { page, scrollTop } = backState;
+    goTo(page);
+    // Restore scroll position after page renders
+    setTimeout(() => {
+      if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = scrollTop;
+    }, 350);
+    setBackState(null);
+    setPdfHighlights([]);
+  }, [backState, goTo]);
+
   // ── Scroll → page tracking ───────────────────────────────
   useEffect(() => {
     if (!numPages || !scrollContainerRef.current) return;
@@ -272,6 +341,47 @@ export default function App() {
     extractPageText(currentPage).then(text => setPageText(text));
   }, [currentPage, extractPageText]);
 
+  // ── PDF text highlighting (tutor — yellow, temporary) ────
+  useEffect(() => {
+    const clearHl = () => document.querySelectorAll('.pdf-hl').forEach(el => {
+      el.style.backgroundColor = '';
+      el.style.borderRadius = '';
+      el.classList.remove('pdf-hl');
+    });
+    clearHl();
+    if (!pdfHighlights.length) return;
+
+    const apply = setTimeout(() => {
+      const spans = document.querySelectorAll('.react-pdf__Page__textContent span');
+      pdfHighlights.forEach(phrase => {
+        const lPhrase = phrase.toLowerCase().trim();
+        // Require span to be at least half the phrase length — prevents single short
+        // words from matching long phrases and blanketing the page in yellow
+        const minLen = Math.max(12, Math.floor(lPhrase.length * 0.5));
+        spans.forEach(span => {
+          const st = span.textContent.trim().toLowerCase();
+          if (st.length < minLen) return;
+          if (lPhrase.includes(st) || st.includes(lPhrase)) {
+            span.style.backgroundColor = 'rgba(255,220,0,0.45)';
+            span.style.borderRadius = '2px';
+            span.classList.add('pdf-hl');
+          }
+        });
+      });
+    }, 150);
+
+    // Auto-clear highlights after 8s — they are transient indicators, not permanent marks
+    const autoClear = setTimeout(() => {
+      clearHl();
+      setPdfHighlights([]);
+    }, 8000);
+
+    return () => { clearTimeout(apply); clearTimeout(autoClear); };
+  }, [pdfHighlights, currentPage]);
+
+  // Blue figure-link PDF highlights removed — too noisy.
+  // The ↖ button on each overlay still navigates back to the linked page.
+
   // ── Dwell-based tutor check-in ────────────────────────────
   // Fires ONE short question after the user has been on a section for 10s.
   // Resets whenever the user scrolls significantly (>5% of page height).
@@ -282,17 +392,31 @@ export default function App() {
     const fireDwellCheckin = async () => {
       if (!tutorModeRef.current || loadingRef.current) return;
       const now = Date.now();
-      if (now - lastCheckinRef.current < 30000) return; // 30s cooldown between questions
+      if (now - lastCheckinRef.current < 120000) return; // 2min cooldown between auto-questions
+
+      // Primary guard: never ask if the last message is ANY assistant message the user hasn't replied to
+      const visible = messagesRef.current.filter(m => !m._tutorCheckin);
+      const lastVisible = visible[visible.length - 1];
+      if (lastVisible?.role === 'assistant') return; // wait for user to reply first
+
+      // Limit: max 1 auto-question before user has replied at all this session
+      const userReplies = visible.filter(m => m.role === 'user');
+      if (userReplies.length === 0 && totalTutorAsksRef.current >= 1) return;
+
+      // Limit: max 2 auto-questions per chapter section
+      const chapterPage = getActivePageNum(outlineRef.current, currentPageRef.current) || 0;
+      const chapterCount = chapterQCountRef.current[chapterPage] || 0;
+      if (chapterCount >= 2) return;
+
       lastCheckinRef.current = now;
 
-      const page   = currentPageRef.current;
-      const frac   = scrollFractionRef.current;
-      const text   = await extractPageText(page);
+      const page = currentPageRef.current;
+      const frac = scrollFractionRef.current;
+      const text = await extractPageText(page);
       if (!text) return;
       const readingSection = getSectionAtFraction(text, frac);
 
       setLoading(true);
-      // Build API message list — must end with a user turn
       const history = messagesRef.current.filter(m => !m._tutorCheckin);
       const needsUserEnd = history.length === 0 || history[history.length - 1].role !== 'user';
       const checkinMsg = { role: 'user', content: `[CHECKIN]`, _tutorCheckin: true };
@@ -310,18 +434,34 @@ export default function App() {
             readingSection,
             tutorMode: true,
             isTutorCheckin: true,
+            outlineContext: flattenOutline(outlineRef.current).join('\n'),
           }),
         });
         const data = await res.json();
         if (res.ok && data.reply) {
-          setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
+          chapterQCountRef.current[chapterPage] = chapterCount + 1;
+          totalTutorAsksRef.current++;
+          const hlTutor = parseHighlights(data.reply);
+          const gotoTutor = parseGoto(data.reply);
+          const stripped = gotoTutor ? stripGoto(data.reply) : data.reply;
+          const cleanTutor = hlTutor.length ? stripHighlights(stripped) : stripped;
+          const msgPage = currentPageRef.current;
+          if (hlTutor.length) setPdfHighlights(hlTutor);
+          setMessages(m => [...m, {
+            role: 'assistant', content: cleanTutor, _tutorAsk: true,
+            hlPhrases: hlTutor.length ? hlTutor : undefined,
+            hlPage: msgPage,
+          }]);
+          if (gotoTutor && gotoTutor !== msgPage) {
+            setTimeout(() => navigateWithBackRef.current?.(gotoTutor, hlTutor), 900);
+          }
         }
       } catch {} finally { setLoading(false); }
     };
 
     const startDwellTimer = () => {
       clearTimeout(dwellTimerRef.current);
-      dwellTimerRef.current = setTimeout(fireDwellCheckin, 10000); // 10s dwell
+      dwellTimerRef.current = setTimeout(fireDwellCheckin, 60000); // 60s dwell before asking
     };
 
     const onScroll = () => {
@@ -455,44 +595,101 @@ export default function App() {
   // ── Inline interactive figure overlay ─────────────────────
   const FIGURE_BACKEND = 'http://localhost:3001';
 
+  // Shared canvas-capture helper: returns base64 PNG of selRect region
+  const captureRegion = useCallback((rect) => {
+    const container = scrollContainerRef.current;
+    if (!container) return null;
+    const containerRect = container.getBoundingClientRect();
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width  = Math.round(rect.w);
+    outCanvas.height = Math.round(rect.h);
+    const ctx = outCanvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+    container.querySelectorAll('.pdf-page-wrapper').forEach(wrapper => {
+      const canvas = wrapper.querySelector('canvas');
+      if (!canvas) return;
+      const cr = canvas.getBoundingClientRect();
+      const pl = parseFloat(getComputedStyle(container).paddingLeft) || 0;
+      const pt = parseFloat(getComputedStyle(container).paddingTop)  || 0;
+      const canvasLeft = cr.left - containerRect.left - pl + container.scrollLeft;
+      const canvasTop  = cr.top  - containerRect.top  - pt + container.scrollTop;
+      const ix1 = Math.max(rect.x, canvasLeft), iy1 = Math.max(rect.y, canvasTop);
+      const ix2 = Math.min(rect.x + rect.w, canvasLeft + cr.width);
+      const iy2 = Math.min(rect.y + rect.h, canvasTop + cr.height);
+      if (ix2 <= ix1 || iy2 <= iy1) return;
+      const dpr = canvas.width / cr.width;
+      ctx.drawImage(canvas,
+        (ix1 - canvasLeft) * dpr, (iy1 - canvasTop) * dpr, (ix2 - ix1) * dpr, (iy2 - iy1) * dpr,
+        ix1 - rect.x, iy1 - rect.y, ix2 - ix1, iy2 - iy1);
+    });
+    return outCanvas.toDataURL('image/png').split(',')[1];
+  }, []);
+
   const captureAndMakeInteractive = useCallback(async () => {
     if (!selRect || selRect.w < 10 || selRect.h < 10) return;
     setCapturing(true);
     const id = ++overlayIdRef.current;
-    try {
-      // Capture the selected region from the PDF canvas(es)
-      const container = scrollContainerRef.current;
-      const containerRect = container.getBoundingClientRect();
-      const outCanvas = document.createElement('canvas');
-      outCanvas.width  = Math.round(selRect.w);
-      outCanvas.height = Math.round(selRect.h);
-      const ctx = outCanvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
-      container.querySelectorAll('.pdf-page-wrapper').forEach(wrapper => {
-        const canvas = wrapper.querySelector('canvas');
-        if (!canvas) return;
-        const cr = canvas.getBoundingClientRect();
-        const pl = parseFloat(getComputedStyle(container).paddingLeft) || 0;
-        const pt = parseFloat(getComputedStyle(container).paddingTop)  || 0;
-        const canvasLeft = cr.left - containerRect.left - pl + container.scrollLeft;
-        const canvasTop  = cr.top  - containerRect.top  - pt + container.scrollTop;
-        const ix1 = Math.max(selRect.x, canvasLeft), iy1 = Math.max(selRect.y, canvasTop);
-        const ix2 = Math.min(selRect.x + selRect.w, canvasLeft + cr.width);
-        const iy2 = Math.min(selRect.y + selRect.h, canvasTop + cr.height);
-        if (ix2 <= ix1 || iy2 <= iy1) return;
-        const dpr = canvas.width / cr.width;
-        ctx.drawImage(canvas,
-          (ix1 - canvasLeft) * dpr, (iy1 - canvasTop) * dpr, (ix2 - ix1) * dpr, (iy2 - iy1) * dpr,
-          ix1 - selRect.x, iy1 - selRect.y, ix2 - ix1, iy2 - iy1);
-      });
-      const base64 = outCanvas.toDataURL('image/png').split(',')[1];
+    // Snapshot rect before async ops (setSelRect(null) runs shortly after)
+    const rect = { ...selRect };
 
-      // Place loading overlay immediately at the selection position
-      setFigureOverlays(prev => [...prev, { id, scrollRect: { ...selRect }, html: null, loading: true, visible: true }]);
+    // Capture link context for bidirectional navigation
+    const linkedPage = currentPage;
+    const STOP = new Set(['that','this','with','from','have','were','they','their','which','would','about','could','there','these','other','than','what','into','been','some','will','such','both','each','most','over','just','back','only','after','before','should','those','where','them','same','much','need','used','being','using','since','while','under','along']);
+    const nearbyText = getSectionAtFraction(pageText, scrollFractionRef.current);
+    const linkedPhrases = [...new Set(nearbyText.split(/\W+/).filter(w => w.length > 5 && !STOP.has(w.toLowerCase())))].slice(0, 6);
+
+    try {
+      const base64 = captureRegion(rect);
+      if (!base64) return;
+
+      // Remove any existing overlay that significantly overlaps this selection
+      setFigureOverlays(prev => prev.filter(o => {
+        if (!o.scrollRect) return true; // keep malformed entries rather than throw
+        const a = o.scrollRect, b = rect;
+        const ix = Math.max(0, Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x));
+        const iy = Math.max(0, Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y));
+        const smaller = Math.min(a.w*a.h, b.w*b.h);
+        return !(smaller > 0 && (ix*iy)/smaller > 0.4);
+      }));
+
+      setFigureOverlays(prev => [...prev, {
+        id, scrollRect: rect, html: null, loading: true, visible: true, type: 'classifying',
+        linkedPage, linkedPhrases,
+      }]);
       setSelectMode(false); setSelRect(null); setPopupPos(null);
 
-      // Plan
+      // ── Step 1: fast classify (~300ms, Haiku) ─────────────
+      const clsRes = await fetch(`${BACKEND}/api/classify-figure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageData: base64, imageMimeType: 'image/png' }),
+      });
+      const { type: contentType } = await clsRes.json();
+
+      if (contentType === 'equation') {
+        // ── Equation path ──────────────────────────────────
+        setFigureOverlays(prev => prev.map(o =>
+          o.id === id ? { ...o, type: 'equation' } : o
+        ));
+        const eqRes = await fetch(`${BACKEND}/api/augment-equation`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageData: base64, imageMimeType: 'image/png', bookTitle: title, pageText }),
+        });
+        const eqData = await eqRes.json();
+        if (!eqRes.ok) throw new Error(eqData.error || 'Equation augmentation failed');
+        setFigureOverlays(prev => prev.map(o =>
+          o.id === id ? { ...o, html: eqData.html, loading: false } : o
+        ));
+        return;
+      }
+
+      // ── Step 2: not an equation — fall through to 2D figure ──
+      setFigureOverlays(prev => prev.map(o =>
+        o.id === id ? { ...o, type: 'figure' } : o
+      ));
+
       const planRes = await fetch(`${FIGURE_BACKEND}/api/plan-2d`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -501,17 +698,15 @@ export default function App() {
       const plan = await planRes.json();
       if (!planRes.ok) throw new Error(plan.error || 'Planning failed');
 
-      // Start async generation
       const genRes = await fetch(`${FIGURE_BACKEND}/api/generate-2d-async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64, mediaType: 'image/png', filename: `figure_${id}`, plan, model: 'claude-opus-4.6' }),
+        body: JSON.stringify({ base64, mediaType: 'image/png', filename: `figure_${id}`, plan, model: 'claude-sonnet-4', iframeWidth: Math.round(rect.w), iframeHeight: Math.round(rect.h) }),
       });
       const genData = await genRes.json();
       if (!genRes.ok) throw new Error(genData.error || 'Generation failed');
       const { jobId } = genData;
 
-      // Poll for completion
       for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 3000));
         const statusRes = await fetch(`${FIGURE_BACKEND}/api/generate-status/${jobId}`);
@@ -528,9 +723,12 @@ export default function App() {
       throw new Error('Generation timed out');
     } catch (err) {
       setFigureOverlays(prev => prev.filter(o => o.id !== id));
-      setMessages(m => [...m, { role: 'assistant', content: `Interactive figure failed: ${err.message}` }]);
-    } finally { setCapturing(false); }
-  }, [selRect]);
+      setMessages(m => [...m, { role: 'assistant', content: `Augmentation failed: ${err.message}` }]);
+    } finally {
+      setCapturing(false);
+      setSelectMode(false); setSelRect(null); setPopupPos(null); // always close popup
+    }
+  }, [selRect, title, pageText, captureRegion]);
 
   // ── Text selection ───────────────────────────────────────
   useEffect(() => {
@@ -552,10 +750,48 @@ export default function App() {
     setTimeout(() => chatInputRef.current?.focus(), 0);
   };
 
+  // ── Figure customization via chat ────────────────────────
+  const customizeFigure = useCallback(async (overlayId, request) => {
+    // Find the overlay's html — look it up fresh each time, not via stale closure
+    const currentHtml = figureOverlays.find(o => o.id === overlayId)?.html;
+    if (!currentHtml) {
+      setMessages(m => [...m, { role: 'assistant', content: "Figure HTML not available yet — try again once the figure has fully loaded." }]);
+      setCustomizeOverlayId(null);
+      return;
+    }
+    setLoading(true);
+    setMessages(m => [...m, { role: 'user', content: request, displayContent: request }]);
+    setInput(''); setPinnedContext(''); setCustomizeOverlayId(null);
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 90000);
+      const res = await fetch(`${BACKEND}/api/modify-figure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentHtml, request, bookTitle: title, pageText }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeout);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Modification failed');
+      setFigureOverlays(prev => prev.map(o => o.id === overlayId ? { ...o, html: data.html } : o));
+      setMessages(m => [...m, { role: 'assistant', content: 'Done — figure updated.' }]);
+    } catch (err) {
+      const msg = err.name === 'AbortError' ? 'Timed out — try a simpler request.' : err.message;
+      setMessages(m => [...m, { role: 'assistant', content: `Couldn't update figure: ${msg}` }]);
+    } finally { setLoading(false); }
+  }, [figureOverlays, title, pageText]);
+
   // ── Send message ─────────────────────────────────────────
   const sendMessage = useCallback(async () => {
     if (!input.trim() || loading) return;
     const typed = input.trim();
+
+    // If a figure is selected for customization, route to modify-figure instead of chat
+    if (customizeOverlayId != null) {
+      return customizeFigure(customizeOverlayId, typed);
+    }
+
     const content = pinnedContext ? `> ${pinnedContext}\n\n${typed}` : typed;
     const userMsg = { role: 'user', content, displayContent: typed };
     const next = [...messages, userMsg];
@@ -564,15 +800,32 @@ export default function App() {
       const res = await fetch(`${BACKEND}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, bookTitle: title, currentPage, pageText, tutorMode }),
+        body: JSON.stringify({
+          messages: next, bookTitle: title, currentPage, pageText, tutorMode,
+          outlineContext: tutorMode ? flattenOutline(outline).join('\n') : undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Request failed');
-      setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
+      const highlights = parseHighlights(data.reply);
+      const gotoPage = parseGoto(data.reply);
+      const stripped = gotoPage ? stripGoto(data.reply) : data.reply;
+      const cleanReply = highlights.length ? stripHighlights(stripped) : stripped;
+      const msgPage = currentPageRef.current;
+      if (highlights.length) setPdfHighlights(highlights);
+      setMessages(m => [...m, {
+        role: 'assistant', content: cleanReply,
+        hlPhrases: highlights.length ? highlights : undefined,
+        hlPage: msgPage,
+      }]);
+      // Auto-navigate if tutor pointed to another page
+      if (gotoPage && gotoPage !== msgPage) {
+        setTimeout(() => navigateWithBack(gotoPage, highlights), 900);
+      }
     } catch (err) {
       setMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}` }]);
     } finally { setLoading(false); }
-  }, [input, pinnedContext, messages, loading, title, currentPage, pageText, tutorMode]);
+  }, [input, pinnedContext, messages, loading, title, currentPage, pageText, tutorMode, customizeOverlayId, customizeFigure, navigateWithBack]);
 
   const onKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -669,6 +922,15 @@ export default function App() {
                     {figureOverlays.some(o => o.visible !== false && !o.loading) ? '◉ Augmented on' : '○ Augmented off'}
                   </button>
                 )}
+                {backState && (
+                  <button
+                    className="float-3d-btn back-nav-btn"
+                    onClick={goBack}
+                    title={`Return to where you were on p.${backState.page}`}
+                  >
+                    ← back to p.{backState.page}
+                  </button>
+                )}
               </div>
             )}
             {!pdfUrl ? (
@@ -702,7 +964,7 @@ export default function App() {
                       {popupPos && selRect && (
                         <div className="sel-popup" style={{ left: popupPos.x, top: popupPos.y }} onMouseDown={e => e.stopPropagation()}>
                           <button className="make3d-btn" disabled={capturing} onClick={captureAndMakeInteractive}>
-                            {capturing ? 'Working…' : '✦ Make Interactive'}
+                            {capturing ? 'Detecting…' : '✦ Augment'}
                           </button>
                           <button className="make3d-btn" style={{ background: '#2a2a2a' }} disabled={capturing} onClick={captureAndSend}>
                             {capturing ? '…' : '3D → Chat'}
@@ -713,9 +975,17 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Inline interactive figure overlays */}
+                  {/* Inline interactive figure / equation overlays */}
                   {figureOverlays.map(overlay => {
                     const isVisible = overlay.visible !== false;
+                    const isEq = overlay.type === 'equation';
+                    const accentOn  = isEq ? 'rgba(86,182,194,0.85)' : 'rgba(60,120,220,0.85)';
+                    const accentOff = 'rgba(80,80,80,0.7)';
+                    const loadingMsg = overlay.type === 'classifying'
+                      ? 'Analysing…'
+                      : overlay.type === 'equation'
+                        ? 'Annotating equation…'
+                        : 'Building interactive figure…';
                     return (
                       <div key={overlay.id}>
                         {/* The overlay — hidden when toggled off, revealing original PDF */}
@@ -733,45 +1003,88 @@ export default function App() {
                           }}
                         >
                           {overlay.loading ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#fff', color: '#999', gap: 10 }}>
-                              <div style={{ width: 22, height: 22, border: '2px solid #bbb', borderTopColor: '#555', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                              <span style={{ fontSize: 11, color: '#aaa' }}>Building interactive figure…</span>
+                            <div style={{
+                              display: 'flex', flexDirection: 'column',
+                              alignItems: 'center', justifyContent: 'center',
+                              height: '100%',
+                              background: '#fafafa',
+                              color: '#999',
+                              gap: 10,
+                            }}>
+                              <div style={{
+                                width: 22, height: 22,
+                                border: `2px solid ${isEq ? '#2a2a4e' : '#ddd'}`,
+                                borderTopColor: '#555',
+                                borderRadius: '50%',
+                                animation: 'spin 0.8s linear infinite',
+                              }} />
+                              <span style={{ fontSize: 11 }}>{loadingMsg}</span>
                             </div>
                           ) : overlay.html ? (
                             <iframe
                               srcDoc={overlay.html}
                               sandbox="allow-scripts allow-same-origin"
                               style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
-                              title={`interactive-figure-${overlay.id}`}
+                              title={isEq ? `equation-${overlay.id}` : `interactive-figure-${overlay.id}`}
                             />
                           ) : null}
                         </div>
 
-                        {/* Small toggle pill at top-right corner of the figure — always visible */}
+                        {/* Toggle pill + customize "?" button */}
                         {!overlay.loading && overlay.html && (
-                          <button
-                            onClick={() => setFigureOverlays(prev =>
-                              prev.map(o => o.id === overlay.id ? { ...o, visible: !isVisible } : o)
+                          <div style={{
+                            position: 'absolute',
+                            left: overlay.scrollRect.x + overlay.scrollRect.w - (isEq ? 96 : 88) - (overlay.linkedPage ? 24 : 0),
+                            top: overlay.scrollRect.y - 16,
+                            zIndex: 25,
+                            display: 'flex',
+                            gap: 2,
+                          }}>
+                            {/* ↖ link-back button — navigate to the text section where this figure was captured */}
+                            {overlay.linkedPage && (
+                              <button
+                                onClick={() => {
+                                  goTo(overlay.linkedPage);
+                                  if (overlay.linkedPhrases?.length) setPdfHighlights(overlay.linkedPhrases);
+                                }}
+                                className="overlay-ask-btn"
+                                title={`Go to linked text (p.${overlay.linkedPage})`}
+                              >↖</button>
                             )}
-                            style={{
-                              position: 'absolute',
-                              left: overlay.scrollRect.x + overlay.scrollRect.w - 52,
-                              top: overlay.scrollRect.y - 16,
-                              zIndex: 25,
-                              background: isVisible ? 'rgba(60,120,220,0.85)' : 'rgba(120,120,120,0.7)',
-                              color: '#fff',
-                              border: 'none',
-                              borderRadius: '4px 4px 0 0',
-                              fontSize: 9,
-                              padding: '2px 7px',
-                              cursor: 'pointer',
-                              backdropFilter: 'blur(4px)',
-                              letterSpacing: '0.03em',
-                            }}
-                            title={isVisible ? 'Show original' : 'Show interactive'}
-                          >
-                            {isVisible ? '◉ live' : '○ original'}
-                          </button>
+                            {/* ? customize button */}
+                            <button
+                              onClick={() => {
+                                setCustomizeOverlayId(prev => prev === overlay.id ? null : overlay.id);
+                                setTimeout(() => chatInputRef.current?.focus(), 50);
+                              }}
+                              className={`overlay-ask-btn${customizeOverlayId === overlay.id ? ' active' : ''}`}
+                              title="Customize this figure in chat"
+                            >
+                              ?
+                            </button>
+                            {/* toggle pill */}
+                            <button
+                              onClick={() => setFigureOverlays(prev =>
+                                prev.map(o => o.id === overlay.id ? { ...o, visible: !isVisible } : o)
+                              )}
+                              style={{
+                                background: isVisible ? accentOn : accentOff,
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: '0 4px 4px 0',
+                                fontSize: 9,
+                                padding: '2px 7px',
+                                cursor: 'pointer',
+                                backdropFilter: 'blur(4px)',
+                                letterSpacing: '0.03em',
+                              }}
+                              title={isVisible ? 'Show original' : isEq ? 'Show annotated equation' : 'Show interactive'}
+                            >
+                              {isVisible
+                                ? (isEq ? '∑ eq' : '◉ live')
+                                : (isEq ? '○ orig' : '○ orig')}
+                            </button>
+                          </div>
                         )}
                       </div>
                     );
@@ -790,6 +1103,7 @@ export default function App() {
           <div className="chat-header">
             <span>Chat</span>
             {title && <span className="chat-doc-label">— p.{currentPage}</span>}
+            {tutorMode && <span className="tutor-glow-dot" title="Tutor is active" />}
             <div className="tutor-toggle" onClick={() => setTutorMode(m => !m)} title={tutorMode ? 'Tutor mode on — click to turn off' : 'Turn on tutor mode'}>
               <div className={`tutor-toggle-track${tutorMode ? ' on' : ''}`}>
                 <div className="tutor-toggle-thumb" />
@@ -805,13 +1119,20 @@ export default function App() {
               </div>
             )}
             {messages.filter(m => !m._tutorCheckin).map((m, i) => (
-              <div key={i} className={`message ${m.role}${m.content?.includes?.('```html') ? ' has-viz' : ''}`}>
+              <div
+                key={i}
+                className={`message ${m.role}${m.content?.includes?.('```html') ? ' has-viz' : ''}${m._tutorAsk ? ' tutor-ask' : ''}${m.hlPhrases ? ' has-hl-link' : ''}`}
+                onClick={() => m.hlPhrases?.length && navigateWithBack(m.hlPage, m.hlPhrases)}
+                title={m.hlPhrases ? `Click to go to p.${m.hlPage} and re-highlight` : undefined}
+              >
+                {m._tutorAsk && <span className="tutor-ask-dot" />}
                 <div className="message-bubble">
                   {m.imageData ? (
                     <img src={`data:${m.imageMimeType || 'image/png'};base64,${m.imageData}`} className="msg-thumb" alt="figure" />
                   ) : (
                     <MessageContent content={m.displayContent ?? m.content ?? ''} />
                   )}
+                  {m.hlPhrases && <span className="msg-hl-badge" title={`Highlights on p.${m.hlPage}`}>📍 p.{m.hlPage}</span>}
                 </div>
               </div>
             ))}
@@ -838,11 +1159,21 @@ export default function App() {
             </div>
           )}
 
+          {customizeOverlayId != null && (
+            <div className="customize-chip">
+              <span className="customize-chip-icon">◈</span>
+              <span>Customizing figure — describe your changes below</span>
+              <button className="dismiss-btn" onClick={() => setCustomizeOverlayId(null)}>✕</button>
+            </div>
+          )}
+
           <div className="chat-input-row">
             <textarea
               ref={chatInputRef}
               className="chat-input"
-              placeholder={pdfUrl ? (pinnedContext ? 'Ask about the selection…' : 'Ask anything about this PDF…') : 'Open a PDF first'}
+              placeholder={customizeOverlayId != null
+                ? 'e.g. "make the nodes larger" or "add labels to the arrows"…'
+                : pdfUrl ? (pinnedContext ? 'Ask about the selection…' : 'Ask anything about this PDF…') : 'Open a PDF first'}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={onKeyDown}

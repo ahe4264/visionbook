@@ -27,6 +27,22 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:3000')
   .filter(Boolean);
 const generationJobs = new Map();
 
+// Prevent crashes from unhandled rejections / exceptions
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message);
+});
+
+// Periodically evict jobs older than 30 minutes to free memory
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, job] of generationJobs) {
+    if (new Date(job.updatedAt).getTime() < cutoff) generationJobs.delete(id);
+  }
+}, 5 * 60 * 1000); // run every 5 minutes
+
 // ── Paths ─────────────────────────────────────────────────────────────────────
 const EXPERIMENTS_DIR = path.join(__dirname, '..', '..', 'prompt_experiments');
 const FIGURES_DIR = path.join(__dirname, '..', '..', 'figures');
@@ -170,7 +186,7 @@ app.post('/api/plan-2d', async (req, res) => {
 
 // ── POST /api/generate-2d-async ───────────────────────────────────────────────
 app.post('/api/generate-2d-async', (req, res) => {
-  const { base64, mediaType, filename, plan, model: requestedModel } = req.body;
+  const { base64, mediaType, filename, plan, model: requestedModel, iframeWidth, iframeHeight } = req.body;
   if (!base64 || !mediaType || !filename) {
     return res.status(400).json({ error: 'base64, mediaType, and filename are required.' });
   }
@@ -179,7 +195,7 @@ app.post('/api/generate-2d-async', (req, res) => {
   const jobId = makeId();
   generationJobs.set(jobId, { id: jobId, status: 'running', type: '2d', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
 
-  generate2dFigureHtml({ modelId, base64, mediaType, plan })
+  generate2dFigureHtml({ modelId, base64, mediaType, plan, iframeWidth, iframeHeight })
     .then(html => {
       if (!html.trimStart().startsWith('<')) throw new Error('Model did not return valid HTML.');
       const figureId = makeId();
@@ -190,7 +206,8 @@ app.post('/api/generate-2d-async', (req, res) => {
         base64thumb: base64, mediaType,
       };
       fs.writeFileSync(path.join(RESULTS_DIR, `${figureId}.json`), JSON.stringify(record, null, 2));
-      updateGenerationJob(jobId, { status: 'done', result: { html, figureId, timestamp, model: modelId } });
+      // Don't store html in memory — it's already on disk. Keep only the reference.
+      updateGenerationJob(jobId, { status: 'done', result: { figureId, timestamp, model: modelId } });
     })
     .catch(err => {
       console.error(`[generate-2d] ${filename}:`, err?.message || err);
@@ -346,7 +363,9 @@ app.post('/api/generate-async', (req, res) => {
   // Run immediately — no queue, full parallelism
   generateFigure(req.body)
     .then((result) => {
-      updateGenerationJob(jobId, { status: 'done', result });
+      // Don't store html in memory — already on disk. Keep only the reference.
+      const { html: _html, ...resultRef } = result;
+      updateGenerationJob(jobId, { status: 'done', result: resultRef });
     })
     .catch((err) => {
       updateGenerationJob(jobId, {
@@ -362,6 +381,17 @@ app.post('/api/generate-async', (req, res) => {
 app.get('/api/generate-status/:id', (req, res) => {
   const job = generationJobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Generation job not found.' });
+
+  // If done and result has a figureId, read html from disk rather than memory
+  if (job.status === 'done' && job.result?.figureId && !job.result?.html) {
+    try {
+      const filePath = path.join(RESULTS_DIR, `${job.result.figureId}.json`);
+      const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      return res.json({ ...job, result: { ...job.result, html: record.html } });
+    } catch {
+      // Fall through — return job without html if file can't be read
+    }
+  }
   return res.json(job);
 });
 

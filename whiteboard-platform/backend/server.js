@@ -6,13 +6,15 @@ const Anthropic = require('@anthropic-ai/sdk');
 const app = express();
 const PORT = process.env.PORT || 3003;
 
-app.use(cors({ origin: 'http://localhost:3000' }));
+app.use(cors({
+  origin: (origin, cb) => cb(null, true), // allow all origins (local dev)
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 app.post('/api/chat', async (req, res) => {
-  const { messages, bookTitle, currentPage, pageText, readingSection, tutorMode, isTutorCheckin } = req.body;
+  const { messages, bookTitle, currentPage, pageText, readingSection, tutorMode, isTutorCheckin, outlineContext } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'messages array required' });
@@ -28,15 +30,34 @@ app.post('/api/chat', async (req, res) => {
     ? `\n\nPage ${currentPage}${bookTitle ? ` of "${bookTitle}"` : ''}.${pageText ? `\n\nPage text:\n"""\n${pageText.slice(0, 2000)}\n"""` : ''}${sectionCtx}`
     : '';
 
-  const tutorInstructions = tutorMode ? `\n\nTUTOR MODE ON.
+  const outlineSection = outlineContext
+    ? `\n\nBOOK OUTLINE (use these page numbers for [GOTO:N]):\n${outlineContext.slice(0, 1500)}`
+    : '';
+
+  const tutorInstructions = tutorMode ? `\n\nTUTOR MODE — STRICT SOCRATIC METHOD.${outlineSection}
+
 ${isTutorCheckin
-  ? `The user has been reading the section above for 10+ seconds. Ask them ONE question about it.
-RULES: Output ONLY the question — no intro, no "Here's a question:", no preamble. Max 15 words. Make it specific to the section content.
-Good example: "Why do we square the differences instead of just summing them?"
-Bad example: "Great, you've been reading about loss functions! Here's my question for you: Why do we..."
-`
-  : `React to their answer in 1–2 sentences max: quick feedback + one short follow-up question.
-If confused, offer a visualization. Stay Socratic — no lectures.`}` : '';
+  ? `The user has been reading for a while. Ask ONE short question about what they're reading.
+Hook + question only. Max 20 words total. No explanation. No [HIGHLIGHT] or [GOTO] tags.
+70% open: "Here's a thought — why would adding more hidden units not always help?"
+30% MC: "Quick one — what does ReLU output for negative inputs? A) 0  B) the input  C) −1"
+Output ONLY the question. Nothing else.`
+  : `━━━ RULES (non-negotiable) ━━━
+1. NEVER give direct answers or explanations unprompted. Guide — don't teach.
+2. MAX RESPONSE: 2 short sentences + 1 question. No bullet-point lectures. No walls of text.
+3. When user asks about a concept:
+   • If it's in the current page text → ask what they think it means. Use [HIGHLIGHT:"verbatim phrase"] ONLY when pointing them to read a specific passage (not on every reply).
+   • If it's on a different page → [GOTO:N] to take them there, optionally [HIGHLIGHT:"phrase"] on that page.
+   • If they're stuck after 2 exchanges → give ONE sentence hint, then ask them to complete the thought.
+   • Do NOT emit [HIGHLIGHT] on every response — only when explicitly directing them to read something.
+4. Never apologize for page content or re-summarize the page. React only to what the user said.
+5. Offer a visualization ONLY if the user explicitly asks for one.
+6. CROSS-PAGE: Use the book outline above to find the right page number for [GOTO:N].
+
+━━━ TONE ━━━
+Warm, curious, brief. Like a good study partner — not a professor.
+"Interesting — what would happen if φ₀ were zero? [HIGHLIGHT:"the offset φ₀ controls the height"]"
+"Right track! Now look at [GOTO:28] — what does the figure there show you?"`}` : '';
 
   // For tutor check-ins: use a minimal system to avoid verbose responses
   const system = isTutorCheckin
@@ -47,6 +68,10 @@ Respond in a way that feels alive and interactive:
 - **Default to including a visualization** whenever it would help — diagrams for processes, interactive demos for math/physics concepts, animated flows for algorithms. Err on the side of building one rather than skipping it.
 - After your explanation, **ask the user one short follow-up question** to check understanding or deepen engagement (e.g. "Does that click? What part feels fuzzy?" or a quick conceptual question for them to answer).
 - Keep prose tight — no walls of text. Use headers, bold key terms, short bullet points.
+
+PDF HIGHLIGHTING: When pointing the user to a specific passage in the PDF, or when explaining something that appears in the current page text, include [HIGHLIGHT:"exact text"] tags in your response using the verbatim wording from the page context. Max 3 highlights, each 3–12 words. These tags are invisible to the user — the PDF viewer will yellow-highlight those passages automatically. Example: [HIGHLIGHT:"activation function must be nonlinear"]
+
+CROSS-PAGE NAVIGATION: If you need to refer the user to content on a specific different page (e.g., "this was defined back in section 2.1" or "let's look at figure 4.2"), include [GOTO:N] once at the end of your response where N is the page number. The reader will be automatically navigated there with a "back" button to return. Use sparingly — only when seeing that specific page adds real value to understanding. Do not use [GOTO:N] for the current page.
 
 When a visualization would help, output a self-contained interactive HTML visualization in a fenced code block:
 \`\`\`html
@@ -148,6 +173,225 @@ Use OrbitControls. Make it visually faithful, interactive, and genuinely educati
     res.json({ reply });
   } catch (err) {
     console.error('Claude error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/classify-figure ─────────────────────────────
+// Fast Haiku call: classifies an image as 'equation' or 'figure' in ~300ms
+app.post('/api/classify-figure', async (req, res) => {
+  const { imageData, imageMimeType = 'image/png' } = req.body;
+  if (!imageData) return res.status(400).json({ error: 'imageData required' });
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 5,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: imageMimeType, data: imageData } },
+          {
+            type: 'text',
+            text: `Is the PRIMARY content of this image a mathematical equation or formula block?
+
+Answer YES only if:
+- The image shows actual math notation (equations, formulas with =, +, variables, Greek letters)
+- The dominant content is math text arranged as equations
+
+Answer NO if:
+- It is a diagram, figure, chart, flowchart, architecture, graph, or illustration
+- It contains shapes, boxes, arrows, or node networks
+- It references an equation number ("Eq. 7.9") in a title but is itself a diagram
+
+Reply with only: YES or NO`,
+          },
+        ],
+      }],
+    });
+    const answer = response.content[0]?.text?.trim().toUpperCase();
+    res.json({ type: answer === 'YES' ? 'equation' : 'figure' });
+  } catch (err) {
+    console.error('[classify-figure] error:', err.message);
+    // On error, assume figure (safer fallback)
+    res.json({ type: 'figure' });
+  }
+});
+
+// ── POST /api/augment-equation ─────────────────────────────
+// Generates an interactive equation HTML. Call ONLY after classify-figure returns 'equation'.
+app.post('/api/augment-equation', async (req, res) => {
+  const { imageData, imageMimeType = 'image/png', bookTitle, pageText } = req.body;
+  if (!imageData) return res.status(400).json({ error: 'imageData required' });
+
+  const system = `You are augmenting a mathematical equation block from a PDF page.
+
+Reproduce the equations as HTML matching the original visually (white bg, same small font, same table layout), then make every symbol and every equation row fully interactive.
+
+━━━ FONT & SIZE (CRITICAL) ━━━
+- body font-size: 12px. Do NOT use MathJax or KaTeX — use Unicode + <i><sub><sup> only.
+- Line height: 1.9. Padding: 6px 10px. overflow-y: auto; width:100%; height:100%; background:#fff.
+
+━━━ LAYOUT ━━━
+- <table> with columns: LHS | = | RHS. Cell padding: 0 6px; vertical-align: middle; white-space: nowrap.
+- Each <td> MUST have white-space:nowrap so equation terms never wrap to a new line.
+
+━━━ COLOR CODING ━━━
+- Variables/unknowns: #2563eb  • Parameters (β,ω,φ,θ): #b45309
+- Functions (sin,exp,log…): #7c3aed  • Index letters (i,j,k): #16a34a
+- Operators/delimiters: #94a3b8  • Numbers: #374151
+
+━━━ USE THIS EXACT HTML STRUCTURE (fill in your content) ━━━
+
+\`\`\`html
+<!DOCTYPE html><html><head><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#fff;font:12px/1.9 Georgia,'Times New Roman',serif;color:#1a1a1a;padding:6px 10px;overflow-y:auto;width:100%;height:100%}
+table{border-collapse:collapse;width:100%}
+td{padding:1px 6px;vertical-align:middle;white-space:nowrap}
+.sym{border-radius:2px;cursor:help;transition:background 0.12s}
+.sym:hover,.sym.hl{background:rgba(74,126,245,0.15)}
+tr.eq-row{cursor:pointer}
+tr.eq-row:hover td{background:rgba(0,0,0,0.03)}
+#tt{display:none;position:fixed;z-index:9999;pointer-events:none;
+  background:rgba(255,252,245,0.82);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  color:#333;font:11px/1.3 system-ui,sans-serif;padding:3px 8px;border-radius:4px;
+  border:1px solid rgba(0,0,0,0.1);max-width:150px;white-space:nowrap;
+  box-shadow:0 2px 6px rgba(0,0,0,0.12)}
+#pop{display:none;position:fixed;bottom:8px;left:8px;right:8px;
+  background:rgba(255,252,245,0.88);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(0,0,0,0.08);border-radius:9px;
+  padding:8px 12px;font:11px/1.5 system-ui,sans-serif;color:#222;z-index:101;
+  max-height:26%;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,0.1)}
+#pop strong{display:block;font-size:12px;margin-bottom:2px;color:#111}
+#pop-x{float:right;cursor:pointer;color:rgba(0,0,0,0.3);font-size:15px;line-height:1;margin-left:8px}
+#pop-x:hover{color:rgba(0,0,0,0.7)}
+.guide-body{display:none;margin-top:6px}
+.guide-hd{cursor:pointer;font-size:11px;color:#888;user-select:none}
+</style></head><body>
+<div id="tt"></div>
+<div id="pop"><span id="pop-x">×</span><strong id="pop-t"></strong><span id="pop-b"></span></div>
+
+<!-- YOUR EQUATIONS TABLE:
+  Each <tr> gets class="eq-row" + data-title="equation meaning" + data-body="full explanation"
+  Each meaningful symbol gets class="sym" + data-tip="what it means" + data-v="varname" (for cross-highlighting)
+  Example fraction: <span class="sym" data-tip="partial derivative of loss w.r.t. f₂" data-v="li_f2">∂ℓᵢ/∂f₂</span>
+-->
+<table>
+  FILL IN YOUR EQUATIONS HERE
+</table>
+
+<div style="border-top:1px dashed #ddd;margin-top:8px;padding-top:4px">
+  <span class="guide-hd" onclick="var b=this.nextElementSibling;b.style.display=b.style.display==='block'?'none':'block';this.textContent=this.textContent[0]==='▸'?'▾ Symbol guide':'▸ Symbol guide'">▸ Symbol guide</span>
+  <div class="guide-body" style="font-size:11px;color:#555;line-height:1.8">
+    FILL IN SYMBOL GUIDE ROWS: <b>symbol</b> — meaning<br>
+  </div>
+</div>
+
+<script>
+const tt=document.getElementById('tt'),pop=document.getElementById('pop');
+document.getElementById('pop-x').onclick=()=>pop.style.display='none';
+document.addEventListener('keydown',e=>{if(e.key==='Escape')pop.style.display='none'});
+
+// Tooltip + cross-highlight on hover
+document.querySelectorAll('.sym').forEach(el=>{
+  el.addEventListener('mouseenter',()=>{
+    tt.textContent=el.dataset.tip||'';
+    tt.style.display='block';
+    // Position after paint so offsetHeight/Width are correct
+    requestAnimationFrame(()=>{
+      const r=el.getBoundingClientRect();
+      let top=r.top-tt.offsetHeight-8, left=r.left+r.width/2-tt.offsetWidth/2;
+      if(top<4)top=r.bottom+8;
+      left=Math.max(4,Math.min(left,window.innerWidth-tt.offsetWidth-4));
+      tt.style.top=top+'px';tt.style.left=left+'px';
+    });
+    if(el.dataset.v)document.querySelectorAll('[data-v="'+el.dataset.v+'"]').forEach(s=>s.classList.add('hl'));
+  });
+  el.addEventListener('mouseleave',()=>{
+    tt.style.display='none';
+    document.querySelectorAll('.hl').forEach(s=>s.classList.remove('hl'));
+  });
+});
+
+// Click row → bottom popup
+document.querySelectorAll('.eq-row').forEach(row=>{
+  row.addEventListener('click',()=>{
+    document.getElementById('pop-t').textContent=row.dataset.title||'';
+    document.getElementById('pop-b').textContent=row.dataset.body||'';
+    pop.style.display='block';
+  });
+});
+</script></body></html>
+\`\`\`
+
+Fill in ALL equations from the image. Every symbol that has mathematical meaning gets class="sym" data-tip data-v. Every equation row gets data-title and data-body explaining what that equation means in the context of the derivation.
+${bookTitle ? `Context: from "${bookTitle}".` : ''}
+${pageText ? `Page context (use to write accurate explanations):\n"""\n${pageText.slice(0, 800)}\n"""` : ''}`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      max_tokens: 5000,
+      system,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: imageMimeType, data: imageData } },
+          { type: 'text', text: 'Reproduce this equation block as interactive HTML. Font size MUST be 12px. Use Unicode math, not MathJax.' },
+        ],
+      }],
+    });
+
+    const reply = response.content[0]?.text?.trim() || '';
+    const html = reply.replace(/^```html?\s*/i, '').replace(/\s*```\s*$/, '');
+    if (!html.trimStart().startsWith('<')) {
+      return res.status(500).json({ error: 'Model did not return valid HTML' });
+    }
+    res.json({ html });
+  } catch (err) {
+    console.error('[augment-equation] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/modify-figure ────────────────────────────────
+// Takes an existing interactive figure HTML + a user request and returns modified HTML
+app.post('/api/modify-figure', async (req, res) => {
+  const { currentHtml, request, bookTitle, pageText } = req.body;
+  if (!currentHtml || !request) return res.status(400).json({ error: 'currentHtml and request required' });
+
+  const system = `You are modifying an existing interactive figure HTML document based on a user request.
+
+Rules:
+- Return ONLY the complete modified HTML document — no markdown, no explanation, no code fences
+- Preserve all existing interactive features (Three.js scene, SVG structure, controls) unless the request changes them
+- Make ONLY the changes the user asked for — don't refactor or redesign unrelated parts
+- The output must be fully self-contained and valid HTML
+- Keep background colors and overall style consistent with the original
+${bookTitle ? `Context: figure is from "${bookTitle}".` : ''}
+${pageText ? `Page context:\n"""\n${pageText.slice(0, 600)}\n"""` : ''}`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      max_tokens: 8192,
+      system,
+      messages: [{
+        role: 'user',
+        content: `User request: "${request}"\n\nCurrent HTML:\n${currentHtml}`,
+      }],
+    });
+
+    const reply = response.content[0]?.text?.trim() || '';
+    // Strip any accidental code fences
+    const cleaned = reply.replace(/^```html?\s*/i, '').replace(/\s*```\s*$/, '');
+    if (!cleaned.trimStart().startsWith('<')) {
+      return res.status(500).json({ error: 'Model did not return valid HTML' });
+    }
+    res.json({ html: cleaned });
+  } catch (err) {
+    console.error('[modify-figure] error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
