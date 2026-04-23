@@ -13,7 +13,9 @@ const {
   saveRecord,
 } = require('./figure_pipeline');
 const { planForFigure, planChapter } = require('./planner');
-const { listChapters, list3dCandidates } = require('./chapter-discovery');
+const { plan2dFigure } = require('./planner-2d');
+const { generate2dFigureHtml } = require('./generation-2d');
+const { listChapters, list3dCandidates, list2dCandidates } = require('./chapter-discovery');
 const { getAvailableModels } = require('./models');
 const { upsertEvaluation } = require('./result_schema');
 
@@ -104,28 +106,30 @@ app.get('/api/models', (req, res) => {
   res.json(getAvailableModels());
 });
 
-// ── GET /api/chapters — list chapters with 3D candidate counts ────────────────
+// ── GET /api/chapters — list chapters with 3D + 2D candidate counts ──────────
 app.get('/api/chapters', (req, res) => {
   try {
-    const chapters = listChapters();
-    return res.json(chapters);
+    return res.json(listChapters());
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// ── GET /api/chapter-candidates/:chapter — list 3D candidate images in a chapter ─
+// ── GET /api/chapter-candidates/:chapter — list 3D + 2D candidates ───────────
 app.get('/api/chapter-candidates/:chapter', (req, res) => {
-  try {
-    const candidates = list3dCandidates(req.params.chapter);
-    // Return filename + base64 thumbnail for each
-    const result = candidates.map(c => {
+  function readCandidates(list, type) {
+    return list.map(c => {
       const base64 = fs.readFileSync(c.fullPath).toString('base64');
       const ext = path.extname(c.filename).toLowerCase();
-      const mediaType = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-      return { filename: c.filename, stem: c.stem, base64, mediaType };
+      const mediaType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+      return { filename: c.filename, stem: c.stem, base64, mediaType, type };
     });
-    return res.json(result);
+  }
+  try {
+    const chapter = req.params.chapter;
+    const candidates3d = readCandidates(list3dCandidates(chapter), '3d');
+    const candidates2d = readCandidates(list2dCandidates(chapter), '2d');
+    return res.json([...candidates3d, ...candidates2d]);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -146,6 +150,54 @@ app.post('/api/plan', async (req, res) => {
     console.error('Plan error:', err?.message || err);
     return res.status(500).json({ error: err?.message || 'Planning failed.' });
   }
+});
+
+// ── POST /api/plan-2d — vision-based plan for a 2D figure ────────────────────
+app.post('/api/plan-2d', async (req, res) => {
+  const { filename, base64, mediaType, chapterHint } = req.body;
+  if (!filename || !base64 || !mediaType) {
+    return res.status(400).json({ error: 'filename, base64, and mediaType are required.' });
+  }
+  const stem = filename.replace(/\.[^.]+$/, '');
+  try {
+    const plan = await plan2dFigure(stem, chapterHint || null, base64, mediaType);
+    return res.json(plan);
+  } catch (err) {
+    console.error('Plan-2d error:', err?.message || err);
+    return res.status(500).json({ error: err?.message || '2D planning failed.' });
+  }
+});
+
+// ── POST /api/generate-2d-async ───────────────────────────────────────────────
+app.post('/api/generate-2d-async', (req, res) => {
+  const { base64, mediaType, filename, plan, model: requestedModel } = req.body;
+  if (!base64 || !mediaType || !filename) {
+    return res.status(400).json({ error: 'base64, mediaType, and filename are required.' });
+  }
+
+  const modelId = requestedModel || CURRENT_MODEL;
+  const jobId = makeId();
+  generationJobs.set(jobId, { id: jobId, status: 'running', type: '2d', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+
+  generate2dFigureHtml({ modelId, base64, mediaType, plan })
+    .then(html => {
+      if (!html.trimStart().startsWith('<')) throw new Error('Model did not return valid HTML.');
+      const figureId = makeId();
+      const timestamp = new Date().toISOString();
+      const record = {
+        id: figureId, filename, html, timestamp,
+        source: 'api', type: '2d', model: modelId,
+        base64thumb: base64, mediaType,
+      };
+      fs.writeFileSync(path.join(RESULTS_DIR, `${figureId}.json`), JSON.stringify(record, null, 2));
+      updateGenerationJob(jobId, { status: 'done', result: { html, figureId, timestamp, model: modelId } });
+    })
+    .catch(err => {
+      console.error(`[generate-2d] ${filename}:`, err?.message || err);
+      updateGenerationJob(jobId, { status: 'error', error: err?.message || 'Generation failed.' });
+    });
+
+  return res.status(202).json({ jobId });
 });
 
 // ── POST /api/plan-chapter — plan all 3D candidates in a chapter ─────────────

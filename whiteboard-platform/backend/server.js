@@ -12,7 +12,7 @@ app.use(express.json({ limit: '10mb' }));
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 app.post('/api/chat', async (req, res) => {
-  const { messages, bookTitle, currentPage, pageText, tutorMode } = req.body;
+  const { messages, bookTitle, currentPage, pageText, readingSection, tutorMode, isTutorCheckin } = req.body;
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'messages array required' });
@@ -20,17 +20,28 @@ app.post('/api/chat', async (req, res) => {
 
   const hasImage = messages.some(m => m.imageData);
 
-  const pageContext = currentPage
-    ? `\n\nThe user is currently on **page ${currentPage}**${bookTitle ? ` of "${bookTitle}"` : ''}.${pageText ? `\n\nPage ${currentPage} content:\n"""\n${pageText}\n"""` : ''}`
+  const sectionCtx = readingSection
+    ? `\n\nSection the user is reading:\n"""\n${readingSection.slice(0, 500)}\n"""`
     : '';
 
-  const tutorInstructions = tutorMode ? `\n\nYou are in **Tutor Mode**. Your primary job is to actively test the user's understanding:
-- When you receive a [TUTOR_CHECKIN] message, the user just arrived at a new page. Read the page content carefully, then ask them ONE focused question about the key concept on that page. Don't explain yet — wait for their answer first.
-- After they answer, give brief targeted feedback, then either go deeper or move on.
-- Keep them engaged: probe misconceptions, ask "why", connect to prior pages.
-- Use a Socratic style — guide them to the answer rather than giving it outright.` : '';
+  const pageContext = currentPage
+    ? `\n\nPage ${currentPage}${bookTitle ? ` of "${bookTitle}"` : ''}.${pageText ? `\n\nPage text:\n"""\n${pageText.slice(0, 2000)}\n"""` : ''}${sectionCtx}`
+    : '';
 
-  const system = `You are an engaging tutor helping the user understand a PDF${bookTitle ? ` titled "${bookTitle}"` : ''}. When the user quotes text (prefixed with >), use it as context for their question.${pageContext}${tutorInstructions}
+  const tutorInstructions = tutorMode ? `\n\nTUTOR MODE ON.
+${isTutorCheckin
+  ? `The user has been reading the section above for 10+ seconds. Ask them ONE question about it.
+RULES: Output ONLY the question — no intro, no "Here's a question:", no preamble. Max 15 words. Make it specific to the section content.
+Good example: "Why do we square the differences instead of just summing them?"
+Bad example: "Great, you've been reading about loss functions! Here's my question for you: Why do we..."
+`
+  : `React to their answer in 1–2 sentences max: quick feedback + one short follow-up question.
+If confused, offer a visualization. Stay Socratic — no lectures.`}` : '';
+
+  // For tutor check-ins: use a minimal system to avoid verbose responses
+  const system = isTutorCheckin
+    ? `You are a Socratic tutor. ${pageContext}${tutorInstructions}`
+    : `You are an engaging tutor helping the user understand a PDF${bookTitle ? ` titled "${bookTitle}"` : ''}. When the user quotes text (prefixed with >), use it as context for their question.${pageContext}${tutorInstructions}
 
 Respond in a way that feels alive and interactive:
 - **Default to including a visualization** whenever it would help — diagrams for processes, interactive demos for math/physics concepts, animated flows for algorithms. Err on the side of building one rather than skipping it.
@@ -94,32 +105,43 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 Use OrbitControls. Make it visually faithful, interactive, and genuinely educational.`;
 
   // Reformat messages — convert imageData fields to Claude multipart format, strip internal fields
-  const formattedMessages = messages.map(m => {
-    if (m.imageData) {
-      return {
-        role: m.role,
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: m.imageMimeType || 'image/png',
-              data: m.imageData,
+  const formattedMessages = messages
+    .filter(m => !m._tutorCheckin) // strip internal check-in markers
+    .map(m => {
+      if (m.imageData) {
+        return {
+          role: m.role,
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: m.imageMimeType || 'image/png',
+                data: m.imageData,
+              },
             },
-          },
-          { type: 'text', text: m.content },
-        ],
-      };
+            { type: 'text', text: m.content },
+          ],
+        };
+      }
+      return { role: m.role, content: m.content };
+    }).filter(m => m.content && (Array.isArray(m.content) ? m.content.length > 0 : m.content.trim()));
+
+  // Ensure message list ends with a user turn (required by Claude API)
+  const apiMessages = (() => {
+    const msgs = [...formattedMessages];
+    if (msgs.length === 0 || msgs[msgs.length - 1].role !== 'user') {
+      msgs.push({ role: 'user', content: isTutorCheckin ? 'Ask me a question.' : 'Continue.' });
     }
-    return { role: m.role, content: m.content };
-  }).filter(m => m.content && (Array.isArray(m.content) ? m.content.length > 0 : m.content.trim()));
+    return msgs;
+  })();
 
   try {
     const response = await anthropic.messages.create({
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
-      max_tokens: hasImage ? 8192 : 4096,
+      max_tokens: isTutorCheckin ? 80 : hasImage ? 8192 : 4096,
       system,
-      messages: formattedMessages,
+      messages: apiMessages,
     });
 
     const reply = response.content[0]?.text || '';

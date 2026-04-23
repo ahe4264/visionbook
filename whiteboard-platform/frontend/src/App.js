@@ -33,15 +33,28 @@ function MessageContent({ content }) {
   }
   if (last < content.length) parts.push({ type: 'md', content: content.slice(last) });
 
+  // If there's any HTML visualization, show only the iframes — skip surrounding markdown
+  const hasHtml = parts.some(p => p.type === 'html');
+
   return (
     <>
       {parts.map((part, i) =>
         part.type === 'html'
           ? <iframe key={i} className="viz-frame" srcDoc={injectBg(part.content)} sandbox="allow-scripts" title="visualization" />
+          : hasHtml ? null
           : <div key={i} className="md"><ReactMarkdown>{part.content}</ReactMarkdown></div>
       )}
     </>
   );
+}
+
+// ── Extract section text at a scroll fraction ────────────
+function getSectionAtFraction(text, fraction) {
+  if (!text) return '';
+  const pos = Math.floor(fraction * text.length);
+  const raw = text.slice(Math.max(0, pos - 50), Math.min(text.length, pos + 400));
+  const dot = raw.indexOf('. ');
+  return (dot > 0 && dot < 80) ? raw.slice(dot + 2) : raw;
 }
 
 // ── Flatten all outline page numbers ─────────────────────
@@ -98,7 +111,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Tutor / page-awareness state
-  const [tutorMode, setTutorMode]     = useState(false);
+  const [tutorMode, setTutorMode]     = useState(true);
   const [pageText, setPageText]       = useState('');
   const pageTextCache                 = useRef(new Map()); // page# → extracted text
 
@@ -120,6 +133,23 @@ export default function App() {
   const [capturing, setCapturing]   = useState(false);
   const dragStartRef = useRef(null);
 
+  // Inline interactive figure overlays — persisted to localStorage keyed by PDF title
+  const [figureOverlays, setFigureOverlaysRaw] = useState([]);
+  const overlayIdRef = useRef(0);
+
+  const setFigureOverlays = useCallback((updater) => {
+    setFigureOverlaysRaw(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      // Persist only completed overlays (not loading ones) keyed by document title
+      try {
+        const key = `overlays:${title || '_'}`;
+        const toSave = next.filter(o => !o.loading && o.html);
+        localStorage.setItem(key, JSON.stringify(toSave));
+      } catch {}
+      return next;
+    });
+  }, [title]);
+
   const fileInputRef       = useRef(null);
   const chatBottomRef      = useRef(null);
   const chatInputRef       = useRef(null);
@@ -128,6 +158,21 @@ export default function App() {
   const pageVisibility     = useRef(new Map());
   const pdfDocRef          = useRef(null);
   const tutorTimerRef      = useRef(null);
+  const dwellTimerRef      = useRef(null);
+  const scrollFractionRef  = useRef(0);
+  const lastCheckinRef     = useRef(0);
+
+  // Stable refs so dwell callback reads current values without re-attaching scroll listeners
+  const tutorModeRef    = useRef(tutorMode);
+  const loadingRef      = useRef(loading);
+  const messagesRef     = useRef(messages);
+  const titleRef        = useRef(title);
+  const currentPageRef  = useRef(currentPage);
+  tutorModeRef.current   = tutorMode;
+  loadingRef.current     = loading;
+  messagesRef.current    = messages;
+  titleRef.current       = title;
+  currentPageRef.current = currentPage;
 
   // ── File open ────────────────────────────────────────────
   const onFileChange = useCallback((e) => {
@@ -135,12 +180,24 @@ export default function App() {
     if (!file) return;
     if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     const url = URL.createObjectURL(file);
+    const docTitle = file.name.replace(/\.pdf$/i, '');
     setPdfUrl(url);
-    setTitle(file.name.replace(/\.pdf$/i, ''));
+    setTitle(docTitle);
     setCurrentPage(1); setPageInput('1'); setNumPages(null);
     setOutline([]); setMessages([]);
     setSelectMode(false); setSelRect(null); setPopupPos(null);
     pageTextCache.current.clear(); setPageText('');
+    // Restore saved overlays for this document
+    try {
+      const saved = localStorage.getItem(`overlays:${docTitle}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setFigureOverlaysRaw(parsed);
+        overlayIdRef.current = parsed.length ? Math.max(...parsed.map(o => o.id)) : 0;
+      } else {
+        setFigureOverlaysRaw([]);
+      }
+    } catch { setFigureOverlaysRaw([]); }
     e.target.value = '';
   }, [pdfUrl]);
 
@@ -209,45 +266,100 @@ export default function App() {
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
   }, [pdfUrl]);
 
-  // ── Page text + tutor check-in ───────────────────────────
+  // ── Page text extraction ──────────────────────────────────
   useEffect(() => {
     if (!pdfDocRef.current) return;
     extractPageText(currentPage).then(text => setPageText(text));
+  }, [currentPage, extractPageText]);
 
-    if (!tutorMode) return;
-    clearTimeout(tutorTimerRef.current);
-    tutorTimerRef.current = setTimeout(async () => {
-      const text = await extractPageText(currentPage);
+  // ── Dwell-based tutor check-in ────────────────────────────
+  // Fires ONE short question after the user has been on a section for 10s.
+  // Resets whenever the user scrolls significantly (>5% of page height).
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const fireDwellCheckin = async () => {
+      if (!tutorModeRef.current || loadingRef.current) return;
+      const now = Date.now();
+      if (now - lastCheckinRef.current < 30000) return; // 30s cooldown between questions
+      lastCheckinRef.current = now;
+
+      const page   = currentPageRef.current;
+      const frac   = scrollFractionRef.current;
+      const text   = await extractPageText(page);
       if (!text) return;
+      const readingSection = getSectionAtFraction(text, frac);
+
       setLoading(true);
-      const systemMsg = {
-        role: 'user',
-        content: `[TUTOR_CHECKIN] I just arrived at page ${currentPage}.`,
-        _tutorCheckin: true,
-      };
-      const next = [...messages.filter(m => !m._tutorCheckin), systemMsg];
+      // Build API message list — must end with a user turn
+      const history = messagesRef.current.filter(m => !m._tutorCheckin);
+      const needsUserEnd = history.length === 0 || history[history.length - 1].role !== 'user';
+      const checkinMsg = { role: 'user', content: `[CHECKIN]`, _tutorCheckin: true };
+      const apiMsgs = needsUserEnd ? [...history, checkinMsg] : history;
+
       try {
         const res = await fetch(`${BACKEND}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: next, bookTitle: title, currentPage, pageText: text, tutorMode: true }),
+          body: JSON.stringify({
+            messages: apiMsgs,
+            bookTitle: titleRef.current,
+            currentPage: page,
+            pageText: text,
+            readingSection,
+            tutorMode: true,
+            isTutorCheckin: true,
+          }),
         });
         const data = await res.json();
-        if (res.ok) setMessages(m => [...m, systemMsg, { role: 'assistant', content: data.reply }]);
-      } catch (err) {
-        setMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}` }]);
-      } finally { setLoading(false); }
-    }, 3000);
+        if (res.ok && data.reply) {
+          setMessages(m => [...m, { role: 'assistant', content: data.reply }]);
+        }
+      } catch {} finally { setLoading(false); }
+    };
 
-    return () => clearTimeout(tutorTimerRef.current);
+    const startDwellTimer = () => {
+      clearTimeout(dwellTimerRef.current);
+      dwellTimerRef.current = setTimeout(fireDwellCheckin, 10000); // 10s dwell
+    };
+
+    const onScroll = () => {
+      const ref = pageRefs.current[currentPageRef.current - 1];
+      if (ref) {
+        const cr = container.getBoundingClientRect();
+        const pr = ref.getBoundingClientRect();
+        const newFrac = Math.max(0, Math.min(1, (cr.top + cr.height * 0.4 - pr.top) / pr.height));
+        const moved = Math.abs(newFrac - scrollFractionRef.current) > 0.05;
+        scrollFractionRef.current = newFrac;
+        if (moved) startDwellTimer();
+      }
+    };
+
+    // Also start timer on page arrival
+    startDwellTimer();
+
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', onScroll);
+      clearTimeout(dwellTimerRef.current);
+    };
+  // Re-attach when page changes so startDwellTimer fires for the new page.
+  // tutorMode changes are handled via ref — no re-attach needed.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, tutorMode]);
+  }, [currentPage, extractPageText]);
 
   // ── Figure select ─────────────────────────────────────────
+  // Convert viewport coords → pdf-scroll-inner coords (accounts for padding + scroll)
   const toScrollCoords = (clientX, clientY) => {
     const c = scrollContainerRef.current;
     const r = c.getBoundingClientRect();
-    return { x: clientX - r.left + c.scrollLeft, y: clientY - r.top + c.scrollTop };
+    const pl = parseFloat(getComputedStyle(c).paddingLeft) || 0;
+    const pt = parseFloat(getComputedStyle(c).paddingTop) || 0;
+    return {
+      x: clientX - r.left - pl + c.scrollLeft,
+      y: clientY - r.top  - pt + c.scrollTop,
+    };
   };
 
   const onSelMouseDown = useCallback((e) => {
@@ -303,8 +415,10 @@ export default function App() {
         const canvas = wrapper.querySelector('canvas');
         if (!canvas) return;
         const cr = canvas.getBoundingClientRect();
-        const canvasLeft = cr.left - containerRect.left + container.scrollLeft;
-        const canvasTop  = cr.top  - containerRect.top  + container.scrollTop;
+        const pl = parseFloat(getComputedStyle(container).paddingLeft) || 0;
+        const pt = parseFloat(getComputedStyle(container).paddingTop)  || 0;
+        const canvasLeft = cr.left - containerRect.left - pl + container.scrollLeft;
+        const canvasTop  = cr.top  - containerRect.top  - pt + container.scrollTop;
         const ix1 = Math.max(selRect.x, canvasLeft), iy1 = Math.max(selRect.y, canvasTop);
         const ix2 = Math.min(selRect.x + selRect.w, canvasLeft + cr.width);
         const iy2 = Math.min(selRect.y + selRect.h, canvasTop + cr.height);
@@ -337,6 +451,86 @@ export default function App() {
       setMessages(m => [...m, { role: 'assistant', content: `Error: ${err.message}` }]);
     } finally { setLoading(false); setCapturing(false); }
   }, [selRect, messages, title]);
+
+  // ── Inline interactive figure overlay ─────────────────────
+  const FIGURE_BACKEND = 'http://localhost:3001';
+
+  const captureAndMakeInteractive = useCallback(async () => {
+    if (!selRect || selRect.w < 10 || selRect.h < 10) return;
+    setCapturing(true);
+    const id = ++overlayIdRef.current;
+    try {
+      // Capture the selected region from the PDF canvas(es)
+      const container = scrollContainerRef.current;
+      const containerRect = container.getBoundingClientRect();
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width  = Math.round(selRect.w);
+      outCanvas.height = Math.round(selRect.h);
+      const ctx = outCanvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+      container.querySelectorAll('.pdf-page-wrapper').forEach(wrapper => {
+        const canvas = wrapper.querySelector('canvas');
+        if (!canvas) return;
+        const cr = canvas.getBoundingClientRect();
+        const pl = parseFloat(getComputedStyle(container).paddingLeft) || 0;
+        const pt = parseFloat(getComputedStyle(container).paddingTop)  || 0;
+        const canvasLeft = cr.left - containerRect.left - pl + container.scrollLeft;
+        const canvasTop  = cr.top  - containerRect.top  - pt + container.scrollTop;
+        const ix1 = Math.max(selRect.x, canvasLeft), iy1 = Math.max(selRect.y, canvasTop);
+        const ix2 = Math.min(selRect.x + selRect.w, canvasLeft + cr.width);
+        const iy2 = Math.min(selRect.y + selRect.h, canvasTop + cr.height);
+        if (ix2 <= ix1 || iy2 <= iy1) return;
+        const dpr = canvas.width / cr.width;
+        ctx.drawImage(canvas,
+          (ix1 - canvasLeft) * dpr, (iy1 - canvasTop) * dpr, (ix2 - ix1) * dpr, (iy2 - iy1) * dpr,
+          ix1 - selRect.x, iy1 - selRect.y, ix2 - ix1, iy2 - iy1);
+      });
+      const base64 = outCanvas.toDataURL('image/png').split(',')[1];
+
+      // Place loading overlay immediately at the selection position
+      setFigureOverlays(prev => [...prev, { id, scrollRect: { ...selRect }, html: null, loading: true, visible: true }]);
+      setSelectMode(false); setSelRect(null); setPopupPos(null);
+
+      // Plan
+      const planRes = await fetch(`${FIGURE_BACKEND}/api/plan-2d`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: `figure_${id}`, base64, mediaType: 'image/png' }),
+      });
+      const plan = await planRes.json();
+      if (!planRes.ok) throw new Error(plan.error || 'Planning failed');
+
+      // Start async generation
+      const genRes = await fetch(`${FIGURE_BACKEND}/api/generate-2d-async`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64, mediaType: 'image/png', filename: `figure_${id}`, plan, model: 'claude-opus-4.6' }),
+      });
+      const genData = await genRes.json();
+      if (!genRes.ok) throw new Error(genData.error || 'Generation failed');
+      const { jobId } = genData;
+
+      // Poll for completion
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const statusRes = await fetch(`${FIGURE_BACKEND}/api/generate-status/${jobId}`);
+        const statusData = await statusRes.json();
+        if (statusData.status === 'done') {
+          const html = statusData.result?.html || statusData.html || '';
+          setFigureOverlays(prev => prev.map(o =>
+            o.id === id ? { ...o, html, loading: false } : o
+          ));
+          return;
+        }
+        if (statusData.status === 'error') throw new Error(statusData.error || 'Generation failed');
+      }
+      throw new Error('Generation timed out');
+    } catch (err) {
+      setFigureOverlays(prev => prev.filter(o => o.id !== id));
+      setMessages(m => [...m, { role: 'assistant', content: `Interactive figure failed: ${err.message}` }]);
+    } finally { setCapturing(false); }
+  }, [selRect]);
 
   // ── Text selection ───────────────────────────────────────
   useEffect(() => {
@@ -455,13 +649,27 @@ export default function App() {
 
           <div className="pdf-content" style={{ position: 'relative' }}>
             {pdfUrl && (
-              <button
-                className={`float-3d-btn${selectMode ? ' active' : ''}`}
-                onClick={() => { setSelectMode(m => !m); setSelRect(null); setPopupPos(null); }}
-                title="Select a figure to make 3D (Esc to cancel)"
-              >
-                Figure → 3D
-              </button>
+              <div className="float-3d-btn-group">
+                <button
+                  className={`float-3d-btn${selectMode ? ' active' : ''}`}
+                  onClick={() => { setSelectMode(m => !m); setSelRect(null); setPopupPos(null); }}
+                  title="Select a figure to make interactive (Esc to cancel)"
+                >
+                  {selectMode ? 'Cancel' : 'Select Figure'}
+                </button>
+                {figureOverlays.filter(o => !o.loading).length > 0 && (
+                  <button
+                    className="float-3d-btn"
+                    onClick={() => {
+                      const anyVisible = figureOverlays.some(o => o.visible !== false && !o.loading);
+                      setFigureOverlays(prev => prev.map(o => ({ ...o, visible: !anyVisible })));
+                    }}
+                    title="Toggle all augmented figures"
+                  >
+                    {figureOverlays.some(o => o.visible !== false && !o.loading) ? '◉ Augmented on' : '○ Augmented off'}
+                  </button>
+                )}
+              </div>
             )}
             {!pdfUrl ? (
               <div className="empty-state" onClick={() => fileInputRef.current.click()}>
@@ -493,14 +701,81 @@ export default function App() {
                       )}
                       {popupPos && selRect && (
                         <div className="sel-popup" style={{ left: popupPos.x, top: popupPos.y }} onMouseDown={e => e.stopPropagation()}>
-                          <button className="make3d-btn" disabled={capturing} onClick={captureAndSend}>
-                            {capturing ? 'Working…' : '✦ Make 3D'}
+                          <button className="make3d-btn" disabled={capturing} onClick={captureAndMakeInteractive}>
+                            {capturing ? 'Working…' : '✦ Make Interactive'}
+                          </button>
+                          <button className="make3d-btn" style={{ background: '#2a2a2a' }} disabled={capturing} onClick={captureAndSend}>
+                            {capturing ? '…' : '3D → Chat'}
                           </button>
                           <button className="sel-cancel-btn" onClick={() => { setSelRect(null); setPopupPos(null); }}>✕</button>
                         </div>
                       )}
                     </div>
                   )}
+
+                  {/* Inline interactive figure overlays */}
+                  {figureOverlays.map(overlay => {
+                    const isVisible = overlay.visible !== false;
+                    return (
+                      <div key={overlay.id}>
+                        {/* The overlay — hidden when toggled off, revealing original PDF */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: overlay.scrollRect.x,
+                            top: overlay.scrollRect.y,
+                            width: overlay.scrollRect.w,
+                            height: overlay.scrollRect.h,
+                            zIndex: 20,
+                            overflow: 'hidden',
+                            background: '#fff',
+                            display: isVisible ? 'block' : 'none',
+                          }}
+                        >
+                          {overlay.loading ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#fff', color: '#999', gap: 10 }}>
+                              <div style={{ width: 22, height: 22, border: '2px solid #bbb', borderTopColor: '#555', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                              <span style={{ fontSize: 11, color: '#aaa' }}>Building interactive figure…</span>
+                            </div>
+                          ) : overlay.html ? (
+                            <iframe
+                              srcDoc={overlay.html}
+                              sandbox="allow-scripts allow-same-origin"
+                              style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+                              title={`interactive-figure-${overlay.id}`}
+                            />
+                          ) : null}
+                        </div>
+
+                        {/* Small toggle pill at top-right corner of the figure — always visible */}
+                        {!overlay.loading && overlay.html && (
+                          <button
+                            onClick={() => setFigureOverlays(prev =>
+                              prev.map(o => o.id === overlay.id ? { ...o, visible: !isVisible } : o)
+                            )}
+                            style={{
+                              position: 'absolute',
+                              left: overlay.scrollRect.x + overlay.scrollRect.w - 52,
+                              top: overlay.scrollRect.y - 16,
+                              zIndex: 25,
+                              background: isVisible ? 'rgba(60,120,220,0.85)' : 'rgba(120,120,120,0.7)',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: '4px 4px 0 0',
+                              fontSize: 9,
+                              padding: '2px 7px',
+                              cursor: 'pointer',
+                              backdropFilter: 'blur(4px)',
+                              letterSpacing: '0.03em',
+                            }}
+                            title={isVisible ? 'Show original' : 'Show interactive'}
+                          >
+                            {isVisible ? '◉ live' : '○ original'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -529,20 +804,16 @@ export default function App() {
                 <p>Open a PDF and start asking questions. Select text to quote it as context.</p>
               </div>
             )}
-            {messages.map((m, i) => (
-              m._tutorCheckin ? (
-                <div key={i} className="page-checkin-label">📖 Page {currentPage}</div>
-              ) : (
-                <div key={i} className={`message ${m.role}${m.content?.includes?.('```html') ? ' has-viz' : ''}`}>
-                  <div className="message-bubble">
-                    {m.imageData ? (
-                      <img src={`data:${m.imageMimeType || 'image/png'};base64,${m.imageData}`} className="msg-thumb" alt="figure" />
-                    ) : (
-                      <MessageContent content={m.displayContent ?? m.content ?? ''} />
-                    )}
-                  </div>
+            {messages.filter(m => !m._tutorCheckin).map((m, i) => (
+              <div key={i} className={`message ${m.role}${m.content?.includes?.('```html') ? ' has-viz' : ''}`}>
+                <div className="message-bubble">
+                  {m.imageData ? (
+                    <img src={`data:${m.imageMimeType || 'image/png'};base64,${m.imageData}`} className="msg-thumb" alt="figure" />
+                  ) : (
+                    <MessageContent content={m.displayContent ?? m.content ?? ''} />
+                  )}
                 </div>
-              )
+              </div>
             ))}
             {loading && (
               <div className="message assistant">
