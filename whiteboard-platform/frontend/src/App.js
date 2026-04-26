@@ -16,6 +16,117 @@ const BACKEND = 'http://localhost:3003';
 const BG = '#1e1e1e';
 const BG_INJECT = `<style>html,body{background:${BG}!important;margin:0}</style>`;
 
+// ── CSS injected into every figure iframe on load ─────────
+// Overrides popup/tooltip styles from cached old-generation figures
+const FIGURE_OVERRIDE_CSS = `
+#pop,#popup,.popup,.info-panel,.node-info,.detail-panel,
+[id*="popup"],[id*="pop"],[class*="popup"],[class*="panel"],[class*="info"] {
+  background:rgba(0,0,0,0.50)!important;
+  color:#fff!important;font-size:11px!important;line-height:1.5!important;
+  padding:8px 12px!important;max-height:26%!important;
+  border:1px solid rgba(255,255,255,0.1)!important;
+  border-radius:9px!important;box-shadow:0 4px 16px rgba(0,0,0,0.15)!important;
+  backdrop-filter:blur(14px)!important;-webkit-backdrop-filter:blur(14px)!important;
+}
+#tt,.tooltip,[id*="tooltip"],[class*="tooltip"] {
+  background:rgba(0,0,0,0.55)!important;color:#fff!important;
+  font-size:11px!important;white-space:nowrap!important;
+  padding:3px 8px!important;border-radius:4px!important;
+  border:none!important;max-width:160px!important;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25)!important;
+}
+`;
+
+function injectFigureOverrides(iframeEl, overlayId, pdfScale) {
+  try {
+    const doc = iframeEl?.contentDocument;
+    if (!doc?.head) return;
+    if (doc.getElementById('_alex_overrides')) return; // already injected
+    const s = doc.createElement('style');
+    s.id = '_alex_overrides';
+    s.textContent = FIGURE_OVERRIDE_CSS;
+    // For equation iframes: normalize font size to match current PDF zoom
+    if (iframeEl.title?.startsWith('equation-') && pdfScale) {
+      const px = (10 * pdfScale).toFixed(1);
+      s.textContent += `\nbody{font-size:${px}px!important;line-height:1.5!important;padding:4px 6px!important}td{padding:0 3px!important}`;
+    }
+    doc.head.appendChild(s);
+    // Inject overlay-ID tracker so parent keeps hoveredOverlayIdRef correct even when
+    // mouse is inside the iframe (React onMouseLeave fires on the wrapper div when entering iframes).
+    if (overlayId) {
+      const enterScript = doc.createElement('script');
+      enterScript.textContent = `(function(){
+  var entered=false,id=${JSON.stringify(overlayId)};
+  document.addEventListener('mouseover',function(){
+    if(!entered){entered=true;window.parent.postMessage({type:'alex-iframe-enter',overlayId:id},'*');}
+  });
+  document.addEventListener('mouseleave',function(){
+    entered=false;window.parent.postMessage({type:'alex-iframe-leave',overlayId:id},'*');
+  });
+})();`;
+      doc.head.insertBefore(enterScript, doc.head.firstChild);
+    }
+    // Intercept inline popups in cached figures → forward via postMessage, then hide
+    const script = doc.createElement('script');
+    script.textContent = `
+      var _popSel = '#pop,#popup,.popup,.info-panel,[id*="popup"],[class*="popup"],[id*="panel"],[class*="panel"]';
+      function _isPopEl(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var id = (el.id||'').toLowerCase(), cls = (el.className||'').toLowerCase();
+        return id.includes('pop')||id.includes('panel')||id.includes('info')||
+               cls.includes('pop')||cls.includes('panel')||cls.includes('info');
+      }
+      function _forwardAndHide(el) {
+        var cs = window.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        var titleEl = el.querySelector('strong,b,h3,h4,[id*="title"],[id*="name"]');
+        var title = titleEl ? titleEl.textContent.trim() : '';
+        var body = el.textContent.trim().replace(title,'').replace(/press esc.*?close/gi,'').replace(/×/g,'').trim();
+        if (title || body) window.parent.postMessage({type:'alex-popup',title:title||'Info',body:body},'*');
+        el.style.setProperty('display','none','important');
+      }
+      // On load: silently hide any visible popup elements without forwarding them.
+      // Only forward when the user triggers a visibility change (MutationObserver below).
+      setTimeout(function() {
+        document.querySelectorAll(_popSel).forEach(function(el) {
+          var cs = window.getComputedStyle(el);
+          if (cs.display !== 'none' && cs.visibility !== 'hidden') {
+            el.style.setProperty('display','none','important');
+          }
+          new MutationObserver(function() { _forwardAndHide(el); })
+            .observe(el, {attributes:true, attributeFilter:['style','class']});
+        });
+        // Intercept #tt tooltip (cached equations) → forward as alex-tooltip to parent
+        var ttEl = document.getElementById('tt');
+        if (ttEl) {
+          var _lastMX = 0, _lastMY = 0;
+          document.addEventListener('mousemove', function(ev) { _lastMX=ev.clientX; _lastMY=ev.clientY; });
+          new MutationObserver(function() {
+            var cs = window.getComputedStyle(ttEl);
+            if (cs.display !== 'none' && cs.visibility !== 'hidden') {
+              var text = ttEl.textContent.trim();
+              if (text) window.parent.postMessage({type:'alex-tooltip', text:text, mx:_lastMX, my:_lastMY}, '*');
+              ttEl.style.setProperty('display','none','important');
+            } else {
+              window.parent.postMessage({type:'alex-tooltip', text:null}, '*');
+            }
+          }).observe(ttEl, {attributes:true, attributeFilter:['style']});
+        }
+      }, 80);
+      // Watch for dynamically created popup elements
+      new MutationObserver(function(muts) {
+        muts.forEach(function(m) {
+          m.addedNodes.forEach(function(n) {
+            if (_isPopEl(n)) _forwardAndHide(n);
+            else if (n.querySelectorAll) n.querySelectorAll(_popSel).forEach(_forwardAndHide);
+          });
+        });
+      }).observe(document.body||document.documentElement, {childList:true, subtree:true});
+    `;
+    doc.body?.appendChild(script);
+  } catch {}
+}
+
 function injectBg(html) {
   if (html.includes('</head>')) return html.replace('</head>', BG_INJECT + '</head>');
   if (html.includes('<body')) return html.replace(/(<body[^>]*>)/, '$1' + BG_INJECT);
@@ -146,6 +257,7 @@ export default function App() {
   const [tutorMode, setTutorMode]     = useState(true);
   const [pageText, setPageText]       = useState('');
   const pageTextCache                 = useRef(new Map()); // page# → extracted text
+  const [ragStatus, setRagStatus]     = useState('idle'); // 'idle' | 'indexing' | 'ready'
 
   // Chat state
   const [messages, setMessages]           = useState([]);
@@ -171,6 +283,7 @@ export default function App() {
 
   // Figure customization — tracks which overlay the user is currently modifying via chat
   const [customizeOverlayId, setCustomizeOverlayId] = useState(null);
+  const btnDragRef = useRef(null);
 
   // PDF text highlights — phrases the tutor wants to highlight in the PDF
   const [pdfHighlights, setPdfHighlights] = useState([]);
@@ -178,9 +291,19 @@ export default function App() {
   // Back-navigation state — saved before a cross-page jump so user can return
   const [backState, setBackState] = useState(null); // { page, scrollTop }
 
+  // Figure popup — rendered OUTSIDE iframes so it never obstructs figure content
+  const [figurePopup, setFigurePopup]     = useState(null); // { title, body, left, top }
+  const [figureTooltip, setFigureTooltip] = useState(null); // { text, x, y }
+  const [hoveredOverlayId, setHoveredOverlayId] = useState(null);
+  const hoveredOverlayIdRef = useRef(null);
+  const figureOverlaysRef   = useRef([]);
+  const mousePosRef         = useRef({ x: 0, y: 0 });
+  const popupDismissTimer   = useRef(null);
+
   const setFigureOverlays = useCallback((updater) => {
     setFigureOverlaysRaw(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      figureOverlaysRef.current = next;
       // Persist only completed overlays (not loading ones) keyed by document title
       try {
         const key = `overlays:${title || '_'}`;
@@ -341,6 +464,36 @@ export default function App() {
     extractPageText(currentPage).then(text => setPageText(text));
   }, [currentPage, extractPageText]);
 
+  // ── RAG: index all pages on PDF load ─────────────────────
+  useEffect(() => {
+    if (!numPages || !title || !pdfDocRef.current) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Skip if server already has this book indexed (same server session)
+        const status = await fetch(`${BACKEND}/api/embed-status?title=${encodeURIComponent(title)}`).then(r => r.json()).catch(() => ({}));
+        if (status.indexed) { setRagStatus('ready'); setTimeout(() => setRagStatus('idle'), 2000); return; }
+
+        const pages = [];
+        // Extract all pages concurrently in batches of 10
+        for (let start = 1; start <= numPages; start += 10) {
+          if (cancelled) return;
+          const batch = Array.from({ length: Math.min(10, numPages - start + 1) }, (_, i) => start + i);
+          const texts = await Promise.all(batch.map(p => extractPageText(p)));
+          texts.forEach((text, i) => { if (text) pages.push({ pageNum: batch[i], text }); });
+        }
+        if (cancelled) return;
+        const res = await fetch(`${BACKEND}/api/embed-pdf`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, pages }),
+        });
+        if (!cancelled) { setRagStatus(res.ok ? 'ready' : 'idle'); if (res.ok) setTimeout(() => setRagStatus('idle'), 2000); }
+      } catch { if (!cancelled) setRagStatus('idle'); }
+    })();
+    return () => { cancelled = true; };
+  }, [numPages, title, extractPageText]);
+
   // ── PDF text highlighting (tutor — yellow, temporary) ────
   useEffect(() => {
     const clearHl = () => document.querySelectorAll('.pdf-hl').forEach(el => {
@@ -380,7 +533,132 @@ export default function App() {
   }, [pdfHighlights, currentPage]);
 
   // Blue figure-link PDF highlights removed — too noisy.
-  // The ↖ button on each overlay still navigates back to the linked page.
+
+  // ── Draggable overlay buttons ─────────────────────────────────
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!btnDragRef.current) return;
+      const { overlayId, startX, startY, startOx, startOy } = btnDragRef.current;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      setFigureOverlays(prev => prev.map(o =>
+        o.id === overlayId ? { ...o, btnOffset: { x: startOx + dx, y: startOy + dy } } : o
+      ));
+    };
+    const onUp = () => { btnDragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [setFigureOverlays]);
+
+  // ── Track mouse position for tooltip placement ──────────────
+  useEffect(() => {
+    const onMove = (e) => { mousePosRef.current = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, []);
+
+  // ── Figure popup + tooltip via postMessage (rendered outside iframe) ──
+  useEffect(() => {
+    const onMessage = (e) => {
+      // Restore hoveredOverlayIdRef when mouse is inside an iframe (React onMouseLeave fires
+      // on the wrapper div when the cursor crosses into the iframe's browsing context).
+      if (e.data?.type === 'alex-iframe-enter') {
+        hoveredOverlayIdRef.current = e.data.overlayId;
+        return;
+      }
+      if (e.data?.type === 'alex-iframe-leave') {
+        if (hoveredOverlayIdRef.current === e.data.overlayId) hoveredOverlayIdRef.current = null;
+        return;
+      }
+      // Hover tooltip from equation iframe
+      // Live cursor-move update from inside iframe
+      if (e.data?.type === 'alex-tooltip-move') {
+        const overlay = figureOverlaysRef.current.find(o => o.id === hoveredOverlayIdRef.current);
+        const container = scrollContainerRef.current;
+        if (overlay && container) {
+          const cRect = container.getBoundingClientRect();
+          const iframeLeft = cRect.left + overlay.scrollRect.x;
+          const iframeTop  = cRect.top - container.scrollTop + overlay.scrollRect.y;
+          const x = Math.min(iframeLeft + e.data.mx + 12, window.innerWidth - 228);
+          const y = Math.max(4, iframeTop + e.data.my - 28);
+          setFigureTooltip(prev => prev ? { ...prev, x, y } : prev);
+        }
+        return;
+      }
+      if (e.data?.type === 'alex-tooltip') {
+        if (e.data.text) {
+          // Use iframe cursor coords + overlay offset for accurate position
+          const overlay = figureOverlaysRef.current.find(o => o.id === hoveredOverlayIdRef.current);
+          const container = scrollContainerRef.current;
+          let x = mousePosRef.current.x + 12;
+          let y = mousePosRef.current.y - 28;
+          if (overlay && container && e.data.mx !== undefined) {
+            const cRect = container.getBoundingClientRect();
+            const iframeLeft = cRect.left + overlay.scrollRect.x;
+            const iframeTop  = cRect.top - container.scrollTop + overlay.scrollRect.y;
+            x = iframeLeft + e.data.mx + 12;
+            y = iframeTop  + e.data.my - 28;
+          }
+          x = Math.min(x, window.innerWidth - 228);
+          y = Math.max(4, y);
+          setFigureTooltip({ text: e.data.text, x, y });
+        } else {
+          setFigureTooltip(null);
+        }
+        return;
+      }
+      // Strip literal HTML tags from body (figure JS sometimes stores HTML as plain text)
+      const stripHtml = (s) => (s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      // Click popup
+      if (e.data?.type === 'alex-popup') {
+        if (e.data.title !== null && e.data.title !== undefined) {
+          // Compute position: equations → right side; figures → below
+          const container = scrollContainerRef.current;
+          const overlay = figureOverlaysRef.current.find(o => o.id === hoveredOverlayIdRef.current);
+          let left = (container?.getBoundingClientRect().left ?? 16) + 8;
+          let top  = null;
+          if (overlay && container) {
+            const cRect   = container.getBoundingClientRect();
+            const scrollTop = container.scrollTop;
+            const isEq    = overlay.type === 'equation';
+            const oLeft   = cRect.left + overlay.scrollRect.x;
+            const oTop    = cRect.top - scrollTop + overlay.scrollRect.y;
+            const oRight  = oLeft + overlay.scrollRect.w;
+            const oBottom = oTop  + overlay.scrollRect.h;
+            if (isEq) {
+              left = Math.max(8, Math.min(oLeft, window.innerWidth - 284));
+              top  = oBottom + 6;
+              if (top + 120 > window.innerHeight) top = Math.max(8, oTop - 126);
+            } else {
+              left = oLeft;
+              top  = oBottom + 6;
+              if (top + 160 > window.innerHeight) top = oTop - 164;
+              top  = Math.max(8, top);
+            }
+          }
+          clearTimeout(popupDismissTimer.current);
+          setFigurePopup({ title: stripHtml(e.data.title), body: stripHtml(e.data.body), left, top });
+          popupDismissTimer.current = setTimeout(() => setFigurePopup(null), 15000);
+        } else {
+          clearTimeout(popupDismissTimer.current);
+          setFigurePopup(null);
+        }
+      }
+    };
+    const onDocClick = (e) => {
+      // Close popup on click outside the popup panel
+      if (!e.target.closest?.('.figure-popup-panel')) {
+        clearTimeout(popupDismissTimer.current);
+        setFigurePopup(null);
+      }
+    };
+    window.addEventListener('message', onMessage);
+    document.addEventListener('click', onDocClick, true);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      document.removeEventListener('click', onDocClick, true);
+    };
+  }, []);
 
   // ── Dwell-based tutor check-in ────────────────────────────
   // Fires ONE short question after the user has been on a section for 10s.
@@ -701,7 +979,7 @@ export default function App() {
       const genRes = await fetch(`${FIGURE_BACKEND}/api/generate-2d-async`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64, mediaType: 'image/png', filename: `figure_${id}`, plan, model: 'claude-sonnet-4', iframeWidth: Math.round(rect.w), iframeHeight: Math.round(rect.h) }),
+        body: JSON.stringify({ base64, mediaType: 'image/png', filename: `figure_${id}`, plan, model: 'claude-opus-4.6', iframeWidth: Math.round(rect.w), iframeHeight: Math.round(rect.h) }),
       });
       const genData = await genRes.json();
       if (!genRes.ok) throw new Error(genData.error || 'Generation failed');
@@ -986,8 +1264,12 @@ export default function App() {
                       : overlay.type === 'equation'
                         ? 'Annotating equation…'
                         : 'Building interactive figure…';
+                    const isHovered = hoveredOverlayId === overlay.id;
                     return (
-                      <div key={overlay.id}>
+                      <div key={overlay.id}
+                        onMouseEnter={() => { setHoveredOverlayId(overlay.id); hoveredOverlayIdRef.current = overlay.id; }}
+                        onMouseLeave={() => { setHoveredOverlayId(null); hoveredOverlayIdRef.current = null; }}
+                      >
                         {/* The overlay — hidden when toggled off, revealing original PDF */}
                         <div
                           style={{
@@ -1026,31 +1308,37 @@ export default function App() {
                               sandbox="allow-scripts allow-same-origin"
                               style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
                               title={isEq ? `equation-${overlay.id}` : `interactive-figure-${overlay.id}`}
+                              onLoad={e => injectFigureOverrides(e.target, overlay.id, scale)}
                             />
                           ) : null}
                         </div>
 
-                        {/* Toggle pill + customize "?" button */}
-                        {!overlay.loading && overlay.html && (
-                          <div style={{
-                            position: 'absolute',
-                            left: overlay.scrollRect.x + overlay.scrollRect.w - (isEq ? 96 : 88) - (overlay.linkedPage ? 24 : 0),
-                            top: overlay.scrollRect.y - 16,
-                            zIndex: 25,
-                            display: 'flex',
-                            gap: 2,
-                          }}>
-                            {/* ↖ link-back button — navigate to the text section where this figure was captured */}
-                            {overlay.linkedPage && (
-                              <button
-                                onClick={() => {
-                                  goTo(overlay.linkedPage);
-                                  if (overlay.linkedPhrases?.length) setPdfHighlights(overlay.linkedPhrases);
-                                }}
-                                className="overlay-ask-btn"
-                                title={`Go to linked text (p.${overlay.linkedPage})`}
-                              >↖</button>
-                            )}
+                        {/* Toggle pill + customize "?" button — always visible, top-right of overlay */}
+                        {!overlay.loading && overlay.html && (() => {
+                          const btnOff = overlay.btnOffset || { x: 0, y: 0 };
+                          return (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: overlay.scrollRect.x + overlay.scrollRect.w - (isEq ? 118 : 110) + btnOff.x,
+                              top: overlay.scrollRect.y + btnOff.y,
+                              zIndex: 25,
+                              display: 'flex',
+                              gap: 2,
+                              cursor: 'grab',
+                              userSelect: 'none',
+                            }}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              btnDragRef.current = {
+                                overlayId: overlay.id,
+                                startX: e.clientX,
+                                startY: e.clientY,
+                                startOx: btnOff.x,
+                                startOy: btnOff.y,
+                              };
+                            }}
+                          >
                             {/* ? customize button */}
                             <button
                               onClick={() => {
@@ -1085,13 +1373,30 @@ export default function App() {
                                 : (isEq ? '○ orig' : '○ orig')}
                             </button>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     );
                   })}
                 </div>
               </div>
             )}
+          {/* Figure tooltip — hover symbol info */}
+          {figureTooltip && (
+            <div className="figure-tooltip-el" style={{ left: figureTooltip.x, top: figureTooltip.y }}>
+              {figureTooltip.text}
+            </div>
+          )}
+          {/* Figure popup — click row info, rendered outside iframes */}
+          {figurePopup && (
+            <div className="figure-popup-panel" style={{
+              left: figurePopup.left ?? 16,
+              ...(figurePopup.top != null ? { top: figurePopup.top, bottom: 'auto' } : {}),
+            }}>
+              <strong className="figure-popup-title">{figurePopup.title}</strong>
+              <span className="figure-popup-body">{figurePopup.body}</span>
+            </div>
+          )}
           </div>
         </div>
 
@@ -1103,6 +1408,7 @@ export default function App() {
           <div className="chat-header">
             <span>Chat</span>
             {title && <span className="chat-doc-label">— p.{currentPage}</span>}
+            {ragStatus === 'ready' && <span style={{ fontSize: 10, color: '#3a7', marginLeft: 6 }}>✦ rag</span>}
             {tutorMode && <span className="tutor-glow-dot" title="Tutor is active" />}
             <div className="tutor-toggle" onClick={() => setTutorMode(m => !m)} title={tutorMode ? 'Tutor mode on — click to turn off' : 'Turn on tutor mode'}>
               <div className={`tutor-toggle-track${tutorMode ? ' on' : ''}`}>
