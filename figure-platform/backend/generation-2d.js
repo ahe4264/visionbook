@@ -109,33 +109,51 @@ Store connectivity as a JS object — required for all graph interactions:
   Tooltip content: just the short label, e.g. "h₁ — hidden unit" (not a paragraph).
 
 ── CLICK → POPUP ────────────────────────────────────────────────────────────────
-  Click shows a dark glass panel pinned to the bottom. Full explanation goes here.
-  Dismiss: Escape key OR click anywhere outside the popup.
+  DO NOT build a popup inside the iframe — it would obstruct the figure.
+  Instead, use postMessage to send the data to the parent window, which renders
+  the popup OUTSIDE the iframe below the figure.
 
-  Popup CSS (copy verbatim — ~50% transparent dark glass, compact):
-    position:fixed; bottom:8px; left:8px; right:8px;
-    background:rgba(0,0,0,0.52); backdrop-filter:blur(16px);
-    -webkit-backdrop-filter:blur(16px);
-    border:1px solid rgba(255,255,255,0.12); border-radius:9px;
-    padding:8px 12px; font:11px/1.5 sans-serif; color:#f0f0f0; z-index:101;
-    max-height:28%; overflow-y:auto; box-shadow:0 4px 20px rgba(0,0,0,0.3);
+  Use this exact pattern (copy verbatim):
 
-  Popup has a close ×: float:right; cursor:pointer; color:rgba(255,255,255,0.35);
-    font-size:15px; line-height:1; margin-left:8px;
-  Popup title: font-weight:600; font-size:12px; color:#fff; display:block; margin-bottom:3px;
+    // Show popup — fires on node/element click:
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+    // Hide popup — fires on Escape or SVG background click:
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    // Wire up dismiss:
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePopup(); });
+    svg.addEventListener('click', e => { if (e.target === svg || e.target.tagName === 'svg') hidePopup(); });
+
+  Call showPopup(title, body) on each node/element click.
+  DO NOT create any #pop, .popup, or fixed-position panel element inside the HTML.
 
 ── CLICK → SIGNAL FLOW ANIMATION ────────────────────────────────────────────────
-  On click, animate edges layer by layer using stroke-dashoffset. This visualises
-  the forward pass (click) or backward pass (Shift+click, use red #e05050).
+  On click, animate edges left-to-right, one layer at a time using stroke-dashoffset.
+  Forward pass (click) = blue #4a7ef5. Backward pass (Shift+click) = red #e05050.
 
-  CRITICAL — SVG node pulse must NOT cause nodes to fly to wrong positions:
-  Use this exact pattern for scale pulse on a <circle> or <g> node:
-    // For <circle cx=CX cy=CY>: use CSS transform with transform-box+transform-origin
-    node.style.transformBox = 'fill-box';
+  STRICT ORDERING — left to right only, never jump layers:
+    Layer 0 = edges from input nodes  → delay 0ms
+    Layer 1 = edges from 1st hidden   → delay 650ms
+    Layer 2 = edges from 2nd hidden   → delay 1300ms
+    ... and so on. Never animate layer N before layer N-1 finishes.
+
+  Pulse destination node ONLY after its incoming edges finish (i.e. at delay + 350ms).
+  NEVER pulse a node before its signal arrives — this is what causes visual jumping.
+
+  CRITICAL — node pulse must NEVER displace circles from their positions:
+  Apply these properties BEFORE changing transform, or nodes will fly to (0,0):
+    node.style.transformBox    = 'fill-box';
     node.style.transformOrigin = 'center';
-    node.style.transition = 'transform 0.15s ease';
-    node.style.transform = 'scale(1.18)';
+    node.style.transition      = 'transform 0.15s ease';
+    node.style.transform       = 'scale(1.18)';
     setTimeout(() => { node.style.transform = 'scale(1)'; }, 200);
+
+  NEVER animate cx, cy, x, y, translate, or any position attribute.
+  ONLY animate: stroke-dashoffset (edges) and CSS scale transform (nodes).
 
   Edge dash animation pattern (call per layer, pass delay in ms):
     function animateEdges(edgeEls, color, delay) {
@@ -147,14 +165,13 @@ Store connectivity as a JS object — required for all graph interactions:
           e.style.strokeDashoffset = len;
           e.style.stroke = color;
           requestAnimationFrame(() => {
-            e.style.transition = 'stroke-dashoffset 0.35s ease';
+            e.style.transition = 'stroke-dashoffset 0.6s ease';
             e.style.strokeDashoffset = '0';
           });
         });
       }, delay);
     }
-  Cascade: layer 0 at delay 0, layer 1 at delay 380, layer 2 at delay 760, etc.
-  After full cascade (+1200ms total), restore all edges to original stroke color/width.
+  After full cascade (+1200ms), restore all edges to original stroke color/width.
 
 ── DRAGGABLE NODES ───────────────────────────────────────────────────────────────
   Nodes in network diagrams should be draggable. Use this coordinate pattern exactly

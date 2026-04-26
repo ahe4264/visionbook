@@ -7,7 +7,6 @@ const { screenshotHtml, loadBaseScaffold } = require('./runtime-helpers');
 const { generateFigureHtml } = require('./generation');
 const {
   buildExperimentContext,
-  buildPlanInjection,
   createResultRecord,
   evaluateRecord,
   saveRecord,
@@ -17,11 +16,12 @@ const { plan2dFigure } = require('./planner-2d');
 const { generate2dFigureHtml } = require('./generation-2d');
 const { listChapters, list3dCandidates, list2dCandidates } = require('./chapter-discovery');
 const { getAvailableModels } = require('./models');
-const { upsertEvaluation } = require('./result_schema');
+const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage } = require('./result_schema');
+const { getCriticContext } = require('./critic');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:3001/')
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
@@ -48,10 +48,9 @@ const EXPERIMENTS_DIR = path.join(__dirname, '..', '..', 'prompt_experiments');
 const FIGURES_DIR = path.join(__dirname, '..', '..', 'figures');
 
 // ── API generation config ──────────────────────────────────────────────────────
-// CURRENT_EXPERIMENT is derived automatically from a hash of the system prompt +
-// scaffold.  Whenever you edit the prompt or base_scene_robust.html, the next
-// server restart creates a brand-new experiment bucket in the dashboard.
-const EXPERIMENT_BASE = 'base_scene_robust';   // human-readable prefix
+// CURRENT_EXPERIMENT is derived from the configured experiment base.
+// Change EXPERIMENT_BASE to move future generations into a new experiment bucket.
+const EXPERIMENT_BASE = 'default_base';   // human-readable prefix
 const CURRENT_MODEL = 'gpt-5.4';             // model used by the generator
 const CURRENT_CRITIC_MODEL = 'gpt-4o';       // model used by evaluator by default
 // CURRENT_EXPERIMENT is set below, after the system prompt is built.
@@ -91,15 +90,18 @@ console.log('Base scaffold loaded:', BASE_SCAFFOLD_PATH);
 const RESULTS_DIR = process.env.RESULTS_DIR
   ? path.resolve(process.env.RESULTS_DIR)
   : path.join(__dirname, 'results');
+const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
 if (!fs.existsSync(RESULTS_DIR)) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
 }
 
 const {
   systemPrompt: SYSTEM_PROMPT,
-  promptHash: PROMPT_HASH,
   experiment: CURRENT_EXPERIMENT,
 } = buildExperimentContext(BASE_SCAFFOLD, EXPERIMENT_BASE);
+const {
+  criticVersion: CURRENT_CRITIC_VERSION,
+} = getCriticContext();
 console.log(`Experiment: ${CURRENT_EXPERIMENT}  (model: ${CURRENT_MODEL})`);
 
 // ── Helper: generate a simple unique id ───────────────────────────────────────
@@ -114,6 +116,7 @@ app.get('/api/prompt', (req, res) => {
     experiment: CURRENT_EXPERIMENT,
     model: CURRENT_MODEL,
     criticModel: CURRENT_CRITIC_MODEL,
+    criticVersion: CURRENT_CRITIC_VERSION,
   });
 });
 
@@ -153,14 +156,15 @@ app.get('/api/chapter-candidates/:chapter', (req, res) => {
 
 // ── POST /api/plan — plan for a single figure (fast, returns before generation) ──
 app.post('/api/plan', async (req, res) => {
-  const { filename, chapterHint } = req.body;
+  const { filename, chapterHint, base64, mediaType } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required.' });
 
   const stem = filename.replace(/\.[^.]+$/, '');
   const chapter = chapterHint || null;
+  const imageData = base64 && mediaType ? { base64, mediaType } : undefined;
 
   try {
-    const plan = await planForFigure(stem, chapter);
+    const plan = await planForFigure(stem, chapter, imageData);
     return res.json(plan);
   } catch (err) {
     console.error('Plan error:', err?.message || err);
@@ -249,29 +253,55 @@ async function withRetry(fn, { retries = 4, baseDelay = 2500 } = {}) {
   }
 }
 
-async function generateFigure({ base64, mediaType, filename, plan, model: requestedModel, evalModel: requestedEvalModel, evaluate = true }) {
+function resolveCriticPasses(rawValue) {
+  if (rawValue == null || rawValue === '') return 1;
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3) {
+    const err = new Error('criticPasses must be an integer between 0 and 3.');
+    err.statusCode = 400;
+    throw err;
+  }
+  return parsed;
+}
+
+function resolveCriticPassesFromBody(body) {
+  const value = body?.criticPasses ?? body?.passes;
+  return resolveCriticPasses(value);
+}
+
+async function generateFigure({ base64, mediaType, filename, plan, model: requestedModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, evaluate = true, criticPasses: requestedCriticPasses, passes: requestedPasses }) {
   if (!base64 || !mediaType || !filename) {
     const err = new Error('base64, mediaType, and filename are required.');
     err.statusCode = 400;
     throw err;
   }
 
+  if (typeof requestedCriticVersion !== 'string' || !requestedCriticVersion.trim()) {
+    const err = new Error('criticVersion is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (typeof requestedExperiment !== 'string' || !requestedExperiment.trim()) {
+    const err = new Error('experiment is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
   const modelId = requestedModel || CURRENT_MODEL;
+  const experimentName = requestedExperiment.trim();
+  const resolvedCriticPasses = resolveCriticPasses(requestedCriticPasses ?? requestedPasses);
   if (!requestedModel) {
     console.warn(`[generate] no model provided by client; falling back to default "${CURRENT_MODEL}"`);
   }
-  console.log(`[generate] requested="${requestedModel}" → using="${modelId}" | file=${filename}`);
-
-  const userText = plan
-    ? `${buildPlanInjection(plan)}\n\nFollow the interaction plan above. Output the complete extended HTML file — starting with <!DOCTYPE html> and ending with </html>. No explanation, no markdown, no fences.`
-    : 'Analyse this figure carefully. Then output the complete extended HTML file — starting with <!DOCTYPE html> and ending with </html>. No explanation, no markdown, no fences.';
+  console.log(`[generate] requested="${requestedModel}" experiment="${requestedExperiment}" → using="${modelId}" | file=${filename}`);
 
   const html = await withRetry(() => generateFigureHtml({
     modelId,
     scaffold: BASE_SCAFFOLD,
     mediaType,
     base64,
-    userText,
+    plan,
     maxTokens: 16384,
     applyFixes: true,
   }));
@@ -295,8 +325,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
     timestamp,
     source: 'api',
     model: modelId,
-    experiment: CURRENT_EXPERIMENT,
-    promptHash: PROMPT_HASH,
+    experiment: experimentName,
     plan: plan || null,
     previewBase64: shot ? shot.data : null,
     previewMediaType: shot ? shot.mediaType : null,
@@ -307,14 +336,20 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   });
   const recordPath = path.join(RESULTS_DIR, `${figureId}.json`);
   saveRecord(record, recordPath);
+  refreshHistoryManifestSafe();
 
   let evaluation = null;
   if (evaluate !== false) {
-    try {
-      evaluation = await runEvaluation(record, recordPath, requestedEvalModel);
-      console.log(`Auto-eval for ${figureId}: overall=${evaluation.overall_average}`);
-    } catch (evalErr) {
-      console.warn('Auto-eval failed (result saved without scores):', evalErr.message);
+    if (resolvedCriticPasses > 0) {
+      try {
+        const evaluationResult = await runEvaluation(record, recordPath, requestedEvalModel, requestedCriticVersion, resolvedCriticPasses);
+        evaluation = evaluationResult.evaluation;
+        console.log(`Auto-eval for ${figureId}: overall=${evaluation.overall_average} (passes=${evaluationResult.passCount})`);
+      } catch (evalErr) {
+        console.warn('Auto-eval failed (result saved without scores):', evalErr.message);
+      }
+    } else {
+      console.log(`Auto-eval skipped for ${figureId}: criticPasses=0`);
     }
   }
 
@@ -323,8 +358,11 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
     figureId,
     timestamp,
     model: modelId,
+    experiment: experimentName,
     evaluationResults: record.evaluationResults || {},
     evaluationMeta: record.evaluationMeta || {},
+    evaluationVersions: record.evaluationVersions || {},
+    criticPasses: resolvedCriticPasses,
     plan: plan || null,
   };
 }
@@ -434,7 +472,7 @@ function inferChapter(stem) {
 
 function readHistoryRecord(fileName, { includeThumb = false } = {}) {
   const raw = fs.readFileSync(path.join(RESULTS_DIR, fileName), 'utf-8');
-  const parsed = JSON.parse(raw);
+  const parsed = materializeEvaluationViews(JSON.parse(raw));
   const stem = parsed.filename ? parsed.filename.replace(/\.[^.]+$/, '') : '';
   const chapter = inferChapter(stem);
   const model = parsed.model || 'gpt-4o';
@@ -449,6 +487,7 @@ function readHistoryRecord(fileName, { includeThumb = false } = {}) {
     experiment,
     evaluationResults: parsed.evaluationResults || {},
     evaluationMeta: parsed.evaluationMeta || {},
+    evaluationVersions: parsed.evaluationVersions || {},
     chapter,
   };
 
@@ -474,6 +513,82 @@ function listHistoryRecords({ includeThumb = false } = {}) {
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }
 
+function listHistoryIndexFromManifest() {
+  if (!fs.existsSync(MANIFEST_PATH)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf-8'));
+    if (!Array.isArray(parsed?.results)) return null;
+    return parsed.results
+      .map((record) => ({
+        id: record?.id,
+        filename: record?.filename,
+        timestamp: record?.timestamp,
+        source: record?.source || 'api',
+        model: record?.model || 'gpt-4o',
+        experiment: record?.experiment || 'base_scene_robust',
+        evaluationResults: record?.evaluationResults || {},
+        evaluationMeta: record?.evaluationMeta || {},
+        evaluationVersions: record?.evaluationVersions || {},
+        chapter: record?.chapter || null,
+      }))
+      .filter(record => record.id)
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  } catch {
+    return null;
+  }
+}
+
+function rebuildHistoryManifest() {
+  const results = listHistoryRecords({ includeThumb: false });
+
+  const experimentSet = new Set(results.map(r => r.experiment || 'base_scene_robust'));
+  const modelSet = new Set(results.map(r => r.model || 'gpt-4o'));
+  const chapterSet = new Set(results.map(r => r.chapter).filter(Boolean));
+
+  let experimentFigureCount = 0;
+  try {
+    const experiments = scanExperiments();
+    experimentFigureCount = experiments.reduce(
+      (sum, exp) => sum + (exp.models || []).reduce((mSum, model) => mSum + (model.figures || []).length, 0),
+      0
+    );
+    for (const exp of experiments) {
+      for (const model of exp.models || []) {
+        modelSet.add(model.model || 'unknown');
+        for (const fig of model.figures || []) {
+          if (fig.chapter) chapterSet.add(fig.chapter);
+        }
+      }
+    }
+  } catch {
+    // Keep manifest generation resilient if experiment scan fails.
+  }
+
+  const manifest = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      resultCount: results.length,
+      experimentCount: experimentSet.size,
+      experimentFigureCount,
+      modelCount: modelSet.size,
+      chapterCount: chapterSet.size,
+    },
+    results,
+  };
+
+  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+  return manifest;
+}
+
+function refreshHistoryManifestSafe() {
+  try {
+    rebuildHistoryManifest();
+  } catch (err) {
+    console.warn('Manifest refresh failed:', err?.message || err);
+  }
+}
+
 // ── GET /api/history ──────────────────────────────────────────────────────────
 app.get('/api/history', (req, res) => {
   try {
@@ -489,8 +604,24 @@ app.get('/api/history', (req, res) => {
 // inline thumbnail base64 to keep payload small.
 app.get('/api/history-index', (req, res) => {
   try {
-    return res.json(listHistoryRecords({ includeThumb: false }));
+    const refresh = req.query.refresh === '1';
+    if (refresh || !fs.existsSync(MANIFEST_PATH)) {
+      rebuildHistoryManifest();
+    }
+
+    const manifestRecords = listHistoryIndexFromManifest();
+    if (manifestRecords) return res.json(manifestRecords);
+
+    // If manifest exists but is malformed, rebuild and return fresh snapshot.
+    const manifest = rebuildHistoryManifest();
+    return res.json(manifest.results || []);
   } catch (err) {
+    try {
+      const liveRecords = listHistoryRecords({ includeThumb: false });
+      return res.json(liveRecords);
+    } catch {
+      // Fall through to original error response below.
+    }
     return res.status(500).json({ error: err.message });
   }
 });
@@ -502,7 +633,7 @@ app.get('/api/result/:id', (req, res) => {
     return res.status(404).json({ error: 'Result not found.' });
   }
   try {
-    const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const record = materializeEvaluationViews(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
     return res.json(record);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -530,46 +661,222 @@ app.post('/api/save', (req, res) => {
     source: source || 'chat',
     model: req.body.model || CURRENT_MODEL,
     experiment: req.body.experiment || CURRENT_EXPERIMENT,
+    evaluationResults: {},
+    evaluationMeta: {},
+    evaluationVersions: {},
   };
   fs.writeFileSync(
     path.join(RESULTS_DIR, `${id}.json`),
-    JSON.stringify(record, null, 2)
+    JSON.stringify(compactEvaluationStorage(record), null, 2)
   );
+  refreshHistoryManifestSafe();
   return res.json({ id, timestamp });
 });
 
 // Calls the shared evaluator, persists to the record file,
 // and returns the evaluation object. Throws on error.
-async function runEvaluation(record, filePath, requestedEvalModel) {
+async function runEvaluation(record, filePath, requestedEvalModel, requestedCriticVersion, criticPasses = 1) {
   const result = await evaluateRecord({
     record,
     evalModel: requestedEvalModel,
     defaultEvalModel: CURRENT_CRITIC_MODEL,
+    criticVersionOverride: requestedCriticVersion,
+    criticPasses,
   });
-  if (filePath) saveRecord(result.record, filePath);
+  if (!result.skipped && filePath) {
+    saveRecord(result.record, filePath);
+    refreshHistoryManifestSafe();
+  }
 
-  record.evaluationResults = result.record.evaluationResults;
-  record.evaluationMeta = result.record.evaluationMeta;
+  if (!result.skipped) {
+    record.evaluationResults = result.record.evaluationResults;
+    record.evaluationMeta = result.record.evaluationMeta;
+    record.evaluationVersions = result.record.evaluationVersions;
+  }
 
-  return result.evaluation;
+  return result;
 }
+
+const HUMAN_SCORE_KEYS = [
+  'geometry_accuracy',
+  'interactivity_usability',
+  'faithfulness',
+  'label_quality',
+  'concept_accuracy',
+];
+
+function normalizeHumanRaterId(rawRaterId) {
+  const fallback = 'anonymous';
+  if (typeof rawRaterId !== 'string' || !rawRaterId.trim()) return fallback;
+  const cleaned = rawRaterId.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '_').replace(/_+/g, '_');
+  return cleaned || fallback;
+}
+
+function toHumanScore(value, key) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${key} must be a number from 1 to 5.`);
+  }
+  const rounded = Math.round(n);
+  if (rounded < 1 || rounded > 5) {
+    throw new Error(`${key} must be between 1 and 5.`);
+  }
+  return rounded;
+}
+
+function normalizeHumanEvaluation(input) {
+  if (!input || typeof input !== 'object') {
+    throw new Error('evaluation object is required.');
+  }
+
+  const normalized = {};
+  for (const key of HUMAN_SCORE_KEYS) {
+    normalized[key] = toHumanScore(input[key], key);
+  }
+
+  const failureModes = Array.isArray(input.failure_modes)
+    ? input.failure_modes
+      .map(mode => (typeof mode === 'string' ? mode.trim() : ''))
+      .filter(Boolean)
+      .slice(0, 20)
+    : [];
+  normalized.failure_modes = Array.from(new Set(failureModes));
+
+  normalized.notes = typeof input.notes === 'string'
+    ? input.notes.trim().slice(0, 2000)
+    : '';
+
+  normalized.visual_aesthetics = Math.round(
+    ((normalized.geometry_accuracy + normalized.faithfulness + normalized.label_quality) / 3) * 10
+  ) / 10;
+  normalized.overall_average = Math.round(
+    (HUMAN_SCORE_KEYS.reduce((sum, key) => sum + normalized[key], 0) / HUMAN_SCORE_KEYS.length) * 10
+  ) / 10;
+
+  return normalized;
+}
+
+// ── POST /api/evaluate-human ─────────────────────────────────────────────────
+// Persist a manual/human evaluation into the same versioned schema used by AI.
+app.post('/api/evaluate-human', (req, res) => {
+  const { id, htmlPath, raterId, criticVersion, evaluation } = req.body || {};
+  if (!id && !htmlPath) {
+    return res.status(400).json({ error: 'id or htmlPath is required.' });
+  }
+
+  let normalizedEvaluation;
+  try {
+    normalizedEvaluation = normalizeHumanEvaluation(evaluation);
+  } catch (err) {
+    return res.status(400).json({ error: err?.message || 'Invalid evaluation payload.' });
+  }
+
+  const resolvedRater = normalizeHumanRaterId(raterId);
+  const evalModel = `human:${resolvedRater}`;
+  const resolvedCriticVersion =
+    typeof criticVersion === 'string' && criticVersion.trim()
+      ? criticVersion.trim()
+      : 'human_v1';
+  const evaluatedAt = new Date().toISOString();
+
+  if (id) {
+    const filePath = path.join(RESULTS_DIR, `${id}.json`);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Result not found.' });
+    }
+
+    let record;
+    try {
+      record = materializeEvaluationViews(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+    } catch {
+      return res.status(500).json({ error: 'Failed to read result file.' });
+    }
+
+    try {
+      const updated = upsertEvaluation(record, evalModel, normalizedEvaluation, evaluatedAt, {
+        criticVersion: resolvedCriticVersion,
+        criticModel: evalModel,
+      });
+      saveRecord(updated, filePath);
+      refreshHistoryManifestSafe();
+      return res.json({
+        evaluation: normalizedEvaluation,
+        evalModel,
+        criticVersion: resolvedCriticVersion,
+        evaluationResults: updated.evaluationResults || {},
+        evaluationMeta: updated.evaluationMeta || {},
+        evaluationVersions: updated.evaluationVersions || {},
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err?.message || 'Failed to save human evaluation.' });
+    }
+  }
+
+  const absHtml = path.resolve(htmlPath);
+  if (!fs.existsSync(absHtml)) {
+    return res.status(404).json({ error: 'HTML file not found.' });
+  }
+
+  try {
+    const evalPath = absHtml.replace(/\.html$/, '.eval.json');
+    let cached = {};
+    if (fs.existsSync(evalPath)) {
+      try {
+        cached = materializeEvaluationViews(JSON.parse(fs.readFileSync(evalPath, 'utf-8')));
+      } catch {
+        cached = {};
+      }
+    }
+
+    const updatedCache = upsertEvaluation(cached, evalModel, normalizedEvaluation, evaluatedAt, {
+      criticVersion: resolvedCriticVersion,
+      criticModel: evalModel,
+    });
+    saveRecord({
+      evaluationResults: updatedCache.evaluationResults,
+      evaluationMeta: updatedCache.evaluationMeta,
+      evaluationVersions: updatedCache.evaluationVersions,
+    }, evalPath);
+
+    return res.json({
+      evaluation: normalizedEvaluation,
+      evalModel,
+      criticVersion: resolvedCriticVersion,
+      evaluationResults: updatedCache.evaluationResults || {},
+      evaluationMeta: updatedCache.evaluationMeta || {},
+      evaluationVersions: updatedCache.evaluationVersions || {},
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || 'Failed to save human evaluation.' });
+  }
+});
 
 // ── POST /api/evaluate ────────────────────────────────────────────────────────
 // Manual re-evaluation endpoint (used for existing results without scores).
 app.post('/api/evaluate', async (req, res) => {
-  const { id, evalModel } = req.body;
+  const { id, evalModel, criticVersion } = req.body;
   if (!id) return res.status(400).json({ error: 'id is required.' });
+
+  let criticPasses;
+  try {
+    criticPasses = resolveCriticPassesFromBody(req.body);
+  } catch (err) {
+    return res.status(err.statusCode || 400).json({ error: err.message });
+  }
 
   const filePath = path.join(RESULTS_DIR, `${id}.json`);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Result not found.' });
 
   let record;
-  try { record = JSON.parse(fs.readFileSync(filePath, 'utf-8')); }
+  try { record = materializeEvaluationViews(JSON.parse(fs.readFileSync(filePath, 'utf-8'))); }
   catch { return res.status(500).json({ error: 'Failed to read result file.' }); }
 
   try {
-    const evaluation = await runEvaluation(record, filePath, evalModel);
-    return res.json(evaluation);
+    const result = await runEvaluation(record, filePath, evalModel, criticVersion, criticPasses);
+    if (result.skipped) {
+      return res.json({ skipped: true, criticPasses: 0 });
+    }
+    return res.json({ ...result.evaluation, criticPasses: result.passCount });
   } catch (err) {
     console.error('Evaluation error:', err?.message || err);
     return res.status(500).json({ error: err?.message || 'Unknown error during evaluation.' });
@@ -580,9 +887,16 @@ app.post('/api/evaluate', async (req, res) => {
 // Accepts { ids: string[] } and evaluates them one-by-one (no concurrency).
 // Returns results as they complete via streaming JSON lines.
 app.post('/api/evaluate-batch', async (req, res) => {
-  const { ids, evalModel } = req.body;
+  const { ids, evalModel, criticVersion } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'ids (array) is required.' });
+  }
+
+  let criticPasses;
+  try {
+    criticPasses = resolveCriticPassesFromBody(req.body);
+  } catch (err) {
+    return res.status(err.statusCode || 400).json({ error: err.message });
   }
 
   // Stream results line-by-line so the frontend can show progress
@@ -598,12 +912,16 @@ app.post('/api/evaluate-batch', async (req, res) => {
     }
 
     let record;
-    try { record = JSON.parse(fs.readFileSync(filePath, 'utf-8')); }
+    try { record = materializeEvaluationViews(JSON.parse(fs.readFileSync(filePath, 'utf-8'))); }
     catch { res.write(JSON.stringify({ id, status: 'error', error: 'Failed to read result.' }) + '\n'); continue; }
 
     try {
-      const evaluation = await runEvaluation(record, filePath, evalModel);
-      res.write(JSON.stringify({ id, status: 'ok', evaluation }) + '\n');
+      const result = await runEvaluation(record, filePath, evalModel, criticVersion, criticPasses);
+      if (result.skipped) {
+        res.write(JSON.stringify({ id, status: 'skipped', criticPasses: 0 }) + '\n');
+      } else {
+        res.write(JSON.stringify({ id, status: 'ok', evaluation: result.evaluation, criticPasses: result.passCount }) + '\n');
+      }
     } catch (err) {
       console.error(`Batch eval error for ${id}:`, err?.message || err);
       res.write(JSON.stringify({ id, status: 'error', error: err?.message || 'Evaluation failed.' }) + '\n');
@@ -621,6 +939,7 @@ app.delete('/api/result/:id', (req, res) => {
   }
   try {
     fs.unlinkSync(filePath);
+    refreshHistoryManifestSafe();
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -779,10 +1098,11 @@ function loadExpEval(htmlPath) {
   const evalPath = htmlPath.replace(/\.html$/, '.eval.json');
   if (!fs.existsSync(evalPath)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(evalPath, 'utf-8'));
+    const parsed = materializeEvaluationViews(JSON.parse(fs.readFileSync(evalPath, 'utf-8')));
     return {
       evaluationResults: parsed.evaluationResults || {},
       evaluationMeta: parsed.evaluationMeta || {},
+      evaluationVersions: parsed.evaluationVersions || {},
     };
   } catch {
     return null;
@@ -800,6 +1120,7 @@ app.get('/api/experiments', (req, res) => {
           const evalData = loadExpEval(fig.htmlPath);
           fig.evaluationResults = evalData?.evaluationResults || {};
           fig.evaluationMeta = evalData?.evaluationMeta || {};
+          fig.evaluationVersions = evalData?.evaluationVersions || {};
         }
       }
     }
@@ -812,8 +1133,15 @@ app.get('/api/experiments', (req, res) => {
 // ── POST /api/experiments/evaluate ───────────────────────────────────────────
 // Evaluate a single experiment figure in-place; cache result as <name>.eval.json
 app.post('/api/experiments/evaluate', async (req, res) => {
-  const { htmlPath, imagePath, evalModel } = req.body;
+  const { htmlPath, imagePath, evalModel, criticVersion } = req.body;
   if (!htmlPath) return res.status(400).json({ error: 'htmlPath required.' });
+
+  let criticPasses;
+  try {
+    criticPasses = resolveCriticPassesFromBody(req.body);
+  } catch (err) {
+    return res.status(err.statusCode || 400).json({ error: err.message });
+  }
 
   const absHtml = path.resolve(htmlPath);
   if (!fs.existsSync(absHtml)) return res.status(404).json({ error: 'HTML file not found.' });
@@ -827,7 +1155,7 @@ app.post('/api/experiments/evaluate', async (req, res) => {
 
   try {
     const usedEvalModel = evalModel || CURRENT_CRITIC_MODEL;
-    const { evaluation } = await evaluateRecord({
+    const { evaluation, criticVersion: resolvedCriticVersion, skipped, passCount } = await evaluateRecord({
       record: {
         html,
         source_base64: base64thumb,
@@ -835,21 +1163,31 @@ app.post('/api/experiments/evaluate', async (req, res) => {
       },
       evalModel: usedEvalModel,
       defaultEvalModel: CURRENT_CRITIC_MODEL,
+      criticVersionOverride: criticVersion,
+      criticPasses,
     });
+
+    if (skipped) {
+      return res.json({ skipped: true, criticPasses: 0 });
+    }
 
     // Cache alongside the HTML file
     const evalPath = absHtml.replace(/\.html$/, '.eval.json');
     let cached = {};
     if (fs.existsSync(evalPath)) {
-      try { cached = JSON.parse(fs.readFileSync(evalPath, 'utf-8')); } catch { cached = {}; }
+      try { cached = materializeEvaluationViews(JSON.parse(fs.readFileSync(evalPath, 'utf-8'))); } catch { cached = {}; }
     }
-    const updatedCache = upsertEvaluation(cached, usedEvalModel, evaluation);
+    const updatedCache = upsertEvaluation(cached, usedEvalModel, evaluation, new Date().toISOString(), {
+      criticVersion: resolvedCriticVersion,
+      criticModel: usedEvalModel,
+    });
     saveRecord({
       evaluationResults: updatedCache.evaluationResults,
       evaluationMeta: updatedCache.evaluationMeta,
+      evaluationVersions: updatedCache.evaluationVersions,
     }, evalPath);
 
-    return res.json(evaluation);
+    return res.json({ ...evaluation, criticPasses: passCount });
   } catch (err) {
     return res.status(500).json({ error: err?.message || 'Unknown error.' });
   }
