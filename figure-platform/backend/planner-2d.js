@@ -20,6 +20,13 @@ Output this exact JSON structure:
   "concept": "One sentence: what concept does this figure teach?",
   "figureType": "One of: network_diagram | matrix | flow_chart | multi_panel | scatter_plot | line_plot | contour_plot | 3d_surface | equation_visual | architecture | other",
   "layout": "Describe the spatial arrangement precisely (e.g. '2×2 grid of panels labeled a-d', 'single 3D surface', 'left-right flow')",
+  "aspectRatio": 2.4,
+  "elementSizes": {
+    "nodeRadiusFraction": 0.045,
+    "strokeWidth": 1.5,
+    "fontSize": 11,
+    "arrowheadSize": 6
+  },
   "panels": [
     {
       "id": "a",
@@ -58,6 +65,14 @@ Output this exact JSON structure:
   "renderingMode": "2d | mixed | 3d — 'mixed' if some panels are 3D and others 2D",
   "reconstructionNotes": "Critical notes: exact data values to reproduce, tricky layout details, which panels MUST use Three.js vs SVG"
 }
+
+MEASUREMENT RULES — required for geometry faithfulness:
+- aspectRatio: measure the figure's width divided by its height as a decimal (e.g. a landscape figure ~2× wider than tall = 2.0). This is mandatory.
+- elementSizes.nodeRadiusFraction: for diagrams with circular nodes, measure node radius as a fraction of total figure width (e.g. if node diameter is ~9% of figure width, nodeRadiusFraction = 0.045). If no circular nodes, omit.
+- elementSizes.strokeWidth: the edge/border stroke width in pixels as it appears at ~600px figure width.
+- elementSizes.fontSize: the dominant label font size in pixels as it appears at ~600px figure width.
+- elementSizes.arrowheadSize: the arrowhead length in pixels as it appears at ~600px figure width.
+These measurements let the generator set the correct viewBox and element scale without guessing.
 
 EXTRACTION RULES:
 - For each scatter plot: list every visible data point's approximate (x, y) by reading coordinates against the axes
