@@ -250,6 +250,7 @@ export default function App() {
   const [scale, setScale]             = useState(1.2);
   const [pageInput, setPageInput]     = useState('1');
   const [pdfError, setPdfError]       = useState(null);
+  const [pageHeight, setPageHeight]   = useState(null); // measured height of one rendered page
   const [outline, setOutline]         = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -352,7 +353,7 @@ export default function App() {
     const docTitle = file.name.replace(/\.pdf$/i, '');
     setPdfUrl(url);
     setTitle(docTitle);
-    setCurrentPage(1); setPageInput('1'); setNumPages(null);
+    setCurrentPage(1); setPageInput('1'); setNumPages(null); setPageHeight(null);
     setOutline([]); setMessages([]);
     setSelectMode(false); setSelRect(null); setPopupPos(null);
     pageTextCache.current.clear(); setPageText('');
@@ -1150,9 +1151,9 @@ export default function App() {
         )}
         {pdfUrl && (
           <div className="toolbar-right">
-            <button className="zoom-btn" onClick={() => setScale(s => Math.max(0.5, +(s - 0.1).toFixed(1)))}>−</button>
+            <button className="zoom-btn" onClick={() => { setScale(s => Math.max(0.5, +(s - 0.1).toFixed(1))); setPageHeight(null); }}>−</button>
             <span className="zoom-label">{Math.round(scale * 100)}%</span>
-            <button className="zoom-btn" onClick={() => setScale(s => Math.min(3, +(s + 0.1).toFixed(1)))}>+</button>
+            <button className="zoom-btn" onClick={() => { setScale(s => Math.min(3, +(s + 0.1).toFixed(1))); setPageHeight(null); }}>+</button>
           </div>
         )}
       </header>
@@ -1227,11 +1228,32 @@ export default function App() {
                     loading={<div className="loading">Loading PDF…</div>}
                     error={<div className="pdf-error">Failed to load PDF.<br/><small>{pdfError || 'Check console for details.'}</small></div>}
                   >
-                    {numPages && Array.from({ length: numPages }, (_, i) => (
-                      <div key={i + 1} ref={el => { pageRefs.current[i] = el; }} className="pdf-page-wrapper">
-                        <Page pageNumber={i + 1} scale={scale} renderAnnotationLayer renderTextLayer />
-                      </div>
-                    ))}
+                    {numPages && Array.from({ length: numPages }, (_, i) => {
+                      const pageNum = i + 1;
+                      const WIN = 5; // render ±5 pages around current
+                      const inWindow = Math.abs(pageNum - currentPage) <= WIN;
+                      return (
+                        <div key={pageNum} ref={el => { pageRefs.current[i] = el; }} className="pdf-page-wrapper">
+                          {inWindow ? (
+                            <Page
+                              pageNumber={pageNum}
+                              scale={scale}
+                              renderAnnotationLayer
+                              renderTextLayer
+                              onRenderSuccess={() => {
+                                // measure page height once from first rendered page
+                                if (!pageHeight && pageRefs.current[i]) {
+                                  setPageHeight(pageRefs.current[i].getBoundingClientRect().height);
+                                }
+                              }}
+                            />
+                          ) : (
+                            // placeholder keeps scroll position stable
+                            <div style={{ height: pageHeight || 900, background: '#fff', border: '1px solid #e0e0e0' }} />
+                          )}
+                        </div>
+                      );
+                    })}
                   </Document>
 
                   {selectMode && (
