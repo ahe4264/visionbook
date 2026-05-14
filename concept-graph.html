@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Concept Graph — Cameras as Linear Systems</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 16px 24px 12px;
+    border-bottom: 1px solid #1e2535;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 15px; font-weight: 700; color: #f1f5f9; }
+  header span { font-size: 12px; color: #64748b; }
+
+  #graph { flex: 1; position: relative; }
+  svg { width: 100%; height: 100%; }
+
+  /* Node circles */
+  .node-circle {
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .node-circle:hover { filter: brightness(1.3); }
+
+  .node-label {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    pointer-events: none;
+    text-anchor: middle;
+    dominant-baseline: central;
+  }
+
+  /* Edge */
+  .edge {
+    stroke: #334155;
+    stroke-width: 1.5;
+    fill: none;
+  }
+  .edge-dep {
+    stroke: #475569;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    fill: none;
+    marker-end: url(#dep-arr);
+  }
+
+  /* Detail panel */
+  #panel {
+    position: absolute;
+    top: 16px; right: 16px; bottom: 16px;
+    width: 300px;
+    background: #1a1f2e;
+    border: 1px solid #2d3748;
+    border-radius: 10px;
+    padding: 20px;
+    display: none;
+    overflow-y: auto;
+    animation: fadeIn 0.15s ease;
+  }
+  #panel.visible { display: flex; flex-direction: column; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+  .panel-badge {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; padding: 2px 8px;
+    border-radius: 4px; display: inline-block; margin-bottom: 10px;
+  }
+  .panel-title { font-size: 16px; font-weight: 700; margin-bottom: 14px; color: #f1f5f9; }
+
+  .slot { display: flex; gap: 10px; margin-bottom: 10px; align-items: flex-start; }
+  .slot-icon {
+    width: 26px; height: 26px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; flex-shrink: 0; margin-top: 1px;
+  }
+  .slot-content { flex: 1; }
+  .slot-type { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; }
+  .slot-text { font-size: 12px; color: #cbd5e1; margin-top: 1px; line-height: 1.45; }
+
+  .deps-row { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2d3748; }
+  .deps-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin-bottom: 6px; }
+  .dep-tag {
+    display: inline-block; font-size: 11px; font-weight: 500;
+    padding: 2px 8px; border-radius: 4px; margin: 2px 3px 2px 0;
+    background: #1e2a3a; border: 1px solid #334155; color: #93c5fd;
+  }
+
+  .close-btn {
+    position: absolute; top: 12px; right: 14px;
+    background: none; border: none; color: #64748b;
+    font-size: 16px; cursor: pointer; line-height: 1;
+    padding: 2px 4px; border-radius: 3px;
+  }
+  .close-btn:hover { color: #e2e8f0; background: #2d3748; }
+
+  .lg-line { width: 24px; border-top: 1.5px dashed #475569; flex-shrink: 0; }
+
+  #hint {
+    position: absolute; bottom: 20px; right: 20px;
+    font-size: 11px; color: #334155;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Concept Graph</h1>
+  <span>Chapter: Cameras as Linear Systems · click any node to inspect</span>
+</header>
+
+<div id="graph">
+  <svg id="svg"></svg>
+
+  <!-- Detail panel -->
+  <div id="panel">
+    <button class="close-btn" onclick="closePanel()">×</button>
+    <div id="p-badge" class="panel-badge"></div>
+    <div id="p-title" class="panel-title"></div>
+    <div id="p-slots"></div>
+    <div id="p-deps" class="deps-row" style="display:none">
+      <div class="deps-label">Depends on</div>
+      <div id="p-dep-tags"></div>
+    </div>
+  </div>
+
+  <div id="legend" style="position:absolute;bottom:20px;left:20px;display:flex;flex-direction:column;gap:5px;">
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#10b981;flex-shrink:0"></div>Foundation (depth 0)</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#0ea5e9;flex-shrink:0"></div>Mid-level (depth 1–2)</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#6366f1;flex-shrink:0"></div>Advanced (depth 3+)</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div class="lg-line"></div>enables →</div>
+  </div>
+
+  <div id="hint">Drag nodes · Scroll to zoom</div>
+</div>
+
+<script>
+// ── Load graph data ─────────────────────────────────────────────────────────
+// If served via the backend (/api/concept-graph/:chapter), data is injected.
+// Otherwise falls back to hardcoded sample data below.
+
+async function loadGraphData() {
+  // 1. Inline injected data (when opened via openWithData)
+  if (window.__GRAPH_DATA__) return adaptServerGraph(window.__GRAPH_DATA__);
+
+  // 2. URL param — works both via server (/api) and file:// (talks to localhost:3001)
+  const params = new URLSearchParams(location.search);
+  const chapter = params.get('chapter');
+  if (chapter) {
+    const base = location.protocol === 'file:' ? 'http://localhost:3001' : '';
+    try {
+      const resp = await fetch(`${base}/api/concept-graph/${chapter}`);
+      if (resp.ok) return adaptServerGraph(await resp.json());
+    } catch { /* fall through */ }
+  }
+  return SAMPLE_GRAPH;
+}
+
+// Adapt the server's .graph.json format to the D3 GRAPH format
+function adaptServerGraph(json) {
+  // Assign tiers by topological depth: 0=foundation, 1=mid, 2+=advanced
+  const topoDepth = computeTopoDepth(json.concepts);
+  const maxDepth  = Math.max(1, ...Object.values(topoDepth));
+
+  const nodes = json.concepts.map(c => {
+    const d = topoDepth[c.id] || 0;
+    const tier = d === 0 ? 'foundation' : d <= 2 ? 'mid' : 'core';
+    return {
+      id:    c.id,
+      label: c.label,
+      tier,
+      slots: {
+        motivation:   c.slots?.motivation   || null,
+        example:      c.slots?.example      || null,
+        demo:         c.slots?.demo         || [],
+        question:     c.slots?.question     || null,
+        key_passage:  c.slots?.key_passage  || null,
+        pset:         c.slots?.pset         || '',
+        visual:       c.slots?.visual       || [],
+      },
+      deps:        c.deps,
+      section_ids: c.section_ids || [],
+    };
+  });
+
+  // Build edges from deps
+  const edges = [];
+  nodes.forEach(n => n.deps.forEach(d => edges.push({ source: d, target: n.id, type: 'dep' })));
+
+  return { nodes, edges, title: json.chapterTitle };
+}
+
+// ── Hardcoded sample data (used when no server / chapter param) ─────────────
+const SAMPLE_GRAPH = { title: 'Cameras as Linear Systems', edges: [], nodes: [] };
+
+// Bootstrap
+const GRAPH = {
+  nodes: [
+    {
+      id: 'pinhole', label: 'Pinhole Camera', tier: 'core',
+      slots: {
+        motivation: 'Why cameras can be modeled as linear maps between 3D world and 2D image plane.',
+        example: 'A ray passes through a small aperture and projects onto the image plane behind it.',
+        demo: 'Interactive pinhole scene (figure pipeline)',
+        question: 'What happens to image size as focal length increases?',
+      },
+      deps: ['projection', 'linear_maps'],
+    },
+    {
+      id: 'projection', label: 'Projection', tier: 'mid',
+      slots: {
+        motivation: 'Mapping 3D world coordinates to 2D image coordinates.',
+        example: 'Perspective projection vs. orthographic — how depth affects scale.',
+        demo: 'Interactive projection figure',
+        question: 'Why do parallel lines converge in a perspective image?',
+      },
+      deps: ['linear_maps'],
+    },
+    {
+      id: 'linear_maps', label: 'Linear Maps', tier: 'foundation',
+      slots: {
+        motivation: 'Matrices represent transformations that preserve linear structure.',
+        example: '2D rotation matrix: how a vector rotates by angle θ.',
+        demo: 'Interactive transform figure',
+        question: 'What does the determinant of a transformation matrix tell you?',
+      },
+      deps: [],
+    },
+    {
+      id: 'camera_matrix', label: 'Camera Matrix', tier: 'core',
+      slots: {
+        motivation: 'Encodes intrinsic camera parameters (focal length, principal point) into a single matrix.',
+        example: 'Calibration from a checkerboard: recovering K from image–world correspondences.',
+        demo: 'Intrinsic parameter explorer',
+        question: 'Which parameter shifts the optical axis without rotating the camera?',
+      },
+      deps: ['pinhole', 'homogeneous_coords'],
+    },
+    {
+      id: 'homogeneous_coords', label: 'Homogeneous Coords', tier: 'mid',
+      slots: {
+        motivation: 'Represent projective transformations (including translation) as matrix multiplication.',
+        example: 'Point (x, y) → (x, y, 1); point at infinity with w = 0.',
+        demo: 'Homogeneous coordinate visualizer',
+        question: 'How do you convert from homogeneous back to Cartesian coordinates?',
+      },
+      deps: ['linear_maps'],
+    },
+    {
+      id: 'epipolar', label: 'Epipolar Geometry', tier: 'core',
+      slots: {
+        motivation: 'Constraint relating corresponding points across two camera views.',
+        example: 'Given a point in left image, its match in right image lies on the epipolar line.',
+        demo: 'Two-camera epipolar line visualizer',
+        question: 'What is the epipole and where does it appear in an image?',
+      },
+      deps: ['camera_matrix', 'projection'],
+    },
+    {
+      id: 'image_formation', label: 'Image Formation', tier: 'mid',
+      slots: {
+        motivation: 'How scene radiance, lens optics, and sensor sampling combine to produce a digital image.',
+        example: 'Exposure triangle: aperture, shutter speed, ISO trade-offs.',
+        demo: 'Image formation simulator',
+        question: 'Why does a smaller aperture increase depth of field?',
+      },
+      deps: ['pinhole'],
+    },
+  ],
+  edges: [] // will be built from deps
+};
+
+// Build edges from deps
+GRAPH.nodes.forEach(n => {
+  n.deps.forEach(d => {
+    GRAPH.edges.push({ source: d, target: n.id, type: 'dep' });
+  });
+});
+
+// ── Node sizing by in-degree ────────────────────────────────────────────────
+// in-degree = how many other concepts depend on this one
+function computeInDegree(nodes) {
+  const deg = {};
+  nodes.forEach(n => { deg[n.id] = 0; });
+  nodes.forEach(n => (n.deps || []).forEach(d => { if (deg[d] !== undefined) deg[d]++; }));
+  return deg;
+}
+
+// radius: 38 (leaf) → 56 (most depended-on)
+function nodeRadius(inDeg, maxDeg) {
+  if (maxDeg === 0) return 42;
+  return 38 + Math.round((inDeg / maxDeg) * 18);
+}
+
+// Topological depth: depth 0 = no prerequisites (foundational), depth 2+ = advanced
+function computeTopoDepth(nodes) {
+  const depMap = {};
+  nodes.forEach(n => { depMap[n.id] = n.deps || []; });
+  const depth = {};
+  const visiting = new Set();
+  function getDepth(id) {
+    if (depth[id] !== undefined) return depth[id];
+    if (visiting.has(id)) return 0; // cycle guard
+    visiting.add(id);
+    const prereqs = depMap[id] || [];
+    depth[id] = prereqs.length === 0 ? 0 : 1 + Math.max(...prereqs.map(p => getDepth(p)));
+    visiting.delete(id);
+    return depth[id];
+  }
+  nodes.forEach(n => getDepth(n.id));
+  return depth;
+}
+
+const TIER_COLOR = {
+  foundation: { fill: '#10b981', stroke: '#34d399', badge_bg: '#052e16', badge_fg: '#6ee7b7', label: 'Foundation' },
+  mid:        { fill: '#0ea5e9', stroke: '#38bdf8', badge_bg: '#0c2a40', badge_fg: '#7dd3fc', label: 'Mid-level'  },
+  core:       { fill: '#6366f1', stroke: '#818cf8', badge_bg: '#1e1b4b', badge_fg: '#a5b4fc', label: 'Advanced'   },
+};
+
+const SLOT_META = {
+  motivation: { icon: '💡', iconBg: '#1e2d4a' },
+  example:    { icon: '📐', iconBg: '#1a2e2a' },
+  demo:       { icon: '🎮', iconBg: '#1e1f3a' },
+  question:   { icon: '❓', iconBg: '#2a1e2a' },
+  pset:       { icon: '📝', iconBg: '#2a2020' },
+  visual:     { icon: '🖼',  iconBg: '#1e2a20' },
+};
+
+// ── D3 render ───────────────────────────────────────────────────────────────
+function renderGraph(graphData) {
+  const nodes = graphData.nodes;
+  const edges = graphData.edges;
+
+  document.querySelector('header h1').textContent = graphData.title || 'Concept Graph';
+
+  const svg = d3.select('#svg');
+  const graphDiv = document.getElementById('graph');
+  let W = graphDiv.clientWidth, H = graphDiv.clientHeight;
+  const g = svg.append('g').attr('class', 'zoom-layer');
+
+  const zoom = d3.zoom().scaleExtent([0.3, 2.5])
+    .on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom);
+
+  const defs = svg.append('defs');
+  defs.append('marker')
+    .attr('id', 'dep-arr').attr('markerWidth', 8).attr('markerHeight', 8)
+    .attr('refX', 8).attr('refY', 3).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,6 L8,3 z').attr('fill', '#475569');
+
+  const inDeg = computeInDegree(nodes);
+  const maxDeg = Math.max(1, ...Object.values(inDeg));
+  nodes.forEach(n => { n._r = nodeRadius(inDeg[n.id] || 0, maxDeg); });
+
+  // ── Hierarchical layout: fixed columns by topo depth ─────────────────────
+  const topoD = computeTopoDepth(nodes);
+  const maxTD = Math.max(1, ...Object.values(topoD));
+
+  // Group nodes by depth column
+  const columns = {};
+  nodes.forEach(n => {
+    const d = topoD[n.id] || 0;
+    if (!columns[d]) columns[d] = [];
+    columns[d].push(n);
+  });
+
+  // Hierarchical layout: pin each node to its topo-depth column
+  const numCols = maxTD + 1;
+  const marginX = 100;
+  function colX(depth) {
+    if (numCols <= 1) return W / 2;
+    return marginX + depth * (W - marginX * 2) / (numCols - 1);
+  }
+
+  // Set initial positions deterministically by column + row
+  nodes.forEach(n => {
+    const d = topoD[n.id] || 0;
+    const col = columns[d];
+    const idx = col.indexOf(n);
+    n.x = colX(d);
+    n.y = H * (idx + 1) / (col.length + 1);
+  });
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link',    d3.forceLink(edges).id(d => d.id).distance(130).strength(0.5))
+    .force('charge',  d3.forceManyBody().strength(-300))
+    .force('x',       d3.forceX(n => colX(topoD[n.id] || 0)).strength(0.9))
+    .force('y',       d3.forceY(H / 2).strength(0.05))
+    .force('collide', d3.forceCollide(d => d._r + 20))
+    .alphaDecay(0.02);
+
+  const edgeGroup = g.append('g');
+  const edgeLines = edgeGroup.selectAll('path')
+    .data(edges).join('path').attr('class', 'edge-dep');
+
+  const nodeGroup = g.append('g');
+  const nodeG = nodeGroup.selectAll('g')
+    .data(nodes).join('g').attr('class', 'node-g')
+    .call(drag(sim))
+    .on('click', (event, d) => { event.stopPropagation(); showPanel(d, nodes); });
+
+  nodeG.append('circle').attr('r', d => d._r).attr('class', 'node-circle')
+    .attr('fill',   d => TIER_COLOR[d.tier].fill)
+    .attr('stroke', d => TIER_COLOR[d.tier].stroke)
+    .attr('stroke-width', 2);
+
+  nodeG.each(function(d) {
+    const words = d.label.split(' ');
+    const lines = [];
+    let cur = '';
+    words.forEach(w => {
+      const test = cur ? cur + ' ' + w : w;
+      if (test.length > 13 && cur) { lines.push(cur); cur = w; } else cur = test;
+    });
+    if (cur) lines.push(cur);
+    const lineH = 13;
+    const el = d3.select(this);
+    const offsetY = -((lines.length - 1) * lineH) / 2;
+    lines.forEach((line, i) => {
+      el.append('text').attr('class', 'node-label').attr('y', offsetY + i * lineH).attr('fill', '#fff').text(line);
+    });
+  });
+
+  sim.on('tick', () => {
+    edgeLines.attr('d', d => {
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const len = Math.sqrt(dx*dx + dy*dy) || 1;
+      const rs = d.source._r || 30, rt = (d.target._r || 30) + 8; // +8 for arrowhead
+      return `M${d.source.x+(dx/len)*rs},${d.source.y+(dy/len)*rs} L${d.target.x-(dx/len)*rt},${d.target.y-(dy/len)*rt}`;
+    });
+    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  window.addEventListener('resize', () => {
+    W = graphDiv.clientWidth; H = graphDiv.clientHeight;
+    sim
+      .force('x', d3.forceX(n => colX(topoD[n.id] || 0)).strength(0.9))
+      .force('y', d3.forceY(H / 2).strength(0.05))
+      .alpha(0.3).restart();
+  });
+
+  svg.on('click', () => closePanel());
+}
+
+function drag(simulation) {
+  return d3.drag()
+    .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; d._colFixed = false; })
+    .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end',   (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; });
+}
+
+// ── Panel ──────────────────────────────────────────────────────────────────
+function showPanel(d, allNodes) {
+  const tc = TIER_COLOR[d.tier];
+  const badge = document.getElementById('p-badge');
+  badge.textContent = tc.label;
+  badge.style.background = tc.badge_bg;
+  badge.style.color = tc.badge_fg;
+  badge.style.border = `1px solid ${tc.stroke}40`;
+
+  document.getElementById('p-title').textContent = d.label;
+
+  const slotsEl = document.getElementById('p-slots');
+  slotsEl.innerHTML = '';
+
+  // Text slots — extracted from book
+  const TEXT_SLOTS = ['motivation', 'example', 'question', 'key_passage'];
+  TEXT_SLOTS.forEach(type => {
+    const val = d.slots[type];
+    if (!val) return;
+    const m = SLOT_META[type] || { icon: '•', iconBg: '#1e2a3a' };
+    // Support both old plain-string format and new { text, section } format
+    const text    = typeof val === 'object' ? val.text    : val;
+    const section = typeof val === 'object' ? val.section : null;
+    slotsEl.innerHTML += `
+      <div class="slot">
+        <div class="slot-icon" style="background:${m.iconBg}">${m.icon}</div>
+        <div class="slot-content">
+          <div class="slot-type">${type.replace('_', ' ')}</div>
+          <div class="slot-text">${text}</div>
+          ${section ? `<div style="font-size:9px;color:#475569;margin-top:3px;font-style:italic;">§ ${section}</div>` : ''}
+        </div>
+      </div>`;
+  });
+
+  // Visual slot — show as images
+  const visuals = d.slots.visual || [];
+  if (visuals.length > 0) {
+    const backendBase = location.port === '3001' ? '' : 'http://localhost:3001';
+    let imgHtml = `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2d3748;">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:8px;">🖼 Original Figures</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">`;
+    visuals.forEach(v => {
+      const stem = v.stem || v;
+      imgHtml += `<div style="text-align:center">
+        <img src="${backendBase}/api/figure-image/${encodeURIComponent(stem)}"
+          style="max-width:200px;max-height:140px;border-radius:4px;border:1px solid #334155;display:block;background:#1e293b"
+          onerror="this.style.display='none'"
+          alt="${stem}"/>
+        <div style="font-size:9px;color:#64748b;margin-top:3px">${stem}</div>
+      </div>`;
+    });
+    imgHtml += `</div></div>`;
+    slotsEl.innerHTML += imgHtml;
+  }
+
+  // Demo slot — linked augmented figures
+  const demos = d.slots.demo || [];
+  if (demos.length > 0) {
+    let demoHtml = `<div style="margin-top:10px;">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:6px;">🎮 Augmented Figures</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">`;
+    demos.forEach(d => {
+      demoHtml += `<span style="font-size:11px;padding:3px 9px;border-radius:4px;background:#1e1b4b;border:1px solid #4f46e5;color:#a5b4fc;font-weight:600">
+        ${d.stem} · score ${typeof d.score === 'number' ? d.score.toFixed(1) : '?'}
+      </span>`;
+    });
+    demoHtml += `</div></div>`;
+    slotsEl.innerHTML += demoHtml;
+  }
+
+  const depsEl = document.getElementById('p-deps');
+  const tagsEl = document.getElementById('p-dep-tags');
+  if (d.deps && d.deps.length > 0) {
+    depsEl.style.display = 'block';
+    tagsEl.innerHTML = d.deps.map(dep => {
+      const n = allNodes.find(n => n.id === dep);
+      return `<span class="dep-tag">${n ? n.label : dep}</span>`;
+    }).join('');
+  } else {
+    depsEl.style.display = 'none';
+  }
+
+
+  document.getElementById('panel').classList.add('visible');
+}
+
+function closePanel() {
+  document.getElementById('panel').classList.remove('visible');
+}
+
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+loadGraphData().then(renderGraph);
+</script>
+</body>
+</html>
