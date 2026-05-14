@@ -435,23 +435,37 @@ function renderGraph(graphData) {
     }
   }
 
-  // Lock x; record computed y as soft targets
-  nodes.forEach(n => { n.fx = n.x; n._colX = n.x; n._ty = n.y; });
+  // Resolve edge source/target from string IDs to node objects
+  edges.forEach(e => {
+    if (typeof e.source === 'string') e.source = nodeById[e.source];
+    if (typeof e.target === 'string') e.target = nodeById[e.target];
+  });
+  const validEdges = edges.filter(e => e.source && e.target);
 
-  // Simulation: only vertical nudging + collision; x is fixed
-  const sim = d3.forceSimulation(nodes)
-    .force('y',       d3.forceY(n => n._ty).strength(0.5))
-    .force('collide', d3.forceCollide(d => d._r + 14))
-    .alphaDecay(0.04);
+  function edgePath(e) {
+    const dx = e.target.x - e.source.x, dy = e.target.y - e.source.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const rs = (e.source._r || 30) + 2, rt = (e.target._r || 30) + 10;
+    return `M${e.source.x + dx/len*rs},${e.source.y + dy/len*rs} L${e.target.x - dx/len*rt},${e.target.y - dy/len*rt}`;
+  }
 
+  // Draw edges then nodes (edges behind)
   const edgeGroup = g.append('g');
   const edgeLines = edgeGroup.selectAll('path')
-    .data(edges).join('path').attr('class', 'edge-dep');
+    .data(validEdges).join('path').attr('class', 'edge-dep')
+    .attr('d', edgePath);
 
   const nodeGroup = g.append('g');
   const nodeG = nodeGroup.selectAll('g')
     .data(nodes).join('g').attr('class', 'node-g')
-    .call(drag(sim))
+    .attr('transform', d => `translate(${d.x},${d.y})`)
+    .call(d3.drag()
+      .on('drag', function(e, d) {
+        d.y += e.dy; // x stays locked to column
+        d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
+        edgeLines.attr('d', edgePath);
+      })
+    )
     .on('click', (event, d) => { event.stopPropagation(); showPanel(d, nodes); });
 
   nodeG.append('circle').attr('r', d => d._r).attr('class', 'node-circle')
@@ -476,35 +490,14 @@ function renderGraph(graphData) {
     });
   });
 
-  sim.on('tick', () => {
-    edgeLines.attr('d', d => {
-      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-      const len = Math.sqrt(dx*dx + dy*dy) || 1;
-      const rs = d.source._r || 30, rt = (d.target._r || 30) + 8; // +8 for arrowhead
-      return `M${d.source.x+(dx/len)*rs},${d.source.y+(dy/len)*rs} L${d.target.x-(dx/len)*rt},${d.target.y-(dy/len)*rt}`;
-    });
-    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
-  });
-
   window.addEventListener('resize', () => {
     W = graphDiv.clientWidth; H = graphDiv.clientHeight;
-    nodes.forEach(n => { n.fx = colX(topoD[n.id] || 0); n._colX = n.fx; });
-    sim.force('y', d3.forceY(n => n._ty).strength(0.5)).alpha(0.3).restart();
+    nodes.forEach(n => { n.x = colX(topoD[n.id] || 0); });
+    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+    edgeLines.attr('d', edgePath);
   });
 
   svg.on('click', () => closePanel());
-}
-
-function drag(simulation) {
-  return d3.drag()
-    .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fy = d.y; })
-    .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
-    .on('end',   (e, d) => {
-      if (!e.active) simulation.alphaTarget(0);
-      // snap x back to column, release y
-      d.fx = d._colX;
-      d.fy = null;
-    });
 }
 
 // ── Panel ──────────────────────────────────────────────────────────────────
