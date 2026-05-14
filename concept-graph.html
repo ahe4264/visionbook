@@ -5,6 +5,7 @@
 <title>Concept Graph — Cameras as Linear Systems</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -31,35 +32,10 @@
   #graph { flex: 1; position: relative; }
   svg { width: 100%; height: 100%; }
 
-  /* Node circles */
-  .node-circle {
-    cursor: pointer;
-    transition: filter 0.15s;
-  }
-  .node-circle:hover { filter: brightness(1.3); }
-
-  .node-label {
-    font-family: 'Inter', system-ui, sans-serif;
-    font-size: 11px;
-    font-weight: 600;
-    pointer-events: none;
-    text-anchor: middle;
-    dominant-baseline: central;
-  }
-
-  /* Edge */
-  .edge {
-    stroke: #334155;
-    stroke-width: 1.5;
-    fill: none;
-  }
-  .edge-dep {
-    stroke: #475569;
-    stroke-width: 1.5;
-    stroke-dasharray: 4 3;
-    fill: none;
-    marker-end: url(#dep-arr);
-  }
+  /* Node cards */
+  .node-g { cursor: pointer; }
+  .node-g rect { transition: stroke-width 0.12s, filter 0.12s; }
+  .node-g:hover rect { filter: brightness(1.18); stroke-width: 2.5px !important; }
 
   /* Detail panel */
   #panel {
@@ -141,13 +117,13 @@
   </div>
 
   <div id="legend" style="position:absolute;bottom:20px;left:20px;display:flex;flex-direction:column;gap:5px;">
-    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#10b981;flex-shrink:0"></div>Foundation (depth 0)</div>
-    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#0ea5e9;flex-shrink:0"></div>Mid-level (depth 1–2)</div>
-    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:11px;height:11px;border-radius:50%;background:#6366f1;flex-shrink:0"></div>Advanced (depth 3+)</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:14px;height:10px;border-radius:2px;background:#0a2a1a;border:1.5px solid #34d399;flex-shrink:0"></div>Foundation</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:14px;height:10px;border-radius:2px;background:#0a1f2e;border:1.5px solid #38bdf8;flex-shrink:0"></div>Mid-level</div>
+    <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div style="width:14px;height:10px;border-radius:2px;background:#16133a;border:1.5px solid #818cf8;flex-shrink:0"></div>Advanced</div>
     <div style="display:flex;align-items:center;gap:7px;font-size:11px;color:#64748b;"><div class="lg-line"></div>enables →</div>
   </div>
 
-  <div id="hint">Drag nodes · Scroll to zoom</div>
+  <div id="hint">Scroll to zoom · Click to inspect</div>
 </div>
 
 <script>
@@ -293,21 +269,6 @@ GRAPH.nodes.forEach(n => {
   });
 });
 
-// ── Node sizing by in-degree ────────────────────────────────────────────────
-// in-degree = how many other concepts depend on this one
-function computeInDegree(nodes) {
-  const deg = {};
-  nodes.forEach(n => { deg[n.id] = 0; });
-  nodes.forEach(n => (n.deps || []).forEach(d => { if (deg[d] !== undefined) deg[d]++; }));
-  return deg;
-}
-
-// radius: 38 (leaf) → 56 (most depended-on)
-function nodeRadius(inDeg, maxDeg) {
-  if (maxDeg === 0) return 42;
-  return 38 + Math.round((inDeg / maxDeg) * 18);
-}
-
 // Topological depth: depth 0 = no prerequisites (foundational), depth 2+ = advanced
 function computeTopoDepth(nodes) {
   const depMap = {};
@@ -342,161 +303,161 @@ const SLOT_META = {
   visual:     { icon: '🖼',  iconBg: '#1e2a20' },
 };
 
-// ── D3 render ───────────────────────────────────────────────────────────────
+// ── Dagre-based render ───────────────────────────────────────────────────────
+const NODE_W   = 148;
+const NODE_PAD = 11;   // top/bottom padding inside card
+const LINE_H   = 15;
+const MAX_CHARS = 17;
+
+const TIER_BG = {
+  foundation: '#0a2a1a',
+  mid:        '#081e2e',
+  core:       '#13103a',
+};
+
+function wrapLabel(label) {
+  const words = label.split(' ');
+  const lines = [];
+  let cur = '';
+  words.forEach(w => {
+    const test = cur ? `${cur} ${w}` : w;
+    if (test.length > MAX_CHARS && cur) { lines.push(cur); cur = w; }
+    else cur = test;
+  });
+  if (cur) lines.push(cur);
+  return lines;
+}
+
 function renderGraph(graphData) {
-  const nodes = graphData.nodes;
-  const edges = graphData.edges;
+  const nodes = graphData.nodes.slice();
+  const edges = graphData.edges.slice();
 
   document.querySelector('header h1').textContent = graphData.title || 'Concept Graph';
 
-  const svg = d3.select('#svg');
+  // Clear previous render
+  const svgEl = document.getElementById('svg');
+  svgEl.innerHTML = '';
+
+  const svg    = d3.select(svgEl);
   const graphDiv = document.getElementById('graph');
   let W = graphDiv.clientWidth, H = graphDiv.clientHeight;
-  const g = svg.append('g').attr('class', 'zoom-layer');
 
-  const zoom = d3.zoom().scaleExtent([0.3, 2.5])
-    .on('zoom', e => g.attr('transform', e.transform));
-  svg.call(zoom);
-
+  // Arrow marker (solid, clean)
   const defs = svg.append('defs');
   defs.append('marker')
-    .attr('id', 'dep-arr').attr('markerWidth', 8).attr('markerHeight', 8)
-    .attr('refX', 8).attr('refY', 3).attr('orient', 'auto')
-    .append('path').attr('d', 'M0,0 L0,6 L8,3 z').attr('fill', '#475569');
+    .attr('id', 'arr').attr('markerWidth', 8).attr('markerHeight', 8)
+    .attr('refX', 7).attr('refY', 4).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,8 L8,4 z').attr('fill', '#64748b');
 
-  const inDeg = computeInDegree(nodes);
-  const maxDeg = Math.max(1, ...Object.values(inDeg));
-  nodes.forEach(n => { n._r = nodeRadius(inDeg[n.id] || 0, maxDeg); });
+  const root = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.1, 3])
+    .on('zoom', e => root.attr('transform', e.transform));
+  svg.call(zoom);
 
-  // ── Hierarchical layout: fixed columns by topo depth ─────────────────────
-  const topoD = computeTopoDepth(nodes);
-  const maxTD = Math.max(1, ...Object.values(topoD));
-
-  // Group nodes by depth column
-  const columns = {};
-  nodes.forEach(n => {
-    const d = topoD[n.id] || 0;
-    if (!columns[d]) columns[d] = [];
-    columns[d].push(n);
-  });
-
-  // ── Strict column layout with barycenter y-optimisation ─────────────────────
-  const numCols = maxTD + 1;
-  const marginX = 130;
-  const marginY = 70;
-  const minGap  = 110; // min vertical spacing between nodes in same column
-
-  function colX(depth) {
-    if (numCols <= 1) return W / 2;
-    return marginX + depth * (W - marginX * 2) / (numCols - 1);
-  }
-
-  // Spread a column's nodes evenly, centred vertically, with minimum gap
-  function spreadCol(ns) {
-    if (ns.length <= 1) return;
-    ns.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < ns.length; i++) {
-      if (ns[i].y < ns[i - 1].y + minGap) ns[i].y = ns[i - 1].y + minGap;
-    }
-    const span  = ns[ns.length - 1].y - ns[0].y;
-    const shift = (H - span) / 2 - ns[0].y;
-    ns.forEach(n => { n.y += shift; });
-  }
-
-  // Initialise: evenly spaced in column
-  Object.keys(columns).forEach(col => {
-    const ns = columns[col];
-    ns.forEach((n, i) => {
-      n.x = colX(parseInt(col));
-      n.y = marginY + i * Math.max((H - marginY * 2) / Math.max(ns.length - 1, 1), minGap);
-    });
-  });
-
-  // Barycenter iterations (Sugiyama-style) — minimises edge crossings
+  // ── Compute node dimensions from label ──────────────────────────────────────
   const nodeById = {};
-  nodes.forEach(n => { nodeById[n.id] = n; });
-
-  for (let iter = 0; iter < 30; iter++) {
-    // Forward pass: align each node to the average y of its prerequisites
-    for (let d = 1; d <= maxTD; d++) {
-      (columns[d] || []).forEach(n => {
-        const preds = (n.deps || []).map(id => nodeById[id]).filter(Boolean);
-        if (preds.length) n.y = preds.reduce((s, p) => s + p.y, 0) / preds.length;
-      });
-      spreadCol(columns[d] || []);
-    }
-    // Backward pass: align each node to the average y of its dependents
-    for (let d = maxTD - 1; d >= 0; d--) {
-      (columns[d] || []).forEach(n => {
-        const succs = nodes.filter(m => (m.deps || []).includes(n.id));
-        if (succs.length) n.y = succs.reduce((s, m) => s + m.y, 0) / succs.length;
-      });
-      spreadCol(columns[d] || []);
-    }
-  }
-
-  // Resolve edge source/target from string IDs to node objects
-  edges.forEach(e => {
-    if (typeof e.source === 'string') e.source = nodeById[e.source];
-    if (typeof e.target === 'string') e.target = nodeById[e.target];
+  nodes.forEach(n => {
+    n._lines = wrapLabel(n.label);
+    n._w     = NODE_W;
+    n._h     = NODE_PAD * 2 + n._lines.length * LINE_H;
+    nodeById[n.id] = n;
   });
-  const validEdges = edges.filter(e => e.source && e.target);
 
-  function edgePath(e) {
-    const dx = e.target.x - e.source.x, dy = e.target.y - e.source.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const rs = (e.source._r || 30) + 2, rt = (e.target._r || 30) + 10;
-    return `M${e.source.x + dx/len*rs},${e.source.y + dy/len*rs} L${e.target.x - dx/len*rt},${e.target.y - dy/len*rt}`;
-  }
+  // ── Build Dagre graph ───────────────────────────────────────────────────────
+  const dg = new dagre.graphlib.Graph({ directed: true, multigraph: false });
+  dg.setGraph({ rankdir: 'LR', nodesep: 22, ranksep: 80, marginx: 36, marginy: 36 });
+  dg.setDefaultEdgeLabel(() => ({}));
 
-  // Draw edges then nodes (edges behind)
-  const edgeGroup = g.append('g');
-  const edgeLines = edgeGroup.selectAll('path')
-    .data(validEdges).join('path').attr('class', 'edge-dep')
-    .attr('d', edgePath);
+  nodes.forEach(n => dg.setNode(n.id, { width: n._w, height: n._h }));
 
-  const nodeGroup = g.append('g');
-  const nodeG = nodeGroup.selectAll('g')
-    .data(nodes).join('g').attr('class', 'node-g')
-    .attr('transform', d => `translate(${d.x},${d.y})`)
-    .call(d3.drag()
-      .on('drag', function(e, d) {
-        d.y += e.dy; // x stays locked to column
-        d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
-        edgeLines.attr('d', edgePath);
-      })
-    )
+  // Resolve and de-duplicate edges
+  const addedEdges = new Set();
+  edges.forEach(e => {
+    const sid = typeof e.source === 'object' ? e.source.id : e.source;
+    const tid = typeof e.target === 'object' ? e.target.id : e.target;
+    const key = `${sid}→${tid}`;
+    if (nodeById[sid] && nodeById[tid] && sid !== tid && !addedEdges.has(key)) {
+      dg.setEdge(sid, tid);
+      addedEdges.add(key);
+    }
+  });
+
+  dagre.layout(dg);
+
+  // Apply Dagre positions to nodes
+  nodes.forEach(n => {
+    const p = dg.node(n.id);
+    if (p) { n.x = p.x; n.y = p.y; }
+  });
+
+  // Fit the whole graph in the viewport on first load
+  const gi = dg.graph();
+  const gw = (gi.width  || W) + 72;
+  const gh = (gi.height || H) + 72;
+  const scale = Math.min(W / gw, H / gh, 1.0);
+  svg.call(zoom.transform,
+    d3.zoomIdentity
+      .translate((W - gw * scale) / 2 + 36 * scale, (H - gh * scale) / 2 + 36 * scale)
+      .scale(scale)
+  );
+
+  // ── Draw edges ──────────────────────────────────────────────────────────────
+  const edgeLayer = root.append('g');
+
+  dg.edges().forEach(e => {
+    const pts = dg.edge(e).points;
+    if (!pts || pts.length < 2) return;
+
+    // Smooth catmull-rom through dagre's control points
+    const line = d3.line().x(p => p.x).y(p => p.y)
+      .curve(d3.curveCatmullRom.alpha(0.5));
+
+    edgeLayer.append('path')
+      .attr('d', line(pts))
+      .attr('fill', 'none')
+      .attr('stroke', '#3d4f63')
+      .attr('stroke-width', 1.5)
+      .attr('marker-end', 'url(#arr)');
+  });
+
+  // ── Draw nodes ──────────────────────────────────────────────────────────────
+  const nodeLayer = root.append('g');
+
+  const nodeG = nodeLayer.selectAll('g')
+    .data(nodes).join('g')
+    .attr('class', 'node-g')
+    .attr('transform', d => `translate(${d.x - d._w / 2},${d.y - d._h / 2})`)
     .on('click', (event, d) => { event.stopPropagation(); showPanel(d, nodes); });
 
-  nodeG.append('circle').attr('r', d => d._r).attr('class', 'node-circle')
-    .attr('fill',   d => TIER_COLOR[d.tier].fill)
-    .attr('stroke', d => TIER_COLOR[d.tier].stroke)
-    .attr('stroke-width', 2);
+  nodeG.append('rect')
+    .attr('width',  d => d._w)
+    .attr('height', d => d._h)
+    .attr('rx', 6).attr('ry', 6)
+    .attr('fill',         d => TIER_BG[d.tier] || '#13103a')
+    .attr('stroke',       d => TIER_COLOR[d.tier].stroke)
+    .attr('stroke-width', 1.5);
 
   nodeG.each(function(d) {
-    const words = d.label.split(' ');
-    const lines = [];
-    let cur = '';
-    words.forEach(w => {
-      const test = cur ? cur + ' ' + w : w;
-      if (test.length > 13 && cur) { lines.push(cur); cur = w; } else cur = test;
-    });
-    if (cur) lines.push(cur);
-    const lineH = 13;
-    const el = d3.select(this);
-    const offsetY = -((lines.length - 1) * lineH) / 2;
-    lines.forEach((line, i) => {
-      el.append('text').attr('class', 'node-label').attr('y', offsetY + i * lineH).attr('fill', '#fff').text(line);
+    const el      = d3.select(this);
+    const totalH  = d._lines.length * LINE_H;
+    const startY  = (d._h - totalH) / 2 + LINE_H * 0.78;
+    d._lines.forEach((line, i) => {
+      el.append('text')
+        .attr('x', d._w / 2)
+        .attr('y', startY + i * LINE_H)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#e2e8f0')
+        .attr('font-family', "'Inter', system-ui, sans-serif")
+        .attr('font-size', '11px')
+        .attr('font-weight', '600')
+        .attr('pointer-events', 'none')
+        .text(line);
     });
   });
 
   window.addEventListener('resize', () => {
     W = graphDiv.clientWidth; H = graphDiv.clientHeight;
-    nodes.forEach(n => { n.x = colX(topoD[n.id] || 0); });
-    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
-    edgeLines.attr('d', edgePath);
   });
-
   svg.on('click', () => closePanel());
 }
 
