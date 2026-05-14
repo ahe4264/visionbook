@@ -380,30 +380,69 @@ function renderGraph(graphData) {
     columns[d].push(n);
   });
 
-  // Hierarchical layout: pin each node to its topo-depth column
+  // ── Strict column layout with barycenter y-optimisation ─────────────────────
   const numCols = maxTD + 1;
-  const marginX = 100;
+  const marginX = 130;
+  const marginY = 70;
+  const minGap  = 110; // min vertical spacing between nodes in same column
+
   function colX(depth) {
     if (numCols <= 1) return W / 2;
     return marginX + depth * (W - marginX * 2) / (numCols - 1);
   }
 
-  // Set initial positions deterministically by column + row
-  nodes.forEach(n => {
-    const d = topoD[n.id] || 0;
-    const col = columns[d];
-    const idx = col.indexOf(n);
-    n.x = colX(d);
-    n.y = H * (idx + 1) / (col.length + 1);
+  // Spread a column's nodes evenly, centred vertically, with minimum gap
+  function spreadCol(ns) {
+    if (ns.length <= 1) return;
+    ns.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ns.length; i++) {
+      if (ns[i].y < ns[i - 1].y + minGap) ns[i].y = ns[i - 1].y + minGap;
+    }
+    const span  = ns[ns.length - 1].y - ns[0].y;
+    const shift = (H - span) / 2 - ns[0].y;
+    ns.forEach(n => { n.y += shift; });
+  }
+
+  // Initialise: evenly spaced in column
+  Object.keys(columns).forEach(col => {
+    const ns = columns[col];
+    ns.forEach((n, i) => {
+      n.x = colX(parseInt(col));
+      n.y = marginY + i * Math.max((H - marginY * 2) / Math.max(ns.length - 1, 1), minGap);
+    });
   });
 
+  // Barycenter iterations (Sugiyama-style) — minimises edge crossings
+  const nodeById = {};
+  nodes.forEach(n => { nodeById[n.id] = n; });
+
+  for (let iter = 0; iter < 30; iter++) {
+    // Forward pass: align each node to the average y of its prerequisites
+    for (let d = 1; d <= maxTD; d++) {
+      (columns[d] || []).forEach(n => {
+        const preds = (n.deps || []).map(id => nodeById[id]).filter(Boolean);
+        if (preds.length) n.y = preds.reduce((s, p) => s + p.y, 0) / preds.length;
+      });
+      spreadCol(columns[d] || []);
+    }
+    // Backward pass: align each node to the average y of its dependents
+    for (let d = maxTD - 1; d >= 0; d--) {
+      (columns[d] || []).forEach(n => {
+        const succs = nodes.filter(m => (m.deps || []).includes(n.id));
+        if (succs.length) n.y = succs.reduce((s, m) => s + m.y, 0) / succs.length;
+      });
+      spreadCol(columns[d] || []);
+    }
+  }
+
+  // Lock x; record computed y as soft targets
+  nodes.forEach(n => { n.fx = n.x; n._colX = n.x; n._ty = n.y; });
+
+  // Simulation: only vertical nudging + collision; x is fixed
   const sim = d3.forceSimulation(nodes)
-    .force('link',    d3.forceLink(edges).id(d => d.id).distance(130).strength(0.5))
-    .force('charge',  d3.forceManyBody().strength(-300))
-    .force('x',       d3.forceX(n => colX(topoD[n.id] || 0)).strength(0.9))
-    .force('y',       d3.forceY(H / 2).strength(0.05))
-    .force('collide', d3.forceCollide(d => d._r + 20))
-    .alphaDecay(0.02);
+    .force('y',       d3.forceY(n => n._ty).strength(0.5))
+    .force('collide', d3.forceCollide(d => d._r + 14))
+    .alphaDecay(0.04);
 
   const edgeGroup = g.append('g');
   const edgeLines = edgeGroup.selectAll('path')
@@ -449,10 +488,8 @@ function renderGraph(graphData) {
 
   window.addEventListener('resize', () => {
     W = graphDiv.clientWidth; H = graphDiv.clientHeight;
-    sim
-      .force('x', d3.forceX(n => colX(topoD[n.id] || 0)).strength(0.9))
-      .force('y', d3.forceY(H / 2).strength(0.05))
-      .alpha(0.3).restart();
+    nodes.forEach(n => { n.fx = colX(topoD[n.id] || 0); n._colX = n.fx; });
+    sim.force('y', d3.forceY(n => n._ty).strength(0.5)).alpha(0.3).restart();
   });
 
   svg.on('click', () => closePanel());
@@ -460,9 +497,14 @@ function renderGraph(graphData) {
 
 function drag(simulation) {
   return d3.drag()
-    .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; d._colFixed = false; })
+    .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fy = d.y; })
     .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
-    .on('end',   (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; });
+    .on('end',   (e, d) => {
+      if (!e.active) simulation.alphaTarget(0);
+      // snap x back to column, release y
+      d.fx = d._colX;
+      d.fy = null;
+    });
 }
 
 // ── Panel ──────────────────────────────────────────────────────────────────
