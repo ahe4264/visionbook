@@ -420,7 +420,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [image, selectedCriticModel, selectedCriticName, selectedCriticPasses, selectedExperiment, selectedModel, tab]);
+  }, [figureType, image, selectedCriticModel, selectedCriticName, selectedCriticPasses, selectedExperiment, selectedModel, tab]);
   const handleLoadFromHistory = useCallback((record) => {
     const normalizedRecord = {
       ...record,
@@ -587,13 +587,13 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.logo}>3D Figure Generator</span>
         <nav style={styles.nav}>
-          {['generator', 'viewer', 'results', 'dashboard', 'preview'].map((t) => (
+          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'concepts'].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{ ...styles.navBtn, ...(tab === t ? styles.navBtnActive : {}) }}
             >
-              {({ 'preview': 'Chapter Preview' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
+              {({ preview: 'Chapter Preview', concepts: 'Concept Graph' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
             </button>
           ))}
         </nav>
@@ -665,6 +665,9 @@ export default function App() {
         )}
         {tab === 'preview' && (
           <ChapterPreviewTab />
+        )}
+        {tab === 'concepts' && (
+          <ConceptGraphTab />
         )}
       </main>
     </div>
@@ -3395,3 +3398,272 @@ const styles = {
   generatorExperimentControls: { display: 'flex', flexDirection: 'column', gap: 8 },
   generatorHint: { fontSize: 12, color: '#6b7280', margin: '2px 0 0' },
 };
+
+// ── Concept Graph Tab ─────────────────────────────────────────────────────────
+function ConceptGraphTab() {
+  const [chapters, setChapters]         = React.useState([]);
+  const [selected, setSelected]         = React.useState('');
+  const [builtGraphs, setBuiltGraphs]   = React.useState([]);   // [{chapterName,chapterTitle,conceptCount,generatedAt}]
+  const [jobStatus, setJobStatus]       = React.useState(null); // null | {status,log,error}
+  const [pollRef, setPollRef]           = React.useState(null);
+  const [graphData, setGraphData]       = React.useState(null);
+  const [selectedConcept, setSelectedConcept] = React.useState(null);
+  const [rebuildRag, setRebuildRag]     = React.useState(false);
+
+  const API = window.location.origin.replace('3000', '3001');
+
+  // Load chapter list + built graphs on mount
+  React.useEffect(() => {
+    apiFetch('/api/chapters').then(r => r.json()).then(data => {
+      const names = (data || []).map(c => c.name).sort();
+      setChapters(names);
+      if (names.length > 0) setSelected(names[0]);
+    }).catch(() => {});
+    refreshBuiltGraphs();
+  }, []);
+
+  function refreshBuiltGraphs() {
+    apiFetch('/api/concept-graphs').then(r => r.json()).then(setBuiltGraphs).catch(() => {});
+  }
+
+  // Poll build status while a job is running
+  React.useEffect(() => {
+    if (!jobStatus || jobStatus.status !== 'running') return;
+    const id = setInterval(async () => {
+      try {
+        const r = await apiFetch(`/api/concept-graph/${selected}/status`);
+        const s = await r.json();
+        setJobStatus(s);
+        if (s.status !== 'running') {
+          clearInterval(id);
+          refreshBuiltGraphs();
+          if (s.status === 'done') loadGraph(selected);
+        }
+      } catch { clearInterval(id); }
+    }, 1500);
+    return () => clearInterval(id);
+  }, [jobStatus, selected]);
+
+  async function triggerBuild() {
+    setGraphData(null);
+    setSelectedConcept(null);
+    setJobStatus({ status: 'running', log: ['Starting build…'] });
+    try {
+      const r = await apiFetch(`/api/concept-graph/${selected}/build`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rebuildRag }),
+      });
+      const j = await r.json();
+      if (j.error) setJobStatus({ status: 'error', log: [], error: j.error });
+    } catch (e) {
+      setJobStatus({ status: 'error', log: [], error: e.message });
+    }
+  }
+
+  async function loadGraph(chapter) {
+    try {
+      const r = await apiFetch(`/api/concept-graph/${chapter}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      setGraphData(data);
+      setSelectedConcept(null);
+    } catch {}
+  }
+
+  const isRunning = jobStatus?.status === 'running';
+  const built = builtGraphs.find(g => g.chapterName === selected);
+
+  const SLOT_ICONS = { motivation: '💡', example: '📐', question: '❓', key_passage: '📖', demo: '🎮', visual: '🖼' };
+
+  return (
+    <div style={{ display: 'flex', gap: 0, height: '100%', background: '#f8f9fb' }}>
+      {/* ── Sidebar ── */}
+      <div style={{ width: 280, flexShrink: 0, background: '#fff', borderRight: '1px solid #e5e9f0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '20px 18px 14px', borderBottom: '1px solid #e5e9f0' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a2e', marginBottom: 10 }}>Build Concept Graph</div>
+          <select
+            value={selected}
+            onChange={e => { setSelected(e.target.value); setJobStatus(null); setGraphData(null); setSelectedConcept(null); }}
+            style={{ width: '100%', fontSize: 12, padding: '7px 10px', border: '1px solid #dde3ed', borderRadius: 6, marginBottom: 10, background: '#fff' }}
+          >
+            {chapters.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6b7280', marginBottom: 10, cursor: 'pointer' }}>
+            <input type="checkbox" checked={rebuildRag} onChange={e => setRebuildRag(e.target.checked)} />
+            Rebuild RAG index
+          </label>
+          <button
+            onClick={triggerBuild}
+            disabled={isRunning || !selected}
+            style={{ width: '100%', padding: '9px 0', fontSize: 12, fontWeight: 700, borderRadius: 7, border: 'none', background: isRunning ? '#c7d2fe' : '#4f46e5', color: '#fff', cursor: isRunning ? 'default' : 'pointer' }}
+          >
+            {isRunning ? 'Building…' : built ? '↺ Rebuild' : '▶ Build'}
+          </button>
+        </div>
+
+        {/* Build log */}
+        {jobStatus && (
+          <div style={{ padding: '10px 14px', borderBottom: '1px solid #e5e9f0', background: '#fafbfc' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: jobStatus.status === 'error' ? '#dc2626' : jobStatus.status === 'done' ? '#16a34a' : '#6366f1', marginBottom: 6 }}>
+              {jobStatus.status === 'running' ? '⟳ Running' : jobStatus.status === 'done' ? '✓ Done' : '✗ Error'}
+            </div>
+            <div style={{ fontSize: 10, color: '#374151', lineHeight: 1.6, maxHeight: 140, overflowY: 'auto' }}>
+              {(jobStatus.log || []).map((line, i) => <div key={i}>{line}</div>)}
+              {jobStatus.error && <div style={{ color: '#dc2626', marginTop: 4 }}>{jobStatus.error}</div>}
+            </div>
+          </div>
+        )}
+
+        {/* Built graphs list */}
+        <div style={{ padding: '12px 14px 8px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af' }}>Built Graphs</div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {builtGraphs.length === 0 && (
+            <div style={{ padding: '0 14px', fontSize: 12, color: '#9ca3af' }}>None yet — build one above.</div>
+          )}
+          {builtGraphs.map(g => (
+            <button
+              key={g.chapterName}
+              onClick={() => { setSelected(g.chapterName); loadGraph(g.chapterName); setJobStatus(null); }}
+              style={{ width: '100%', textAlign: 'left', padding: '8px 14px', background: graphData?.chapterName === g.chapterName ? '#eef2ff' : 'transparent', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>{g.chapterTitle || g.chapterName}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{g.conceptCount} concepts · {g.generatedAt?.slice(0, 10)}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Main area ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {!graphData ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10, color: '#9ca3af' }}>
+            <div style={{ fontSize: 40 }}>🧠</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Select a chapter and build a concept graph</div>
+            <div style={{ fontSize: 12 }}>Pipeline: RAG → Concept Extraction → Slot Filling → Dependency Detection</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+            {/* Concept list */}
+            <div style={{ width: 260, flexShrink: 0, borderRight: '1px solid #e5e9f0', overflowY: 'auto', background: '#fff' }}>
+              <div style={{ padding: '14px 16px 8px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af', borderBottom: '1px solid #f1f5f9' }}>
+                {graphData.chapterTitle} · {graphData.concepts.length} concepts
+              </div>
+              {graphData.concepts.map(c => {
+                const hasDeps = c.deps?.length > 0;
+                const hasDemo = c.slots?.demo?.length > 0;
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelectedConcept(c)}
+                    style={{ width: '100%', textAlign: 'left', padding: '10px 16px', background: selectedConcept?.id === c.id ? '#eef2ff' : 'transparent', border: 'none', borderBottom: '1px solid #f8f9fb', cursor: 'pointer' }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', marginBottom: 3 }}>{c.label}</div>
+                    <div style={{ display: 'flex', gap: 5 }}>
+                      {hasDeps && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#ede9fe', color: '#6d28d9' }}>deps: {c.deps.length}</span>}
+                      {hasDemo && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#d1fae5', color: '#065f46' }}>demo</span>}
+                      {c.slots?.visual?.length > 0 && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#fef3c7', color: '#92400e' }}>visual</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Concept detail */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
+              {!selectedConcept ? (
+                <div style={{ color: '#9ca3af', fontSize: 13, paddingTop: 40, textAlign: 'center' }}>Select a concept to inspect its slots</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{selectedConcept.label}</div>
+                  <div style={{ fontSize: 13, color: '#64748b', marginBottom: 20, lineHeight: 1.5 }}>{selectedConcept.one_sentence}</div>
+
+                  {/* Text slots — extracted from book, not generated */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
+                    {['motivation', 'example', 'question', 'key_passage'].map(key => {
+                      const val = selectedConcept.slots?.[key];
+                      if (!val) return null;
+                      return (
+                        <div key={key} style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px' }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 6 }}>
+                            {SLOT_ICONS[key]} {key.replace('_', ' ')}
+                          </div>
+                          <div style={{ fontSize: 13, color: '#1e293b', lineHeight: 1.55, fontStyle: key === 'key_passage' ? 'italic' : 'normal' }}>{val}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Original figures — shown as actual images */}
+                  {selectedConcept.slots?.visual?.length > 0 && (
+                    <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px', marginBottom: 14 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 10 }}>🖼 Original Figures from Book</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                        {selectedConcept.slots.visual.map(v => {
+                          const stem = v.stem || v;
+                          // Direct to backend port — CRA proxy mangles binary responses
+                          const backendBase = window.location.hostname === 'localhost'
+                            ? `http://localhost:${window.location.port === '3000' ? '3001' : window.location.port}`
+                            : '';
+                          return (
+                            <div key={stem} style={{ textAlign: 'center' }}>
+                              <img
+                                src={`${backendBase}/api/figure-image/${encodeURIComponent(stem)}`}
+                                alt={stem}
+                                crossOrigin="anonymous"
+                                style={{ maxWidth: 240, maxHeight: 180, borderRadius: 4, border: '1px solid #e5e9f0', display: 'block', background: '#f8f9fb' }}
+                                onError={e => { e.target.style.display = 'none'; }}
+                              />
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>{stem}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Related concepts — concepts that depend on this one */}
+                  {(() => {
+                    const relatedTo = graphData.concepts.filter(c => c.deps?.includes(selectedConcept.id));
+                    if (relatedTo.length === 0) return null;
+                    return (
+                      <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px', marginBottom: 14 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 8 }}>Required by</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {relatedTo.map(c => (
+                            <button key={c.id} onClick={() => setSelectedConcept(c)}
+                              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', fontWeight: 600, cursor: 'pointer' }}>
+                              {c.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Deps */}
+                  {selectedConcept.deps?.length > 0 && (
+                    <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 8 }}>Depends on</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {selectedConcept.deps.map(depId => {
+                          const dep = graphData.concepts.find(c => c.id === depId);
+                          return (
+                            <button key={depId} onClick={() => setSelectedConcept(dep || selectedConcept)}
+                              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: '#f0f4ff', border: '1px solid #c7d2fe', color: '#4338ca', fontWeight: 600, cursor: 'pointer' }}>
+                              {dep?.label || depId}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

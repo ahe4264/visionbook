@@ -23,7 +23,7 @@ const { inferChapterFromFilename, list3dCandidates } = require('./chapter-discov
 const ROOT_DIR = path.join(__dirname, '..', '..');
 const QMD_DIR = ROOT_DIR;                                     // .qmd files live at repo root
 
-const PLANNER_MODEL = 'gpt-5.5';
+const PLANNER_MODEL = 'gpt-4o';
 const PLANNER_MAX_TOKENS = 2048;
 
 // ── Context extraction ─────────────────────────────────────────────────────────
@@ -185,14 +185,25 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
     userContent,
     maxTokens: PLANNER_MAX_TOKENS,
   });
+
+  // Strip fenced code block if present
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) content = fenced[1].trim();
 
+  // Try direct parse first
   try {
     return JSON.parse(content);
-  } catch {
-    return { concept: 'Could not parse plan', elements: [], interactions: [], labels: [], raw: content.slice(0, 500) };
-  }
+  } catch (_) {}
+
+  // Fallback: extract the first {...} JSON object from the response
+  try {
+    const objMatch = content.match(/\{[\s\S]*\}/);
+    if (objMatch) return JSON.parse(objMatch[0]);
+  } catch (_) {}
+
+  // Last resort: log raw output and return empty plan
+  console.error('[planner] Could not parse plan. Raw output:\n', content.slice(0, 1000));
+  return { concept: 'Could not parse plan', elements: [], interactions: [], labels: [], raw: content.slice(0, 500) };
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────

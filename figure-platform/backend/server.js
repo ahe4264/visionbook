@@ -1366,6 +1366,108 @@ Please produce an improved wrapper that makes this figure look great in the chap
   }
 });
 
+// ── Concept Graph API ─────────────────────────────────────────────────────────
+const CONCEPT_GRAPHS_DIR = path.join(__dirname, 'concept-graphs');
+if (!fs.existsSync(CONCEPT_GRAPHS_DIR)) fs.mkdirSync(CONCEPT_GRAPHS_DIR, { recursive: true });
+
+const conceptBuildJobs = new Map();
+
+app.get('/api/concept-graphs', (req, res) => {
+  const graphs = fs.existsSync(CONCEPT_GRAPHS_DIR)
+    ? fs.readdirSync(CONCEPT_GRAPHS_DIR)
+        .filter(f => f.endsWith('.graph.json'))
+        .map(f => {
+          try {
+            const data = JSON.parse(fs.readFileSync(path.join(CONCEPT_GRAPHS_DIR, f), 'utf-8'));
+            return { chapterName: data.chapterName, chapterTitle: data.chapterTitle, conceptCount: data.concepts?.length ?? 0, generatedAt: data.generatedAt };
+          } catch { return null; }
+        })
+        .filter(Boolean)
+    : [];
+  res.json(graphs);
+});
+
+app.get('/api/concept-graph/:chapter/status', (req, res) => {
+  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
+  const job = conceptBuildJobs.get(chapter);
+  const built = fs.existsSync(path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`));
+  if (!job) return res.json({ status: built ? 'done' : 'idle', log: [] });
+  res.json({ status: job.status, log: job.log, error: job.error || null, startedAt: job.startedAt });
+});
+
+app.get('/api/concept-graph/:chapter', (req, res) => {
+  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
+  const graphPath = path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`);
+  if (!fs.existsSync(graphPath)) {
+    return res.status(404).json({ error: `No concept graph for "${chapter}". Trigger a build first.` });
+  }
+  res.json(JSON.parse(fs.readFileSync(graphPath, 'utf-8')));
+});
+
+app.post('/api/concept-graph/:chapter/build', async (req, res) => {
+  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
+  const rebuildRag = req.body?.rebuildRag === true;
+  const existing = conceptBuildJobs.get(chapter);
+  if (existing?.status === 'running') {
+    return res.status(409).json({ error: 'Build already in progress', status: 'running' });
+  }
+  const job = { status: 'running', log: [], startedAt: new Date().toISOString(), error: null };
+  conceptBuildJobs.set(chapter, job);
+  const log = (msg) => { console.log(`[concept-graph:${chapter}] ${msg}`); job.log.push(msg); };
+  res.json({ status: 'started', chapter });
+  (async () => {
+    try {
+      const { buildIndex, loadIndex } = require('./concept-pipeline/rag');
+      const { extractConcepts }       = require('./concept-pipeline/extractor');
+      const { fillAllSlots }          = require('./concept-pipeline/slot-filler');
+      const { detectDependencies }    = require('./concept-pipeline/dependency-detector');
+      log('Step 1/4  RAG — chunking + embedding …');
+      let chunks = rebuildRag ? null : loadIndex(chapter);
+      if (chunks) { log(`↳ loaded cached RAG index (${chunks.length} sections)`); }
+      else { chunks = await buildIndex(chapter); log(`↳ embedded ${chunks.length} sections, index saved`); }
+      const chapterTitle = chunks[0]?.chapterTitle || chapter;
+      log('Step 2/4  Extracting atomic concepts …');
+      const rawConcepts = await extractConcepts(chapterTitle, chunks);
+      log(`↳ ${rawConcepts.length} concepts: ${rawConcepts.map(c => c.label).join(', ')}`);
+      log('Step 3/4  Filling concept slots …');
+      const filled = await fillAllSlots(rawConcepts, chapter, chunks);
+      log('↳ slots filled');
+      log('Step 4/4  Detecting dependencies …');
+      const graph = await detectDependencies(filled);
+      log(`↳ ${graph.filter(c => c.deps.length > 0).length} deps, ${graph.filter(c => c.slots.demo?.length > 0).length} demos linked`);
+      const output = { chapterName: chapter, chapterTitle, generatedAt: new Date().toISOString(), concepts: graph };
+      fs.writeFileSync(path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`), JSON.stringify(output, null, 2));
+      log('✓ Done');
+      job.status = 'done';
+    } catch (err) {
+      job.status = 'error'; job.error = err.message;
+      console.error(`[concept-graph:${chapter}] Error:`, err.message);
+    }
+  })();
+});
+
+// ── Serve original figure images for concept graph ────────────────────────────
+app.get('/api/figure-image/:stem', (req, res) => {
+  const stem = req.params.stem.replace(/[^a-zA-Z0-9_.\-]/g, '');
+  const CHAPTER_FIG_DIR = path.join(__dirname, '..', 'chapter-figures');
+  if (!fs.existsSync(CHAPTER_FIG_DIR)) return res.status(404).end();
+  for (const ch of fs.readdirSync(CHAPTER_FIG_DIR)) {
+    for (const sub of ['candidates_3d', 'diagrams_2d', 'photographs']) {
+      for (const ext of ['png', 'jpg', 'jpeg', 'PNG', 'JPG']) {
+        const p = path.join(CHAPTER_FIG_DIR, ch, sub, `${stem}.${ext}`);
+        if (fs.existsSync(p)) return res.sendFile(p);
+      }
+    }
+  }
+  res.status(404).end();
+});
+
+// ── Serve standalone HTML tools ───────────────────────────────────────────────
+const REPO_ROOT = path.join(__dirname, '..', '..');
+app.get('/concept-graph.html', (req, res) => {
+  res.sendFile(path.join(REPO_ROOT, 'concept-graph.html'));
+});
+
 // ── Serve React build in production ───────────────────────────────────────────
 const frontendBuild = path.join(__dirname, '..', 'frontend', 'build');
 if (fs.existsSync(frontendBuild)) {

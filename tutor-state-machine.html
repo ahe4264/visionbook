@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: #ffffff;
+    color: #1a1a2e;
+    padding: 48px 56px;
+  }
+
+  .page-title { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+  .page-sub { font-size: 13px; color: #6b7280; margin-bottom: 44px; }
+
+  .section { margin-bottom: 52px; }
+  .section-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #9ca3af; margin-bottom: 6px;
+  }
+  .section-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+  .section-desc { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
+
+  .diagram-wrap { overflow-x: auto; }
+
+  .legend { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 20px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #6b7280; }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+  .dash-line { width: 28px; border-top: 2px dashed #f59e0b; flex-shrink: 0; }
+
+  .divider { border: none; border-top: 1px solid #f3f4f6; margin: 0 0 52px; }
+</style>
+</head>
+<body>
+
+<div class="page-title">Tutor State Machine Architecture</div>
+<p class="page-sub">Two-level design: outer Concept Navigator + inner per-concept FSM</p>
+
+<!-- ── OUTER LOOP ──────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-label">Stage 3 · Outer Loop</div>
+  <div class="section-title">Concept Navigator</div>
+  <div class="section-desc">Light LLM navigation agent picks next concept from the pre-built graph based on chapterMastery and user state.</div>
+  <div class="diagram-wrap">
+    <svg id="outer-svg" style="display:block;"></svg>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ── INNER LOOP ──────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-label">Stage 2 · Inner Loop · Game State Pattern</div>
+  <div class="section-title">Per-Concept FSM</div>
+  <div class="section-desc">Each concept node runs its own state machine. Structure is deterministic; routing adapts based on scoring outcome.</div>
+  <div class="diagram-wrap">
+    <svg id="inner-svg" style="display:block;"></svg>
+  </div>
+  <div class="legend">
+    <div class="legend-item">
+      <div class="swatch" style="background:#d1fae5; border:1.5px solid #34d399;"></div>
+      Correct path → ADVANCE → RECAP
+    </div>
+    <div class="legend-item">
+      <div class="swatch" style="background:#fef3c7; border:1.5px solid #fbbf24;"></div>
+      Wrong / partial → REMEDIATE → VIZ GEN → RE-ASK
+    </div>
+    <div class="legend-item">
+      <div class="dash-line"></div>
+      Dashed = back-edge (retry / next concept)
+    </div>
+  </div>
+</div>
+
+<script>
+// ── helpers ────────────────────────────────────────────────────────────────
+const NW = 132, NH = 44, SPINE_GAP = 16, BRANCH_Y = 130, BRANCH_GAP = 80;
+
+function box(svg, x, y, w, h, fill, stroke, label, sub) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  const r = rect(x, y, w, h, fill, stroke);
+  g.appendChild(r);
+  const t = text(x + w/2, sub ? y + h/2 - 5 : y + h/2 + 5, label, 11, '#fff', 600);
+  g.appendChild(t);
+  if (sub) {
+    const s = text(x + w/2, y + h/2 + 9, sub, 9, 'rgba(255,255,255,0.55)', 400);
+    s.setAttribute('font-style', 'italic');
+    g.appendChild(s);
+  }
+  svg.appendChild(g);
+}
+
+function rect(x, y, w, h, fill, stroke) {
+  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  r.setAttribute('x', x); r.setAttribute('y', y);
+  r.setAttribute('width', w); r.setAttribute('height', h);
+  r.setAttribute('rx', 5);
+  r.setAttribute('fill', fill);
+  r.setAttribute('stroke', stroke);
+  r.setAttribute('stroke-width', 1.5);
+  return r;
+}
+
+function text(x, y, label, size, fill, weight) {
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', x); t.setAttribute('y', y);
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('font-size', size);
+  t.setAttribute('font-weight', weight || 400);
+  t.setAttribute('fill', fill);
+  t.setAttribute('font-family', 'Inter,system-ui,sans-serif');
+  t.textContent = label;
+  return t;
+}
+
+function arrow(svg, x1, y1, x2, y2, color, dashed, markerId) {
+  const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+  l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+  l.setAttribute('stroke', color); l.setAttribute('stroke-width', 1.5);
+  if (dashed) l.setAttribute('stroke-dasharray', '5 3');
+  if (markerId) l.setAttribute('marker-end', `url(#${markerId})`);
+  svg.appendChild(l);
+}
+
+function path(svg, d, color, dashed, markerId) {
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', d); p.setAttribute('fill', 'none');
+  p.setAttribute('stroke', color); p.setAttribute('stroke-width', 1.5);
+  if (dashed) p.setAttribute('stroke-dasharray', '5 3');
+  if (markerId) p.setAttribute('marker-end', `url(#${markerId})`);
+  svg.appendChild(p);
+}
+
+function label(svg, x, y, txt, color) {
+  const t = text(x, y, txt, 10, color, 500);
+  svg.appendChild(t);
+}
+
+function addMarker(defs, id, color) {
+  const m = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+  m.setAttribute('id', id); m.setAttribute('markerWidth', 8);
+  m.setAttribute('markerHeight', 8); m.setAttribute('refX', 7);
+  m.setAttribute('refY', 3); m.setAttribute('orient', 'auto');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', 'M0,0 L0,6 L8,3 z'); p.setAttribute('fill', color);
+  m.appendChild(p); defs.appendChild(m);
+}
+
+// ── OUTER diagram ──────────────────────────────────────────────────────────
+(function() {
+  const svg = document.getElementById('outer-svg');
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  addMarker(defs, 'o-arr', '#94a3b8');
+  addMarker(defs, 'o-arr-b', '#6366f1');
+  svg.appendChild(defs);
+
+  const DARK = '#1e293b', ACCENT = '#4f46e5';
+  const PAD = 24, GAP = 56, W = NW, H = NH;
+  const nodes = ['BOOK LOAD', 'CONCEPT GRAPH', 'CONCEPT STATE', 'CONCEPT ADVANCE'];
+  const colors = [DARK, DARK, ACCENT, ACCENT];
+  const totalW = PAD * 2 + nodes.length * W + (nodes.length - 1) * GAP;
+
+  svg.setAttribute('width', totalW);
+  svg.setAttribute('height', 140);
+
+  nodes.forEach((n, i) => {
+    const x = PAD + i * (W + GAP);
+    box(svg, x, 30, W, H, colors[i], colors[i], n, null);
+    if (i < nodes.length - 1) {
+      arrow(svg, x + W, 30 + H/2, x + W + GAP, 30 + H/2, '#94a3b8', false, 'o-arr');
+    }
+  });
+
+  // Back-edge: CONCEPT_ADVANCE → CONCEPT_STATE
+  const x3 = PAD + 3 * (W + GAP), x2 = PAD + 2 * (W + GAP);
+  const cy = 30 + H + 36;
+  path(svg,
+    `M ${x3 + W/2} ${30+H} C ${x3 + W/2} ${cy+20}, ${x2 + W/2} ${cy+20}, ${x2 + W/2} ${30+H}`,
+    '#6366f1', true, 'o-arr-b');
+  label(svg, (x3 + x2)/2 + W/2, cy + 34, 'next concept', '#6366f1');
+})();
+
+// ── INNER diagram ──────────────────────────────────────────────────────────
+(function() {
+  const svg = document.getElementById('inner-svg');
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  addMarker(defs, 'i-arr', '#94a3b8');
+  addMarker(defs, 'i-grn', '#34d399');
+  addMarker(defs, 'i-amb', '#fbbf24');
+  svg.appendChild(defs);
+
+  const DARK = '#1e293b';
+  const GREEN_BG = '#d1fae5', GREEN_BDR = '#34d399', GREEN_TXT = '#065f46';
+  const AMB_BG = '#fef3c7', AMB_BDR = '#fbbf24', AMB_TXT = '#92400e';
+
+  const PAD = 24, GAP = 14;
+  const spine = [
+    { id: 'CONCEPT\nENTER', sub: null },
+    { id: 'MOTIVATION', sub: 'why this matters' },
+    { id: 'EXAMPLE', sub: 'concrete case' },
+    { id: 'DEMO', sub: 'interactive figure' },
+    { id: 'QUESTION', sub: 'Socratic check' },
+    { id: 'SCORING', sub: null },
+  ];
+
+  const totalW = PAD * 2 + spine.length * NW + (spine.length - 1) * GAP;
+  const totalH = 380;
+  svg.setAttribute('width', Math.max(totalW, 860));
+  svg.setAttribute('height', totalH);
+
+  // Spine
+  spine.forEach((n, i) => {
+    const x = PAD + i * (NW + GAP);
+    const y = 24;
+    // Multi-line label
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    const r = rect(x, y, NW, NH, DARK, DARK);
+    g.appendChild(r);
+    const lines = n.id.split('\n');
+    if (lines.length > 1) {
+      lines.forEach((line, li) => {
+        const t = text(x + NW/2, y + NH/2 - 4 + li * 13, line, 10, '#fff', 600);
+        g.appendChild(t);
+      });
+    } else {
+      const t = text(x + NW/2, n.sub ? y + NH/2 - 5 : y + NH/2 + 5, n.id, 10, '#fff', 600);
+      g.appendChild(t);
+    }
+    if (n.sub) {
+      const s = text(x + NW/2, y + NH/2 + 9, n.sub, 8.5, 'rgba(255,255,255,0.5)', 400);
+      s.setAttribute('font-style', 'italic');
+      g.appendChild(s);
+    }
+    svg.appendChild(g);
+
+    if (i < spine.length - 1) {
+      const ex = x + NW, ey = y + NH/2;
+      arrow(svg, ex, ey, ex + GAP, ey, '#94a3b8', false, 'i-arr');
+    }
+  });
+
+  // SCORING position
+  const scoringX = PAD + 5 * (NW + GAP);
+  const scoringCX = scoringX + NW/2;
+  const spineY = 24 + NH;
+
+  // ── CORRECT branch ──
+  const advX = scoringX - NW - 40;
+  const advY = 130;
+  const recapY = 220;
+
+  // SCORING → ADVANCE elbow
+  arrow(svg, scoringCX, spineY, scoringCX, advY - 16, '#34d399', false, null);
+  arrow(svg, scoringCX, advY - 16, advX + NW/2, advY - 16, '#34d399', false, null);
+  arrow(svg, advX + NW/2, advY - 16, advX + NW/2, advY, '#34d399', false, 'i-grn');
+  label(svg, (scoringCX + advX + NW/2)/2, advY - 22, 'correct', '#34d399');
+
+  // ADVANCE box
+  {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.appendChild(rect(advX, advY, NW, NH, GREEN_BG, GREEN_BDR));
+    g.appendChild(text(advX + NW/2, advY + NH/2 - 5, 'ADVANCE', 10, GREEN_TXT, 700));
+    g.appendChild(Object.assign(text(advX + NW/2, advY + NH/2 + 9, 'move forward', 8.5, '#059669', 400), {style: 'font-style:italic'}));
+    svg.appendChild(g);
+  }
+
+  // ADVANCE → RECAP
+  arrow(svg, advX + NW/2, advY + NH, advX + NW/2, recapY, '#34d399', false, 'i-grn');
+
+  // RECAP box
+  {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.appendChild(rect(advX, recapY, NW, NH, GREEN_BG, GREEN_BDR));
+    g.appendChild(text(advX + NW/2, recapY + NH/2 - 5, 'RECAP', 10, GREEN_TXT, 700));
+    g.appendChild(Object.assign(text(advX + NW/2, recapY + NH/2 + 9, 'summary / exit', 8.5, '#059669', 400), {style: 'font-style:italic'}));
+    svg.appendChild(g);
+  }
+
+  // ── WRONG branch ──
+  const remX = scoringX + NW + 24;
+  const remY = 130, vizY = 220, reaskY = 300;
+
+  // SCORING → REMEDIATE
+  arrow(svg, scoringCX, spineY, scoringCX, 104, '#fbbf24', false, null);
+  arrow(svg, scoringCX, 104, remX + NW/2, 104, '#fbbf24', false, null);
+  arrow(svg, remX + NW/2, 104, remX + NW/2, remY, '#fbbf24', false, 'i-amb');
+  label(svg, (scoringCX + remX + NW/2)/2 + 20, 100, 'wrong / partial', '#fbbf24');
+
+  // REMEDIATE box
+  {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.appendChild(rect(remX, remY, NW, NH, AMB_BG, AMB_BDR));
+    g.appendChild(text(remX + NW/2, remY + NH/2 + 5, 'REMEDIATE', 10, AMB_TXT, 700));
+    svg.appendChild(g);
+  }
+
+  // REMEDIATE → VIZ GEN
+  arrow(svg, remX + NW/2, remY + NH, remX + NW/2, vizY, '#fbbf24', false, 'i-amb');
+
+  // VIZ GEN box
+  {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.appendChild(rect(remX, vizY, NW, NH, AMB_BG, AMB_BDR));
+    g.appendChild(text(remX + NW/2, vizY + NH/2 + 5, 'VIZ GEN', 10, AMB_TXT, 700));
+    svg.appendChild(g);
+  }
+
+  // VIZ GEN → RE-ASK
+  arrow(svg, remX + NW/2, vizY + NH, remX + NW/2, reaskY, '#fbbf24', false, 'i-amb');
+
+  // RE-ASK box
+  {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.appendChild(rect(remX, reaskY, NW, NH, AMB_BG, AMB_BDR));
+    g.appendChild(text(remX + NW/2, reaskY + NH/2 + 5, 'RE-ASK', 10, AMB_TXT, 700));
+    svg.appendChild(g);
+  }
+
+  // RE-ASK → QUESTION back-edge (dashed arc above spine)
+  const qX = PAD + 4 * (NW + GAP); // QUESTION x
+  const qCX = qX + NW/2;
+  path(svg,
+    `M ${remX + NW/2} ${reaskY} C ${remX + NW/2} ${reaskY - 260}, ${qCX} ${reaskY - 260}, ${qCX} ${24 + NH}`,
+    '#fbbf24', true, 'i-amb');
+  label(svg, remX + NW/2 + 32, reaskY - 180, 'retry', '#fbbf24');
+})();
+</script>
+</body>
+</html>

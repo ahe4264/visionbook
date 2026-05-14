@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import './App.css';
+import tutorAvatar from './tutor-avatar.png';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -740,7 +741,7 @@ export default function App() {
 
     const startDwellTimer = () => {
       clearTimeout(dwellTimerRef.current);
-      dwellTimerRef.current = setTimeout(fireDwellCheckin, 60000); // 60s dwell before asking
+      dwellTimerRef.current = setTimeout(fireDwellCheckin, 20000); // 20s dwell before asking
     };
 
     const onScroll = () => {
@@ -1453,7 +1454,7 @@ export default function App() {
                 onClick={() => m.hlPhrases?.length && navigateWithBack(m.hlPage, m.hlPhrases)}
                 title={m.hlPhrases ? `Click to go to p.${m.hlPage} and re-highlight` : undefined}
               >
-                {m._tutorAsk && <span className="tutor-ask-dot" />}
+                {(m._tutorAsk || m._isRemediation || m._tutorReply) && <img src={tutorAvatar} alt="" className="tutor-ask-dot" />}
                 <div className="message-bubble">
                   {m.imageData ? (
                     <img src={`data:${m.imageMimeType || 'image/png'};base64,${m.imageData}`} className="msg-thumb" alt="figure" />
