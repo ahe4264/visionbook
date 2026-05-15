@@ -42,15 +42,64 @@ from pathlib import Path
 from llm import call_llm_json, GEMINI_DEFAULT
 
 
-SYSTEM_PROMPT = """You extract structural metadata from a calculus textbook chunk.
+# ── Book-profile-driven prompt builder ───────────────────────────────────────
+
+_DOMAIN_FILLS: dict[str, dict] = {
+    "computer vision": {
+        "book_description": "computer vision textbook",
+        "concept_definition_examples": '"Lambertian surface", "convolution", "BRDF", "perceptron", "convolutional neural network"',
+        "concept_theorem_examples": '"Nyquist sampling theorem", "backpropagation gradient rule"',
+        "concept_technique_examples": '"gradient descent", "backpropagation", "Gaussian blur", "Sobel edge detection"',
+        "concept_idea_examples": '"why convolutions model translation invariance", "the multiple-views metaphor in vision"',
+        "slug_examples": '`lambertian_surface`, `ex_imaging_brdf`, `thm_nyquist`, `fig_neural_net_perceptron`',
+    },
+    "calculus": {
+        "book_description": "calculus textbook",
+        "concept_definition_examples": '"two-sided limit", "vertical asymptote", "derivative"',
+        "concept_theorem_examples": '"Limit of a polynomial", "Squeeze theorem"',
+        "concept_technique_examples": '"computing limits by factoring", "implicit differentiation"',
+        "concept_idea_examples": '"intuition behind the epsilon-delta definition of a limit"',
+        "slug_examples": '`two_sided_limit_informal`, `ex_1_1_3`, `thm_1_2_3_limit_of_polynomial`, `fig_1_1_8`',
+    },
+}
+
+_GENERIC_FILLS = {
+    "book_description": "textbook",
+    "concept_definition_examples": '"key term", "fundamental concept", "named model"',
+    "concept_theorem_examples": '"core result", "named theorem"',
+    "concept_technique_examples": '"named algorithm", "computational method"',
+    "concept_idea_examples": '"motivational discussion", "conceptual bridge between topics"',
+    "slug_examples": '`concept_name`, `ex_ch1_sec2`, `thm_core_result`, `fig_diagram`',
+}
+
+
+def _domain_fills(profile: dict) -> dict:
+    title = (profile.get("book_title") or "").lower()
+    for key, fills in _DOMAIN_FILLS.items():
+        if key in title:
+            return fills
+    return _GENERIC_FILLS
+
+
+def build_system_prompt(profile: dict) -> str:
+    """Fill template variables in the system prompt using simple string replace.
+    This avoids conflicts with the many literal {braces} in JSON examples."""
+    fills = _domain_fills(profile)
+    result = _SYSTEM_PROMPT_TEMPLATE
+    for key, val in fills.items():
+        result = result.replace(f"{{{key}}}", val)
+    return result
+
+
+_SYSTEM_PROMPT_TEMPLATE = """You extract structural metadata from a {book_description} chunk.
 
 Input format: every line begins with a line-number marker `Lxxxxx: ` (five digits, zero-padded). Example:
 
-    L00125: ## LIMITS
+    L00125: # Imaging
     L00126:
-    L00127: Now that we have seen how limits arise in various ways...
+    L00127: Light sources, like the sun or artificial lights, flood our world with light rays...
 
-Images embedded in the text look like `[FIGURE:<asset_id> | <short alt text>]` — a compact token where asset_id is a stable 16-hex handle into the images asset table and the short alt text describes the figure. Use the alt text as context for classification, but do not copy the token verbatim into any output.
+Images embedded in the text look like `[FIGURE:<asset_id> | <short alt text>]` — a compact token where asset_id is a stable identifier into the images asset table and the short alt text describes the figure. Use the alt text as context for classification, but do not copy the token verbatim into any output.
 
 ## Your job
 
@@ -59,12 +108,12 @@ Identify every CONCEPT and every ITEM in the chunk.
 ## Concepts
 
 Atomic teachable ideas. Four kinds:
-- "definition": a named mathematical object or notion (e.g. "two-sided limit", "vertical asymptote").
-- "theorem": a named result stated as a theorem (e.g. "Limit of a polynomial", "Squeeze theorem"). Emit BOTH a concept (kind=theorem) AND an item (kind=theorem) for the same span, with different ids like `thm_1_2_3_limit_of_polynomial` (concept) and `item_thm_1_2_3` (item).
-- "technique": a named computational procedure (e.g. "computing limits by factoring").
-- "idea": a motivational/conceptual discussion that is a distinct teachable unit.
+- "definition": a named object, model, or notion (e.g. {concept_definition_examples}).
+- "theorem": a named result stated as a theorem or formal result (e.g. {concept_theorem_examples}). Emit BOTH a concept (kind=theorem) AND an item (kind=theorem) for the same span, with different ids like `thm_nyquist_sampling` (concept) and `item_thm_nyquist` (item).
+- "technique": a named computational or algorithmic procedure (e.g. {concept_technique_examples}).
+- "idea": a motivational/conceptual discussion that is a distinct teachable unit (e.g. {concept_idea_examples}).
 
-Do NOT create concepts for: individual examples/exercises, running commentary, figure captions, technology-mastery sidebars.
+Do NOT create concepts for: individual examples, running commentary, figure captions, decorative descriptions.
 
 ## Items
 
@@ -123,7 +172,7 @@ Set `embedded_in` when the figure/table is pedagogically part of another item. C
          L00279: [FIGURE:4f18e6a54b824dfc | A graph showing y = |x|/x with a jump discontinuity at x=0]
          L00280: △ Figure 1.1.12
          ...
-         L00363: Example 4 Explain why $\lim_{x\to 0} |x|/x$ does not exist.
+         L00363: Example 4 Explain why lim(x→0) |x|/x does not exist.
      The alt text contains "y = |x|/x" and Example 4's prompt contains
      "|x|/x" — shared keyword. Set fig_1_1_12.embedded_in = <example_4's id>.
 
@@ -198,7 +247,7 @@ Two arrays: `concepts` and `items`. Each record has:
 Rules:
   1. No body text, quotes, prose, or math in output. Only ids, kinds, titles, spans, and the optional parent/sub links.
   2. Line markers must be copied verbatim from the input. Do not invent.
-  3. Use descriptive slugs: `two_sided_limit_informal`, `ex_1_1_3`, `thm_1_2_3_limit_of_polynomial`, `fig_1_1_8`, `grp_1_3_horiz_asymptotes`.
+  3. Use descriptive slugs: `{slug_examples}`.
   4. For sub-exercises inside a group, their `source.spans` should cover only their own line(s), not the directive.
   5. If a chunk contains no directive-style exercise groups, just emit flat exercise items as before.
   6. `source.spans` is always an array — use a single-element array for the typical case.
@@ -286,11 +335,12 @@ def build_user_message(chunk_text: str, chunk_meta: dict) -> str:
     )
 
 
-def process_chunk(chunk_meta: dict, chunks_dir: Path, model: str) -> dict:
+def process_chunk(chunk_meta: dict, chunks_dir: Path, model: str,
+                  system_prompt: str) -> dict:
     chunk_path = chunks_dir / f"{chunk_meta['chunk_id']}.md"
     chunk_text = chunk_path.read_text(encoding="utf-8")
     user_msg = build_user_message(chunk_text, chunk_meta)
-    return call_llm_json(SYSTEM_PROMPT, user_msg, OUTPUT_SCHEMA, model=model)
+    return call_llm_json(system_prompt, user_msg, OUTPUT_SCHEMA, model=model)
 
 
 def main() -> None:
@@ -300,11 +350,21 @@ def main() -> None:
     ap.add_argument("--chunks-dir",   type=Path, default=None)
     ap.add_argument("--out-concepts", type=Path, required=True)
     ap.add_argument("--out-items",    type=Path, required=True)
+    ap.add_argument("--profile",      type=Path, default=None,
+                    help="book_profile.json from ingest.py — sets domain-appropriate prompt")
     ap.add_argument("--model",   default=GEMINI_DEFAULT)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--limit",   type=int, default=0)
     ap.add_argument("--start",   type=int, default=0)
     args = ap.parse_args()
+
+    # Load profile and build system prompt
+    profile: dict = {}
+    if args.profile and args.profile.exists():
+        profile = json.loads(args.profile.read_text())
+    system_prompt = build_system_prompt(profile)
+    book_desc = _domain_fills(profile)["book_description"]
+    print(f"book: {book_desc}", file=sys.stderr)
 
     chunks_dir = args.chunks_dir or args.manifest.parent
     with args.manifest.open() as f:
@@ -321,7 +381,7 @@ def main() -> None:
 
     def worker(meta: dict):
         try:
-            return meta, process_chunk(meta, chunks_dir, args.model), None
+            return meta, process_chunk(meta, chunks_dir, args.model, system_prompt), None
         except Exception as e:
             return meta, None, e
 

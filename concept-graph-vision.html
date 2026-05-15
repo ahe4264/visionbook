@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Concept Graph — Foundations of Computer Vision</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #0f1117; color: #e2e8f0;
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+header {
+  padding: 10px 18px 8px;
+  border-bottom: 1px solid #1e2535;
+  display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+}
+header h1 { font-size: 14px; font-weight: 700; color: #f1f5f9; white-space: nowrap; }
+#stats { font-size: 11px; color: #64748b; white-space: nowrap; }
+#search-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
+#search {
+  flex: 1; max-width: 260px;
+  background: #1a1f2e; border: 1px solid #2d3748; border-radius: 6px;
+  color: #e2e8f0; font-size: 12px; padding: 5px 10px; font-family: inherit;
+  outline: none;
+}
+#search:focus { border-color: #4f46e5; }
+#search::placeholder { color: #475569; }
+.btn-group { display: flex; gap: 6px; }
+.btn {
+  background: #1a1f2e; border: 1px solid #2d3748; border-radius: 5px;
+  color: #94a3b8; font-size: 10px; font-weight: 600; padding: 4px 10px;
+  cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.btn:hover { background: #232b3e; color: #e2e8f0; }
+.btn.active { background: #1e1b4b; border-color: #4f46e5; color: #a5b4fc; }
+
+#layout { display: flex; flex: 1; overflow: hidden; }
+
+/* Sidebar */
+#sidebar {
+  width: 220px; flex-shrink: 0;
+  background: #0c0f1a; border-right: 1px solid #1e2535;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#sidebar-header {
+  padding: 9px 12px 7px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: #475569;
+  border-bottom: 1px solid #1e2535; flex-shrink: 0;
+  display: flex; justify-content: space-between; align-items: center;
+}
+#clear-filter {
+  font-size: 9px; color: #6366f1; cursor: pointer; font-weight: 600;
+  display: none;
+}
+#clear-filter:hover { color: #818cf8; }
+#chapter-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+#chapter-list::-webkit-scrollbar { width: 4px; }
+#chapter-list::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 2px; }
+.ch-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px; cursor: pointer;
+  transition: background 0.08s;
+}
+.ch-item:hover { background: #1a1f2e; }
+.ch-item.active { background: #1e2030; }
+.ch-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.ch-label { font-size: 10px; color: #94a3b8; flex: 1; line-height: 1.3; }
+.ch-item.active .ch-label { color: #e2e8f0; }
+.ch-count {
+  font-size: 9px; color: #475569; font-weight: 600;
+  background: #1e2535; border-radius: 10px; padding: 1px 5px;
+}
+.ch-item.active .ch-count { background: #2d3748; color: #94a3b8; }
+
+/* Graph canvas */
+#graph { flex: 1; position: relative; }
+svg { width: 100%; height: 100%; }
+
+.link { stroke: #2d3d52; stroke-opacity: 0.5; }
+.link.highlight { stroke: #6366f1; stroke-opacity: 0.9; stroke-width: 1.5px; }
+.link.dimmed { stroke-opacity: 0.05; }
+
+.node circle {
+  stroke-width: 1.2;
+  transition: r 0.1s;
+}
+.node circle:hover { stroke-width: 2.5; }
+.node.dimmed circle { opacity: 0.08; }
+.node.dimmed text { opacity: 0; }
+.node text {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 9px; font-weight: 600;
+  fill: #e2e8f0;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: #0f1117; stroke-width: 3px;
+  dominant-baseline: middle;
+  opacity: 0;
+}
+
+#hint {
+  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  font-size: 10px; color: #475569; pointer-events: none;
+  background: rgba(15,17,23,0.7); padding: 4px 10px; border-radius: 20px;
+}
+
+/* Detail panel */
+#panel {
+  position: absolute; top: 12px; right: 12px; bottom: 12px;
+  width: 248px;
+  background: #1a1f2e; border: 1px solid #2d3748; border-radius: 8px;
+  padding: 12px; overflow-y: auto; display: none; flex-direction: column; gap: 8px;
+  flex-shrink: 0;
+}
+#panel.visible { display: flex; }
+#panel::-webkit-scrollbar { width: 4px; }
+#panel::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 2px; }
+#p-close {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 14px; color: #475569; cursor: pointer; line-height: 1;
+}
+#p-close:hover { color: #e2e8f0; }
+#p-kind {
+  font-size: 8px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; padding: 2px 7px; border-radius: 3px;
+  display: inline-block; align-self: flex-start;
+}
+#p-title { font-size: 13px; font-weight: 700; color: #f1f5f9; line-height: 1.3; }
+#p-location { font-size: 9px; color: #64748b; line-height: 1.4; }
+#p-one-liner { font-size: 10px; color: #94a3b8; line-height: 1.5; }
+.p-section { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #475569; margin-bottom: 4px; }
+#p-content { font-size: 10px; color: #7c8ea3; line-height: 1.55; max-height: 130px; overflow-y: auto; }
+#p-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { font-size: 8px; padding: 2px 6px; background: #0c2a40; border: 1px solid #1e3a5a; border-radius: 3px; color: #7dd3fc; }
+#p-deps-wrap { display: none; }
+#p-dep-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.dep-tag {
+  font-size: 8px; padding: 2px 6px; background: #1e1b4b; border: 1px solid #3730a3;
+  border-radius: 3px; color: #a5b4fc; cursor: pointer;
+}
+.dep-tag:hover { background: #312e81; }
+#p-items { font-size: 9px; color: #64748b; line-height: 1.6; }
+
+#loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 12px; background: #0f1117; z-index: 10;
+}
+#loading p { font-size: 13px; color: #64748b; }
+.spinner {
+  width: 28px; height: 28px; border: 2px solid #2d3748;
+  border-top-color: #6366f1; border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foundations of Computer Vision</h1>
+  <span id="stats">Loading…</span>
+  <div id="search-wrap">
+    <input id="search" placeholder="Search concepts…" autocomplete="off">
+    <div class="btn-group">
+      <button class="btn active" id="btn-prereq" title="Toggle prerequisite edges">Prereq</button>
+      <button class="btn" id="btn-overlay" title="Toggle overlay edges">Overlay</button>
+    </div>
+  </div>
+</header>
+
+<div id="layout">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      Chapters
+      <span id="clear-filter" onclick="clearFilter()">Clear ×</span>
+    </div>
+    <div id="chapter-list"></div>
+  </div>
+  <div id="graph">
+    <div id="loading"><div class="spinner"></div><p>Building force graph…</p></div>
+    <svg id="svg"></svg>
+    <div id="panel">
+      <span id="p-close" onclick="closePanel()">✕</span>
+      <span id="p-kind"></span>
+      <div id="p-title"></div>
+      <div id="p-location"></div>
+      <div id="p-one-liner"></div>
+      <div>
+        <div class="p-section">Description</div>
+        <div id="p-content"></div>
+      </div>
+      <div id="p-tags-wrap">
+        <div class="p-section">Tags</div>
+        <div id="p-tags"></div>
+      </div>
+      <div id="p-deps-wrap">
+        <div class="p-section">Prerequisites</div>
+        <div id="p-dep-tags"></div>
+      </div>
+      <div id="p-items-wrap" style="display:none">
+        <div class="p-section">Linked Items</div>
+        <div id="p-items"></div>
+      </div>
+    </div>
+    <div id="hint">Scroll to zoom · Click node · Sidebar to filter chapter</div>
+  </div>
+</div>
+
+<script>
+// ── Color palette for 55 chapters ──────────────────────────────────────────
+const PALETTE = [
+  '#10b981','#0ea5e9','#6366f1','#f59e0b','#ec4899',
+  '#14b8a6','#8b5cf6','#f97316','#06b6d4','#84cc16',
+  '#a855f7','#ef4444','#22c55e','#3b82f6','#eab308',
+  '#d946ef','#0891b2','#65a30d','#7c3aed','#dc2626',
+];
+function chColor(chNum) { return PALETTE[(chNum - 1) % PALETTE.length]; }
+
+const KIND_COLORS = {
+  definition:  { bg: '#052e16', fg: '#6ee7b7', border: '#065f46' },
+  idea:        { bg: '#0c2a40', fg: '#7dd3fc', border: '#075985' },
+  technique:   { bg: '#1e1b4b', fg: '#a5b4fc', border: '#3730a3' },
+  property:    { bg: '#2a1e2a', fg: '#d8b4fe', border: '#7e22ce' },
+  result:      { bg: '#1c1917', fg: '#d6d3d1', border: '#57534e' },
+};
+function kindStyle(kind) {
+  return KIND_COLORS[kind] || { bg: '#1e2030', fg: '#94a3b8', border: '#334155' };
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let allNodes = [], allLinks = [], nodeById = {};
+let sim, svg, root, linkLayer, nodeLayer, labelLayer;
+let zoom;
+let activeChapter = null;
+let showPrereq = true, showOverlay = false;
+let graphData = null;
+
+// ── Load ──────────────────────────────────────────────────────────────────
+fetch('concept-graph-vision-data.json')
+  .then(r => r.json())
+  .then(init)
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      `<p style="color:#ef4444">Failed to load graph.json:<br>${err.message}</p>`;
+  });
+
+function init(g) {
+  graphData = g;
+
+  // Build node list
+  allNodes = g.concepts.map(c => ({
+    id: c.id,
+    title: c.title,
+    kind: c.kind || 'definition',
+    one_liner: c.one_liner || '',
+    content: c.content || '',
+    motivation_md: c.motivation_md || '',
+    tags: c.tags || [],
+    chapter: c.position?.chapter || 0,
+    chapter_title: c.position?.chapter_title || '',
+    section: c.position?.section || '',
+    section_title: c.position?.section_title || '',
+    item_ids: c.item_ids || {},
+    quality_flags: c.quality_flags || [],
+  }));
+  nodeById = Object.fromEntries(allNodes.map(n => [n.id, n]));
+
+  // Build link lists (prereq + overlay)
+  const prereqLinks = (g.edges?.prereq || []).map(e => ({
+    source: e.from, target: e.to, type: 'prereq', strength: e.strength || 0.5
+  })).filter(e => nodeById[e.source] && nodeById[e.target]);
+
+  const overlayLinks = (g.edges?.overlay || []).map(e => ({
+    source: e.from, target: e.to, type: 'overlay', kind: e.kind
+  })).filter(e => nodeById[e.source] && nodeById[e.target]);
+
+  allLinks = { prereq: prereqLinks, overlay: overlayLinks };
+
+  // Build chapter sidebar
+  buildSidebar(g.chapters);
+
+  // Update stats
+  document.getElementById('stats').textContent =
+    `${allNodes.length} concepts · ${prereqLinks.length} prereq · ${overlayLinks.length} overlay edges`;
+
+  // Build force graph
+  buildGraph();
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────
+function buildSidebar(chapters) {
+  const counts = {};
+  allNodes.forEach(n => { counts[n.chapter] = (counts[n.chapter] || 0) + 1; });
+  const sorted = [...chapters].sort((a, b) => a.chapter - b.chapter);
+  const list = document.getElementById('chapter-list');
+  sorted.forEach(ch => {
+    const n = counts[ch.chapter] || 0;
+    const div = document.createElement('div');
+    div.className = 'ch-item';
+    div.dataset.ch = ch.chapter;
+    div.innerHTML = `
+      <div class="ch-dot" style="background:${chColor(ch.chapter)}"></div>
+      <div class="ch-label">Ch ${ch.chapter}. ${ch.chapter_title}</div>
+      <div class="ch-count">${n}</div>
+    `;
+    div.onclick = () => filterChapter(ch.chapter, div);
+    list.appendChild(div);
+  });
+}
+
+function filterChapter(ch, el) {
+  if (activeChapter === ch) { clearFilter(); return; }
+  activeChapter = ch;
+  document.querySelectorAll('.ch-item').forEach(d => d.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('clear-filter').style.display = 'block';
+  applyFilter();
+}
+
+function clearFilter() {
+  activeChapter = null;
+  document.querySelectorAll('.ch-item').forEach(d => d.classList.remove('active'));
+  document.getElementById('clear-filter').style.display = 'none';
+  applyFilter();
+}
+
+function applyFilter() {
+  const q = document.getElementById('search').value.toLowerCase().trim();
+  updateVisibility(q, activeChapter);
+}
+
+// ── Force graph ──────────────────────────────────────────────────────────
+function buildGraph() {
+  const svgEl = document.getElementById('svg');
+  const graphDiv = document.getElementById('graph');
+  let W = graphDiv.clientWidth, H = graphDiv.clientHeight;
+
+  svg = d3.select(svgEl);
+  svg.attr('width', W).attr('height', H);
+
+  // Arrow marker
+  svg.append('defs').append('marker')
+    .attr('id', 'arr').attr('markerUnits', 'userSpaceOnUse')
+    .attr('markerWidth', 7).attr('markerHeight', 7)
+    .attr('refX', 10).attr('refY', 3.5).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,7 L7,3.5 z').attr('fill', '#4a5f78');
+
+  root = svg.append('g');
+  zoom = d3.zoom().scaleExtent([0.05, 8])
+    .on('zoom', e => {
+      root.attr('transform', e.transform);
+      // Show labels when zoomed in
+      const k = e.transform.k;
+      labelLayer && labelLayer.selectAll('text').attr('opacity', k > 1.8 ? Math.min(1, (k - 1.8) / 0.8) : 0);
+    });
+  svg.call(zoom);
+
+  // Chapter cluster centers arranged in a grid
+  const chapters = [...new Set(allNodes.map(n => n.chapter))].sort((a,b) => a-b);
+  const cols = 8;
+  const spacingX = 210, spacingY = 180;
+  const clusterCenter = {};
+  chapters.forEach((ch, i) => {
+    clusterCenter[ch] = {
+      x: (i % cols) * spacingX + spacingX / 2,
+      y: Math.floor(i / cols) * spacingY + spacingY / 2
+    };
+  });
+
+  // Initial positions near cluster centers
+  allNodes.forEach(n => {
+    const c = clusterCenter[n.chapter] || { x: W / 2, y: H / 2 };
+    n.x = c.x + (Math.random() - 0.5) * 60;
+    n.y = c.y + (Math.random() - 0.5) * 60;
+  });
+
+  // Active links based on toggle state
+  let activeLinks = getActiveLinks();
+
+  linkLayer = root.append('g').attr('class', 'links');
+  nodeLayer = root.append('g').attr('class', 'nodes');
+  labelLayer = root.append('g').attr('class', 'labels');
+
+  // Build simulation
+  sim = d3.forceSimulation(allNodes)
+    .force('link', d3.forceLink(activeLinks)
+      .id(d => d.id).distance(40).strength(0.15))
+    .force('charge', d3.forceManyBody().strength(-28).distanceMax(160))
+    .force('collide', d3.forceCollide(9).strength(0.7))
+    .force('clusterX', d3.forceX(n => clusterCenter[n.chapter]?.x || W/2).strength(0.22))
+    .force('clusterY', d3.forceY(n => clusterCenter[n.chapter]?.y || H/2).strength(0.22))
+    .alphaDecay(0.015)
+    .on('tick', ticked);
+
+  drawLinks(activeLinks);
+  drawNodes();
+
+  // Fit after simulation settles
+  sim.on('end', () => {
+    fitGraph(W, H);
+    document.getElementById('loading').style.display = 'none';
+  });
+
+  // Edge toggle buttons
+  document.getElementById('btn-prereq').onclick = () => {
+    showPrereq = !showPrereq;
+    document.getElementById('btn-prereq').classList.toggle('active', showPrereq);
+    refreshLinks();
+  };
+  document.getElementById('btn-overlay').onclick = () => {
+    showOverlay = !showOverlay;
+    document.getElementById('btn-overlay').classList.toggle('active', showOverlay);
+    refreshLinks();
+  };
+
+  // Search
+  document.getElementById('search').addEventListener('input', applyFilter);
+
+  // Resize
+  window.addEventListener('resize', () => {
+    W = graphDiv.clientWidth; H = graphDiv.clientHeight;
+    svg.attr('width', W).attr('height', H);
+  });
+
+  svg.on('click', () => closePanel());
+}
+
+function getActiveLinks() {
+  const links = [];
+  if (showPrereq) links.push(...allLinks.prereq);
+  if (showOverlay) links.push(...allLinks.overlay);
+  return links;
+}
+
+function refreshLinks() {
+  const links = getActiveLinks();
+  sim.force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(0.15));
+  sim.alpha(0.3).restart();
+  drawLinks(links);
+}
+
+function drawLinks(links) {
+  linkLayer.selectAll('line').remove();
+  linkLayer.selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('class', d => `link ${d.type}`)
+    .attr('stroke', d => d.type === 'overlay' ? '#854d0e' : '#2d3d52')
+    .attr('stroke-opacity', d => d.type === 'overlay' ? 0.4 : 0.45)
+    .attr('stroke-width', 0.8)
+    .attr('marker-end', 'url(#arr)');
+}
+
+function drawNodes() {
+  nodeLayer.selectAll('.node').remove();
+  labelLayer.selectAll('text').remove();
+
+  const nodeG = nodeLayer.selectAll('.node')
+    .data(allNodes)
+    .join('g')
+    .attr('class', 'node')
+    .style('cursor', 'pointer')
+    .on('click', (event, d) => { event.stopPropagation(); showPanel(d); })
+    .on('mouseenter', (event, d) => highlightNode(d))
+    .on('mouseleave', () => clearHighlight())
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.15).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  nodeG.append('circle')
+    .attr('r', 6)
+    .attr('fill', d => chColor(d.chapter))
+    .attr('fill-opacity', 0.82)
+    .attr('stroke', d => chColor(d.chapter))
+    .attr('stroke-opacity', 1);
+
+  // Labels (shown when zoomed in)
+  labelLayer.selectAll('text')
+    .data(allNodes)
+    .join('text')
+    .text(d => d.title)
+    .attr('font-size', '7px')
+    .attr('fill', '#e2e8f0')
+    .attr('opacity', 0)
+    .attr('paint-order', 'stroke')
+    .attr('stroke', '#0f1117')
+    .attr('stroke-width', '2.5px')
+    .attr('dominant-baseline', 'middle')
+    .attr('x', 8);
+}
+
+function ticked() {
+  linkLayer.selectAll('line')
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+
+  nodeLayer.selectAll('.node')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+
+  labelLayer.selectAll('text')
+    .attr('transform', d => `translate(${d.x},${d.y})`);
+}
+
+function fitGraph(W, H) {
+  const xs = allNodes.map(n => n.x), ys = allNodes.map(n => n.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const gw = x1 - x0 + 40, gh = y1 - y0 + 40;
+  const scale = Math.min(W / gw, H / gh) * 0.88;
+  const tx = (W - gw * scale) / 2 - x0 * scale + 20 * scale;
+  const ty = (H - gh * scale) / 2 - y0 * scale + 20 * scale;
+  svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+}
+
+// ── Highlight ─────────────────────────────────────────────────────────────
+let highlightedId = null;
+function highlightNode(d) {
+  highlightedId = d.id;
+  const connectedIds = new Set([d.id]);
+  const activeLinks = getActiveLinks();
+  activeLinks.forEach(l => {
+    const sid = l.source?.id || l.source;
+    const tid = l.target?.id || l.target;
+    if (sid === d.id) connectedIds.add(tid);
+    if (tid === d.id) connectedIds.add(sid);
+  });
+  nodeLayer.selectAll('.node').classed('dimmed', n => !connectedIds.has(n.id));
+  linkLayer.selectAll('line')
+    .classed('highlight', l => {
+      const sid = l.source?.id || l.source;
+      const tid = l.target?.id || l.target;
+      return sid === d.id || tid === d.id;
+    })
+    .classed('dimmed', l => {
+      const sid = l.source?.id || l.source;
+      const tid = l.target?.id || l.target;
+      return sid !== d.id && tid !== d.id;
+    });
+}
+function clearHighlight() {
+  if (!highlightedId) return;
+  highlightedId = null;
+  nodeLayer.selectAll('.node').classed('dimmed', false);
+  linkLayer.selectAll('line').classed('highlight', false).classed('dimmed', false);
+}
+
+// ── Visibility filter ─────────────────────────────────────────────────────
+function updateVisibility(q, chFilter) {
+  nodeLayer.selectAll('.node').each(function(d) {
+    const matchSearch = !q || d.title.toLowerCase().includes(q) || d.tags.some(t => t.includes(q));
+    const matchCh = !chFilter || d.chapter === chFilter;
+    const visible = matchSearch && matchCh;
+    d3.select(this).classed('dimmed', !visible);
+  });
+  linkLayer.selectAll('line').each(function(l) {
+    const sid = l.source?.id || l.source;
+    const tid = l.target?.id || l.target;
+    const sn = nodeById[sid], tn = nodeById[tid];
+    const matchS = !chFilter || sn?.chapter === chFilter;
+    const matchT = !chFilter || tn?.chapter === chFilter;
+    d3.select(this).classed('dimmed', !(matchS && matchT));
+  });
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────
+function showPanel(d) {
+  const ks = kindStyle(d.kind);
+  const kind = document.getElementById('p-kind');
+  kind.textContent = d.kind || 'concept';
+  kind.style.background = ks.bg;
+  kind.style.color = ks.fg;
+  kind.style.border = `1px solid ${ks.border}`;
+
+  document.getElementById('p-title').textContent = d.title;
+  document.getElementById('p-location').textContent =
+    `Ch ${d.chapter}. ${d.chapter_title} · §${d.section} ${d.section_title}`;
+  document.getElementById('p-one-liner').textContent = d.one_liner;
+  document.getElementById('p-content').textContent = d.content;
+
+  // Tags
+  const tagsEl = document.getElementById('p-tags');
+  tagsEl.innerHTML = d.tags.map(t => `<span class="tag">${t}</span>`).join('');
+
+  // Prereqs
+  const activeLinks = getActiveLinks();
+  const prereqs = activeLinks
+    .filter(l => (l.target?.id || l.target) === d.id)
+    .map(l => nodeById[l.source?.id || l.source])
+    .filter(Boolean);
+
+  const depsWrap = document.getElementById('p-deps-wrap');
+  const depTags = document.getElementById('p-dep-tags');
+  if (prereqs.length > 0) {
+    depsWrap.style.display = 'block';
+    depTags.innerHTML = prereqs.map(p =>
+      `<span class="dep-tag" onclick="showPanel(nodeById['${p.id}'])">${p.title}</span>`
+    ).join('');
+  } else {
+    depsWrap.style.display = 'none';
+  }
+
+  // Items summary
+  const ids = d.item_ids || {};
+  const parts = [];
+  if (ids.figures?.length)   parts.push(`${ids.figures.length} fig`);
+  if (ids.exercises?.length) parts.push(`${ids.exercises.length} ex`);
+  if (ids.examples?.length)  parts.push(`${ids.examples.length} eg`);
+  const itemsWrap = document.getElementById('p-items-wrap');
+  if (parts.length > 0) {
+    itemsWrap.style.display = 'block';
+    document.getElementById('p-items').textContent = parts.join(' · ');
+  } else {
+    itemsWrap.style.display = 'none';
+  }
+
+  document.getElementById('panel').style.display = 'flex';
+}
+
+function closePanel() {
+  document.getElementById('panel').style.display = 'none';
+}
+</script>
+</body>
+</html>

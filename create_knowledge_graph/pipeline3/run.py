@@ -84,24 +84,63 @@ def save_state(state: dict, data_dir: Path) -> None:
     sf.write_text(json.dumps(state, indent=2) + "\n")
 
 
+def _load_profile(data_dir: Path) -> dict:
+    """Load book_profile.json if present; return {} for legacy MD-only runs."""
+    p = data_dir / "book_profile.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
 def build_stages(src: Path, book_stem: str, data_dir: Path) -> list[Stage]:
     d = data_dir
     chunks_dir = d / "chunks"
     pa_dir = d / "pass_a_verified"
+    profile = _load_profile(data_dir)
+    fmt = profile.get("format", "md")   # "qmd" | "md" | "pdf"
+    book_dir = profile.get("book_dir")  # only set for QMD
+
+    # ── Stage 1: parse structure ──────────────────────────────────────────────
+    # QMD: ingest.py already wrote chapters/sections; mark as pre-done by
+    #      checking profile.structure_in_ingest. We still include the stage
+    #      so --list shows it; the orchestrator skips it when already completed.
+    if fmt == "qmd" and profile.get("structure_in_ingest"):
+        parse_structure = Stage(
+            "parse_structure",
+            "ingest.py",   # placeholder — won't actually run; marked complete by ingest
+            ["--format", "qmd", "--book-dir", book_dir or ".",
+             "--out-dir", str(d), "--list"],
+        )
+    else:
+        parse_structure = Stage(
+            "parse_structure",
+            "parse_book_structure.py",
+            ["--src", str(src),
+             "--out-chapters", str(d / "chapters.jsonl"),
+             "--out-sections", str(d / "sections.jsonl")],
+        )
+
+    # ── Stage 2: images ───────────────────────────────────────────────────────
+    if fmt == "qmd":
+        download_images = Stage(
+            "download_images",
+            "copy_images_local.py",
+            ["--src", str(src),
+             "--book-dir", book_dir or ".",
+             "--out-dir", str(d / "images"),
+             "--out-manifest", str(d / "images.jsonl")],
+        )
+    else:
+        download_images = Stage(
+            "download_images",
+            "download_images.py",
+            ["--src", str(src),
+             "--out-dir", str(d / "images"),
+             "--out-manifest", str(d / "images.jsonl"),
+             "--workers", "16"],
+        )
 
     return [
-        Stage("parse_structure",
-              "parse_book_structure.py",
-              ["--src", str(src),
-               "--out-chapters", str(d / "chapters.jsonl"),
-               "--out-sections", str(d / "sections.jsonl")]),
-
-        Stage("download_images",
-              "download_images.py",
-              ["--src", str(src),
-               "--out-dir", str(d / "images"),
-               "--out-manifest", str(d / "images.jsonl"),
-               "--workers", "16"]),
+        parse_structure,
+        download_images,
 
         Stage("alt_text",
               "image_alt_text.py",
@@ -142,6 +181,7 @@ def build_stages(src: Path, book_stem: str, data_dir: Path) -> list[Stage]:
                "--chunks-dir", str(chunks_dir),
                "--out-concepts", str(d / "pass_a_concepts.jsonl"),
                "--out-items",    str(d / "pass_a_items.jsonl"),
+               "--profile",      str(d / "book_profile.json"),
                "--workers", "16"],
               llm=True),
 
