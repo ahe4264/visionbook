@@ -136,8 +136,30 @@ async function loadGraphData() {
   // 1. Inline injected data (when opened via openWithData)
   if (window.__GRAPH_DATA__) return adaptServerGraph(window.__GRAPH_DATA__);
 
-  // 2. URL param — works both via server (/api) and file:// (talks to localhost:3001)
   const params = new URLSearchParams(location.search);
+
+  // 2a. Per-chapter file from split_chapters.py output:
+  //     /concept-graph.html?book_chapter=5
+  const bookChapter = params.get('book_chapter');
+  if (bookChapter) {
+    const n = parseInt(bookChapter, 10);
+    const rel = `chapter_graphs/ch${String(n).padStart(2, '0')}.json`;
+    const resp = await fetch(rel);
+    if (!resp.ok) throw new Error(`${rel} → HTTP ${resp.status}`);
+    return adaptPipelineGraph(await resp.json());
+  }
+
+  // 2b. Bundled pipeline output (merge_graph.py): open from repo root over HTTP, e.g.
+  //    /concept-graph.html?pipeline
+  //    /concept-graph.html?pipeline&graph=create_knowledge_graph/data3/graph.indexed.json
+  if (params.has('pipeline') || params.has('kg')) {
+    const rel = params.get('graph') || 'create_knowledge_graph/data3/graph.json';
+    const resp = await fetch(rel);
+    if (!resp.ok) throw new Error(`${rel} → HTTP ${resp.status} (serve the repo root, not file://)`);
+    return adaptPipelineGraph(await resp.json());
+  }
+
+  // 3. Figure-platform chapter API
   const chapter = params.get('chapter');
   if (chapter) {
     const base = location.protocol === 'file:' ? 'http://localhost:3001' : '';
@@ -183,10 +205,95 @@ function adaptServerGraph(json) {
   return { nodes, edges, title: json.chapterTitle };
 }
 
+/** Normalize merge_graph bundle (graph.json or graph.indexed.json) for the viewer Concept shapes. */
+function conceptsArrayFromBundle(json) {
+  if (Array.isArray(json.concepts)) return json.concepts;
+  if (json.concepts_by_id && typeof json.concepts_by_id === 'object')
+    return Object.values(json.concepts_by_id);
+  return [];
+}
+
+function prereqEdgeListFromBundle(json) {
+  if (json.edges?.prereq && Array.isArray(json.edges.prereq)) return json.edges.prereq;
+  if (json.prereq_in && typeof json.prereq_in === 'object') {
+    const flat = [];
+    for (const list of Object.values(json.prereq_in)) {
+      if (Array.isArray(list)) for (const e of list) flat.push(e);
+    }
+    return flat;
+  }
+  return [];
+}
+
+function adaptPipelineGraph(json) {
+  const prereq = prereqEdgeListFromBundle(json);
+  const depMap = {};
+  prereq.forEach(e => {
+    const fr = e.from;
+    const to = e.to;
+    if (!fr || !to) return;
+    if (!depMap[to]) depMap[to] = [];
+    depMap[to].push(fr);
+  });
+
+  const rawConcepts = conceptsArrayFromBundle(json);
+  const concepts = rawConcepts
+    .filter(c => c && c.id)
+    .map(c => ({
+      id: c.id,
+      deps: [...new Set(depMap[c.id] || [])],
+    }));
+
+  const topoDepth = computeTopoDepth(concepts);
+  const nodes = rawConcepts
+    .filter(c => c && c.id)
+    .map(c => {
+      const deps = [...new Set(depMap[c.id] || [])];
+      const d = topoDepth[c.id] || 0;
+      const tier = d === 0 ? 'foundation' : d <= 2 ? 'mid' : 'core';
+      const sec = c.position && c.position.section;
+      return {
+        id: c.id,
+        label: c.title || c.id,
+        tier,
+        slots: {
+          motivation:  c.slots?.motivation  || c.motivation?.text  || c.motivation_md  || null,
+          key_passage: c.slots?.key_passage || c.key_passage?.text || c.recap_md       || null,
+          question:    c.slots?.question    || c.question?.text    || null,
+          example:     c.slots?.example     || c.content           || c.one_liner      || null,
+          demo:        [],
+          pset:        '',
+          visual:      [],
+        },
+        deps,
+        section_ids: sec ? [sec] : [],
+      };
+    });
+
+  const edges = [];
+  nodes.forEach(n => n.deps.forEach(d => edges.push({ source: d, target: n.id, type: 'dep' })));
+
+  const meta = json.meta || {};
+  const counts = meta.counts || {};
+  const sub = [
+    counts.concepts != null && `${counts.concepts} concepts`,
+    counts.edges_prereq != null && `${counts.edges_prereq} prereq edges`,
+    meta.source_file && String(meta.source_file),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return {
+    nodes,
+    edges,
+    title: 'Pipeline knowledge graph',
+    subtitle: sub || 'create_knowledge_graph bundle',
+  };
+}
+
 // ── Hardcoded sample data (used when no server / chapter param) ─────────────
 const SAMPLE_GRAPH = { title: 'Cameras as Linear Systems', edges: [], nodes: [] };
 
-// Bootstrap
 const GRAPH = {
   nodes: [
     {
@@ -391,6 +498,8 @@ function renderGraph(graphData) {
   const edges = graphData.edges.slice();
 
   document.querySelector('header h1').textContent = graphData.title || 'Concept Graph';
+  const span = document.querySelector('header span');
+  if (graphData.subtitle) span.textContent = graphData.subtitle + ' · click any node to inspect';
 
   // Clear previous render
   const svgEl = document.getElementById('svg');
@@ -661,7 +770,12 @@ function closePanel() {
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
-loadGraphData().then(renderGraph);
+loadGraphData()
+  .then(renderGraph)
+  .catch(err => {
+    console.error(err);
+    document.querySelector('header span').textContent = String(err.message || err);
+  });
 </script>
 </body>
 </html>

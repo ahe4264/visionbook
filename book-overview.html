@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Foundations of Computer Vision — Book Overview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #0f1117; color: #e2e8f0;
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+header {
+  padding: 11px 20px 9px;
+  border-bottom: 1px solid #1e2535;
+  display: flex; align-items: center; gap: 16px; flex-shrink: 0;
+}
+header h1 { font-size: 14px; font-weight: 700; color: #f1f5f9; }
+#subtitle { font-size: 11px; color: #475569; }
+#hint-bar {
+  font-size: 10px; color: #475569;
+  padding: 5px 20px;
+  border-bottom: 1px solid #1a2030;
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 16px;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-line { width: 22px; height: 2px; border-radius: 1px; }
+#graph { flex: 1; position: relative; }
+svg { width: 100%; height: 100%; }
+
+/* Chapter card nodes */
+.ch-node { cursor: pointer; }
+.ch-node .ch-card {
+  transition: filter 0.12s;
+}
+.ch-node:hover .ch-card { filter: brightness(1.35); }
+.ch-node .ch-num {
+  font-size: 11px; font-weight: 700;
+  fill: #f1f5f9; pointer-events: none;
+}
+.ch-node .ch-title {
+  font-size: 8px; font-weight: 500;
+  fill: #94a3b8; pointer-events: none;
+}
+.ch-node .ch-count {
+  font-size: 7px; font-weight: 600;
+  fill: #475569; pointer-events: none;
+}
+
+/* Edges */
+.ch-edge { stroke-opacity: 0.5; }
+.ch-edge.strong { stroke-opacity: 0.75; }
+
+/* Tooltip */
+#tooltip {
+  position: fixed; pointer-events: none;
+  background: rgba(13,17,30,0.97);
+  border: 1px solid #1e2d45;
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: none; z-index: 100;
+  min-width: 200px;
+}
+#tt-ch { font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: #6366f1; margin-bottom: 4px; }
+#tt-title { font-size: 13px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px; line-height: 1.3; }
+#tt-stats { font-size: 10px; color: #64748b; line-height: 1.7; }
+#tt-open { font-size: 9px; color: #818cf8; margin-top: 6px; }
+
+#loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 12px; background: #0f1117; z-index: 10;
+}
+#loading p { font-size: 13px; color: #64748b; }
+.spinner {
+  width: 28px; height: 28px; border: 2px solid #2d3748;
+  border-top-color: #6366f1; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foundations of Computer Vision</h1>
+  <span id="subtitle">Loading…</span>
+</header>
+<div id="hint-bar">
+  <span>Click chapter → open Dagre concept graph</span>
+  <span>·</span>
+  <span>Scroll to zoom · Drag to pan</span>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#4f7dc4;height:3px"></div>
+    <span>Strong dependency (≥5 edges)</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#2d3d52;height:1.5px"></div>
+    <span>Weaker dependency</span>
+  </div>
+</div>
+<div id="graph">
+  <div id="loading"><div class="spinner"></div><p>Building chapter graph…</p></div>
+  <svg id="svg"></svg>
+  <div id="tooltip">
+    <div id="tt-ch"></div>
+    <div id="tt-title"></div>
+    <div id="tt-stats"></div>
+    <div id="tt-open">Click to open chapter graph ↗</div>
+  </div>
+</div>
+
+<script>
+const PALETTE = [
+  '#10b981','#3b82f6','#f59e0b','#ec4899','#8b5cf6','#06b6d4','#ef4444','#84cc16',
+  '#f97316','#a78bfa','#14b8a6','#fbbf24','#e879f9','#60a5fa','#34d399','#fb923c',
+  '#f472b6','#4ade80','#38bdf8','#c084fc','#2dd4bf','#facc15','#f87171','#a3e635',
+  '#818cf8','#fb7185','#22d3ee','#fde68a','#86efac','#7dd3fc','#d8b4fe','#fca5a5',
+  '#6ee7b7','#fdba74','#93c5fd','#c4b5fd','#5eead4','#fcd34d','#f9a8d4','#bef264',
+  '#67e8f9','#fda4af','#a5b4fc','#6d28d9','#b45309','#0f766e','#b91c1c','#1d4ed8',
+  '#15803d','#9333ea','#c2410c','#0369a1','#7e22ce','#be185d','#4d7c0f',
+];
+function chColor(n) { return PALETTE[(n - 1) % PALETTE.length]; }
+
+const CARD_W = 110, CARD_H = 52;
+
+fetch(`concept-graph-vision-data.json?v=${Date.now()}`)
+  .then(r => r.json())
+  .then(build)
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      `<p style="color:#ef4444">Failed: ${err.message}</p>`;
+  });
+
+function build(g) {
+  // ── Aggregate concept counts per chapter ─────────────────────────────────
+  const chMeta = {};
+  g.chapters.forEach(c => {
+    chMeta[c.chapter] = { ...c, concepts: 0, prereqOut: 0, prereqIn: 0 };
+  });
+  const cid2ch = {};
+  g.concepts.forEach(c => {
+    const ch = c.position?.chapter || 0;
+    cid2ch[c.id] = ch;
+    if (chMeta[ch]) chMeta[ch].concepts++;
+  });
+
+  // ── Cross-chapter prereq edge aggregation ────────────────────────────────
+  const crossCount = {}; // "from-to" → count
+  g.edges.prereq.forEach(e => {
+    const cf = cid2ch[e.from], ct = cid2ch[e.to];
+    if (!cf || !ct || cf === ct) return;
+    const key = `${cf}-${ct}`;
+    crossCount[key] = (crossCount[key] || 0) + 1;
+    chMeta[cf].prereqOut = (chMeta[cf].prereqOut || 0) + 1;
+    chMeta[ct].prereqIn  = (chMeta[ct].prereqIn  || 0) + 1;
+  });
+
+  const chapters = Object.values(chMeta)
+    .filter(c => c.chapter > 0)
+    .sort((a, b) => a.chapter - b.chapter);
+
+  const edges = Object.entries(crossCount)
+    .map(([key, count]) => {
+      const [from, to] = key.split('-').map(Number);
+      return { from, to, count };
+    })
+    .filter(e => e.count >= 2);  // only show meaningful connections
+
+  document.getElementById('subtitle').textContent =
+    `${chapters.length} chapters · ${g.edges.prereq.length} prereq edges · ${edges.length} cross-chapter connections shown`;
+
+  document.getElementById('loading').style.display = 'none';
+
+  // ── D3 force graph ────────────────────────────────────────────────────────
+  const svgEl = document.getElementById('svg');
+  const div = document.getElementById('graph');
+  const W = div.clientWidth, H = div.clientHeight;
+
+  const svg = d3.select(svgEl).attr('width', W).attr('height', H);
+
+  // Arrow marker
+  svg.append('defs').append('marker')
+    .attr('id', 'arr')
+    .attr('markerUnits', 'userSpaceOnUse')
+    .attr('markerWidth', 8).attr('markerHeight', 8)
+    .attr('refX', 8).attr('refY', 4).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,8 L8,4 z').attr('fill', '#4f7dc4');
+
+  svg.append('defs').append('marker')
+    .attr('id', 'arr-dim')
+    .attr('markerUnits', 'userSpaceOnUse')
+    .attr('markerWidth', 6).attr('markerHeight', 6)
+    .attr('refX', 6).attr('refY', 3).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,6 L6,3 z').attr('fill', '#2d3d52');
+
+  const root = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.1, 4])
+    .on('zoom', e => root.attr('transform', e.transform));
+  svg.call(zoom);
+
+  // Initial grid positions
+  const cols = 8, gapX = 160, gapY = 110;
+  chapters.forEach((ch, i) => {
+    ch.x = (i % cols) * gapX + gapX / 2;
+    ch.y = Math.floor(i / cols) * gapY + gapY / 2;
+  });
+  const nodeById = Object.fromEntries(chapters.map(c => [c.chapter, c]));
+
+  // Resolve edge node refs
+  const simEdges = edges
+    .filter(e => nodeById[e.from] && nodeById[e.to])
+    .map(e => ({ ...e, source: e.from, target: e.to }));
+
+  const linkLayer = root.append('g').attr('class', 'links');
+  const nodeLayer = root.append('g').attr('class', 'nodes');
+
+  // Force simulation
+  const sim = d3.forceSimulation(chapters)
+    .force('link', d3.forceLink(simEdges)
+      .id(d => d.chapter).distance(d => 130 + 60 / d.count).strength(0.12))
+    .force('charge', d3.forceManyBody().strength(-400).distanceMax(400))
+    .force('collide', d3.forceCollide(72).strength(0.8))
+    .force('x', d3.forceX(d => (((d.chapter - 1) % cols) * gapX + gapX / 2)).strength(0.18))
+    .force('y', d3.forceY(d => (Math.floor((d.chapter - 1) / cols) * gapY + gapY / 2)).strength(0.18))
+    .alphaDecay(0.02)
+    .on('tick', ticked)
+    .on('end', () => {
+      // Fit to view
+      const xs = chapters.map(c => c.x), ys = chapters.map(c => c.y);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+      const gw = x1 - x0 + CARD_W + 40, gh = y1 - y0 + CARD_H + 40;
+      const scale = Math.min(W / gw, H / gh) * 0.9;
+      const tx = (W - gw * scale) / 2 - x0 * scale + (CARD_W / 2 + 20) * scale;
+      const ty = (H - gh * scale) / 2 - y0 * scale + (CARD_H / 2 + 20) * scale;
+      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    });
+
+  // Draw edges
+  linkLayer.selectAll('line')
+    .data(simEdges).join('line')
+    .attr('class', d => `ch-edge${d.count >= 5 ? ' strong' : ''}`)
+    .attr('stroke', d => d.count >= 5 ? '#4f7dc4' : '#2d3d52')
+    .attr('stroke-width', d => Math.max(0.8, Math.log2(d.count + 1) * 0.9))
+    .attr('marker-end', d => d.count >= 5 ? 'url(#arr)' : 'url(#arr-dim)');
+
+  // Draw chapter cards
+  const nodeG = nodeLayer.selectAll('.ch-node')
+    .data(chapters).join('g')
+    .attr('class', 'ch-node')
+    .on('click', (event, d) => {
+      window.open(`concept-graph.html?book_chapter=${d.chapter}`, '_blank');
+    })
+    .on('mouseenter', (event, d) => showTip(event, d))
+    .on('mousemove', (event) => moveTip(event))
+    .on('mouseleave', () => hideTip())
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.05).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  nodeG.append('rect')
+    .attr('class', 'ch-card')
+    .attr('x', -CARD_W / 2).attr('y', -CARD_H / 2)
+    .attr('width', CARD_W).attr('height', CARD_H)
+    .attr('rx', 6)
+    .attr('fill', d => chColor(d.chapter) + '1a')
+    .attr('stroke', d => chColor(d.chapter))
+    .attr('stroke-width', 1.5);
+
+  nodeG.append('text').attr('class', 'ch-num')
+    .text(d => `Ch ${d.chapter}`)
+    .attr('text-anchor', 'middle')
+    .attr('y', -10)
+    .attr('font-family', 'Inter, system-ui, sans-serif')
+    .attr('fill', d => chColor(d.chapter));
+
+  nodeG.append('text').attr('class', 'ch-title')
+    .text(d => truncate(d.chapter_title, 18))
+    .attr('text-anchor', 'middle')
+    .attr('y', 5)
+    .attr('font-family', 'Inter, system-ui, sans-serif');
+
+  nodeG.append('text').attr('class', 'ch-count')
+    .text(d => `${d.concepts} concepts`)
+    .attr('text-anchor', 'middle')
+    .attr('y', 19)
+    .attr('font-family', 'Inter, system-ui, sans-serif');
+
+  function ticked() {
+    linkLayer.selectAll('line').each(function(d) {
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const ux = dx/dist, uy = dy/dist;
+      const srcOff = Math.sqrt((CARD_W/2)**2 * (uy/ux)**-2 + (CARD_H/2)**2) > 0
+        ? distToRect(CARD_W, CARD_H, ux, uy) + 2
+        : 8;
+      const tgtOff = distToRect(CARD_W, CARD_H, -ux, -uy) + 10;
+      d3.select(this)
+        .attr('x1', d.source.x + ux * srcOff).attr('y1', d.source.y + uy * srcOff)
+        .attr('x2', d.target.x - ux * tgtOff).attr('y2', d.target.y - uy * tgtOff);
+    });
+    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+  }
+}
+
+function distToRect(w, h, ux, uy) {
+  const hw = w/2, hh = h/2;
+  let t = Infinity;
+  if (Math.abs(ux) > 1e-9) { const tx = (ux > 0 ? hw : -hw) / ux; if (tx > 0) t = Math.min(t, tx); }
+  if (Math.abs(uy) > 1e-9) { const ty = (uy > 0 ? hh : -hh) / uy; if (ty > 0) t = Math.min(t, ty); }
+  return t === Infinity ? Math.min(hw, hh) : t;
+}
+
+function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+const tipEl = document.getElementById('tooltip');
+function showTip(event, d) {
+  document.getElementById('tt-ch').textContent = `Chapter ${d.chapter}`;
+  document.getElementById('tt-title').textContent = d.chapter_title;
+  document.getElementById('tt-stats').innerHTML =
+    `${d.concepts} concepts<br>${d.prereqIn || 0} incoming prereqs · ${d.prereqOut || 0} outgoing prereqs`;
+  tipEl.style.display = 'block';
+  moveTip(event);
+}
+function moveTip(event) {
+  const x = event.clientX + 14, y = event.clientY - 10;
+  tipEl.style.left = (x + tipEl.offsetWidth > window.innerWidth ? event.clientX - tipEl.offsetWidth - 14 : x) + 'px';
+  tipEl.style.top  = (y + tipEl.offsetHeight > window.innerHeight ? event.clientY - tipEl.offsetHeight - 4 : y) + 'px';
+}
+function hideTip() { tipEl.style.display = 'none'; }
+</script>
+</body>
+</html>

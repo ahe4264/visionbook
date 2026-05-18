@@ -85,18 +85,22 @@ header h1 { font-size: 14px; font-weight: 700; color: #f1f5f9; white-space: nowr
 #graph { flex: 1; position: relative; }
 svg { width: 100%; height: 100%; }
 
-.link           { stroke-width: 0.9; stroke-opacity: 0.3; }
-.link.prereq    { stroke-opacity: 0.55; stroke-width: 1.1; }
-.link.highlight { stroke-opacity: 1 !important; stroke-width: 2.5px !important; }
-.link.dimmed    { stroke-opacity: 0.03 !important; }
+.link           { stroke-width: 0.9; opacity: 0.3; }
+.link.prereq    { opacity: 0.55; stroke-width: 1.1; }
+.link.highlight { opacity: 1 !important; stroke-width: 2.5px !important; }
+.link.dimmed    { opacity: 0.03 !important; }
 
-.node circle {
-  stroke-width: 1.2;
-  transition: r 0.12s;
-}
+.node circle { stroke-width: 1.2; transition: r 0.12s; }
 .node:hover .vis-circle { r: 9; stroke-width: 2px; }
 .node.dimmed circle { opacity: 0.08; }
+/* Book-order card nodes */
+.node .vis-rect { transition: filter 0.1s; }
+.node:hover .vis-rect { filter: brightness(1.4); stroke-width: 2px !important; }
+.node.dimmed .vis-rect { opacity: 0.07; }
+.node.dimmed .card-label { opacity: 0; }
 .node.dimmed text { opacity: 0; }
+/* Chapter headers in book layout */
+.ch-header { pointer-events: none; }
 .node text {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 9px; font-weight: 600;
@@ -275,8 +279,9 @@ svg { width: 100%; height: 100%; }
   <div id="search-wrap">
     <input id="search" placeholder="Search concepts…" autocomplete="off">
     <div class="btn-group">
-      <button class="btn active" id="btn-prereq" title="Toggle prerequisite edges">Prereq</button>
-      <button class="btn" id="btn-overlay" title="Toggle overlay edges">Overlay</button>
+      <button class="btn active" id="btn-prereq" title="Prerequisite edges — must know first">Prereq</button>
+      <button class="btn" id="btn-overlay" title="Structural &amp; reference edges — how concepts relate">Related</button>
+      <button class="btn" id="btn-layout" title="Toggle layout between force and book order" onclick="toggleLayout()" disabled>Book Order</button>
     </div>
   </div>
 </header>
@@ -503,10 +508,27 @@ const EDGE_LABELS = {
 };
 
 let allNodes = [], allLinks = [], nodeById = {};
-let sim, svg, root, linkLayer, nodeLayer, labelLayer;
+let sim, svg, root, linkLayer, nodeLayer, labelLayer, headerLayer;
 let zoom;
+
+// Book-order card dimensions
+const BOOK_CARD_W = 88, BOOK_CARD_H = 20, BOOK_FONT = 8;
+
+function truncLabel(s, max) { return s.length > max ? s.slice(0, max - 1) + '…' : s; }
+
+/** Distance from rect center to its boundary along unit vector (ux, uy) */
+function distToRectEdge(w, h, ux, uy) {
+  const hw = w / 2, hh = h / 2;
+  let t = Infinity;
+  if (Math.abs(ux) > 1e-9) { const tx = (ux > 0 ? hw : -hw) / ux; if (tx > 0) t = Math.min(t, tx); }
+  if (Math.abs(uy) > 1e-9) { const ty = (uy > 0 ? hh : -hh) / uy; if (ty > 0) t = Math.min(t, ty); }
+  return t === Infinity ? Math.min(hw, hh) : t;
+}
 let activeChapter = null;
 let showPrereq = true, showOverlay = true;
+let layoutMode = 'force';   // 'force' | 'book'
+let bookPositions = {};      // id → {x, y}
+let clusterCenter = {};      // chapter → {x, y}  (shared between layouts)
 let graphData = null;
 let itemById    = {};  // id → item record
 let assetExt    = {};  // asset_id → file extension (jpg/png/etc)
@@ -610,6 +632,14 @@ function buildSidebar(chapters) {
       <div class="ch-count">${n}</div>
     `;
     div.onclick = () => filterChapter(ch.chapter, div);
+    // "→" link opens the chapter's Dagre view
+    const link = document.createElement('a');
+    link.href = `concept-graph.html?book_chapter=${ch.chapter}`;
+    link.title = `Open Ch ${ch.chapter} Dagre view`;
+    link.style.cssText = 'font-size:9px;color:#6366f1;text-decoration:none;flex-shrink:0;padding:0 2px';
+    link.textContent = '↗';
+    link.onclick = e => e.stopPropagation();
+    div.appendChild(link);
     list.appendChild(div);
   });
 }
@@ -668,17 +698,19 @@ function buildGraph() {
     });
   svg.call(zoom);
 
-  // Chapter cluster centers arranged in a grid
+  // Chapter cluster centers arranged in a grid (shared by both layouts)
   const chapters = [...new Set(allNodes.map(n => n.chapter))].sort((a,b) => a-b);
   const cols = 8;
   const spacingX = 210, spacingY = 180;
-  const clusterCenter = {};
   chapters.forEach((ch, i) => {
     clusterCenter[ch] = {
       x: (i % cols) * spacingX + spacingX / 2,
       y: Math.floor(i / cols) * spacingY + spacingY / 2
     };
   });
+
+  // Pre-compute book-order positions
+  computeBookPositions(chapters);
 
   // Initial positions near cluster centers
   allNodes.forEach(n => {
@@ -690,8 +722,9 @@ function buildGraph() {
   // Active links based on toggle state
   let activeLinks = getActiveLinks();
 
-  linkLayer = root.append('g').attr('class', 'links');
-  nodeLayer = root.append('g').attr('class', 'nodes');
+  linkLayer  = root.append('g').attr('class', 'links');
+  headerLayer= root.append('g').attr('class', 'headers');
+  nodeLayer  = root.append('g').attr('class', 'nodes');
   labelLayer = root.append('g').attr('class', 'labels');
 
   // Build simulation
@@ -712,6 +745,7 @@ function buildGraph() {
   sim.on('end', () => {
     fitGraph(W, H);
     document.getElementById('loading').style.display = 'none';
+    document.getElementById('btn-layout').disabled = false;
   });
 
   // Edge toggle buttons
@@ -766,6 +800,12 @@ function drawLinks(links) {
 }
 
 function drawNodes() {
+  layoutMode === 'book' ? drawNodesBook() : drawNodesForce();
+}
+
+function drawNodesForce() {
+  headerLayer.selectAll('*').remove();
+  allNodes.forEach(n => { n._w = 0; n._h = 0; }); // circle mode — no rect dims
   nodeLayer.selectAll('.node').remove();
   labelLayer.selectAll('text').remove();
 
@@ -814,18 +854,94 @@ function drawNodes() {
     .attr('x', 8);
 }
 
+function drawNodesBook() {
+  labelLayer.selectAll('*').remove();
+  nodeLayer.selectAll('.node').remove();
+
+  // Set card dims on all nodes (used by ticked() for edge offsets)
+  allNodes.forEach(n => { n._w = BOOK_CARD_W; n._h = BOOK_CARD_H; });
+
+  // Chapter column headers — positioned above the first node in each column
+  headerLayer.selectAll('*').remove();
+  const byChapter = {};
+  allNodes.forEach(n => { (byChapter[n.chapter] = byChapter[n.chapter] || []).push(n); });
+  Object.entries(byChapter).forEach(([ch, nodes]) => {
+    const xs = nodes.map(n => bookPositions[n.id]?.x || n.x).filter(Boolean);
+    const ys = nodes.map(n => bookPositions[n.id]?.y || n.y).filter(Boolean);
+    if (!xs.length) return;
+    const x = xs[0], topY = Math.min(...ys);
+    const color = chColor(+ch);
+    headerLayer.append('text')
+      .attr('class', 'ch-header')
+      .attr('transform', `translate(${x},${topY - 14})`)
+      .attr('text-anchor', 'middle')
+      .attr('fill', color)
+      .attr('font-size', '8px')
+      .attr('font-weight', '700')
+      .attr('font-family', 'Inter, system-ui, sans-serif')
+      .attr('opacity', 0.85)
+      .text(`Ch${ch}`);
+  });
+
+  const nodeAttach = (sel) => sel
+    .on('click', (event, d) => { event.stopPropagation(); lockedId = d.id; applyHighlight(d.id); showPanel(d); hideTooltip(); })
+    .on('mouseenter', (event, d) => { highlightNode(d); showTooltip(event, d); })
+    .on('mousemove',  (event) => moveTooltip(event))
+    .on('mouseleave', () => { clearHighlight(); hideTooltip(); })
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.05).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); })
+    );
+
+  const nodeG = nodeLayer.selectAll('.node')
+    .data(allNodes).join('g')
+    .attr('class', 'node')
+    .style('cursor', 'pointer')
+    .call(nodeAttach);
+
+  // Card background
+  nodeG.append('rect')
+    .attr('class', 'vis-rect')
+    .attr('x', -BOOK_CARD_W / 2).attr('y', -BOOK_CARD_H / 2)
+    .attr('width', BOOK_CARD_W).attr('height', BOOK_CARD_H)
+    .attr('rx', 3)
+    .attr('fill', d => chColor(d.chapter) + '22')
+    .attr('stroke', d => chColor(d.chapter))
+    .attr('stroke-width', 1);
+
+  // Concept label
+  nodeG.append('text')
+    .attr('class', 'card-label')
+    .text(d => truncLabel(d.title, 14))
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'middle')
+    .attr('fill', '#e2e8f0')
+    .attr('font-size', `${BOOK_FONT}px`)
+    .attr('font-family', 'Inter, system-ui, sans-serif')
+    .attr('font-weight', '500')
+    .attr('pointer-events', 'none');
+}
+
 function ticked() {
-  // Offset line endpoints by node radius so arrowheads are visible outside nodes
   linkLayer.selectAll('line').each(function(d) {
     const dx = d.target.x - d.source.x;
     const dy = d.target.y - d.source.y;
     const dist = Math.sqrt(dx * dx + dy * dy) || 1;
     const ux = dx / dist, uy = dy / dist;
+    let srcOff, tgtOff;
+    if (layoutMode === 'book') {
+      // Offset to card boundary
+      srcOff = distToRectEdge(BOOK_CARD_W, BOOK_CARD_H,  ux,  uy) + 2;
+      tgtOff = distToRectEdge(BOOK_CARD_W, BOOK_CARD_H, -ux, -uy) + 9;
+    } else {
+      srcOff = 7; tgtOff = 8;
+    }
     d3.select(this)
-      .attr('x1', d.source.x + ux * 7)
-      .attr('y1', d.source.y + uy * 7)
-      .attr('x2', d.target.x - ux * 8)
-      .attr('y2', d.target.y - uy * 8);
+      .attr('x1', d.source.x + ux * srcOff)
+      .attr('y1', d.source.y + uy * srcOff)
+      .attr('x2', d.target.x - ux * tgtOff)
+      .attr('y2', d.target.y - uy * tgtOff);
   });
 
   nodeLayer.selectAll('.node')
@@ -836,6 +952,9 @@ function ticked() {
 }
 
 function fitGraph(W, H) {
+  const graphDiv = document.getElementById('graph');
+  W = W || graphDiv.clientWidth;
+  H = H || graphDiv.clientHeight;
   const xs = allNodes.map(n => n.x), ys = allNodes.map(n => n.y);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
   const y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -1140,6 +1259,64 @@ function showPanel(d) {
 
   document.getElementById('panel').style.display = 'flex';
   if (!window.katex) _pendingPanelNode = d;
+}
+
+// ── Book-order layout ─────────────────────────────────────────────────────
+function computeBookPositions(chapterList) {
+  // Timeline layout: chapters as left-to-right columns, concepts stacked
+  // top-to-bottom by section within each chapter.
+  const chSpacingX = 52;   // horizontal gap between chapter columns
+  const nodeSpacingY = 11; // vertical gap between concepts within a chapter
+  const paddingTop = 30;
+
+  // Group and sort concepts by chapter → section
+  const byChapter = {};
+  allNodes.forEach(n => {
+    if (!byChapter[n.chapter]) byChapter[n.chapter] = [];
+    byChapter[n.chapter].push(n);
+  });
+  chapterList.forEach(ch => {
+    if (!byChapter[ch]) return;
+    byChapter[ch].sort((a, b) => {
+      // Sort by section string numerically where possible
+      const sa = parseFloat(a.section) || 0;
+      const sb = parseFloat(b.section) || 0;
+      if (sa !== sb) return sa - sb;
+      return (a.section || '').localeCompare(b.section || '');
+    });
+  });
+
+  chapterList.forEach((ch, chIdx) => {
+    const nodes = byChapter[ch] || [];
+    const x = chIdx * chSpacingX + chSpacingX / 2;
+    // Center the column vertically
+    const totalH = (nodes.length - 1) * nodeSpacingY;
+    nodes.forEach((n, i) => {
+      bookPositions[n.id] = { x, y: paddingTop + i * nodeSpacingY };
+    });
+  });
+}
+
+function toggleLayout() {
+  layoutMode = layoutMode === 'force' ? 'book' : 'force';
+  const btn = document.getElementById('btn-layout');
+  btn.classList.toggle('active', layoutMode === 'book');
+  btn.textContent = layoutMode === 'book' ? 'Force Layout' : 'Book Order';
+
+  drawNodes();   // re-render nodes in new style
+
+  if (layoutMode === 'book') {
+    allNodes.forEach(n => {
+      const p = bookPositions[n.id];
+      if (p) { n.fx = p.x; n.fy = p.y; }
+    });
+    sim.alpha(0.4).alphaDecay(0.04).restart();
+    sim.on('end.layout', () => fitGraph());
+  } else {
+    allNodes.forEach(n => { n.fx = null; n.fy = null; });
+    sim.alpha(0.5).alphaDecay(0.015).restart();
+    sim.on('end.layout', null);
+  }
 }
 
 // ── Edge tooltip ──────────────────────────────────────────────────────────
