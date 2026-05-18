@@ -51,7 +51,7 @@ Textbook passage (verbatim source text):
 {raw_body}
 ---
 
-Extract these 3 slots. For each, copy exact sentence(s) verbatim from the passage above.
+Extract these 4 slots. For each, copy exact sentence(s) verbatim from the passage above.
 Rules:
 - "text": direct word-for-word copy from the passage — no rewording, no additions
 - Strip only: leading list markers (- / * / numbers), [FIGURE:...] tokens, {{#...}} anchors,
@@ -60,24 +60,27 @@ Rules:
 
 Slots:
 1. key_passage — the single most important 1-3 sentences that define or explain this concept
-2. question    — a question explicitly stated in the passage (not implied; return "" if none found)
-3. motivation  — 1-2 sentences explaining why this concept matters or what problem it solves
+2. motivation  — 1-2 sentences explaining why this concept matters or what problem it solves
+3. example     — a concrete example, scenario, or application of this concept stated in the passage (or "" if none)
+4. question    — a question explicitly stated in the passage (not implied; return "" if none found)
 
 Return ONLY the JSON object below (no prose, no fences). Return "" for any slot not found:
 {{
   "key_passage": "exact verbatim text or empty string",
-  "question":    "exact verbatim text or empty string",
-  "motivation":  "exact verbatim text or empty string"
+  "motivation":  "exact verbatim text or empty string",
+  "example":     "exact verbatim text or empty string",
+  "question":    "exact verbatim text or empty string"
 }}"""
 
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "key_passage": {"type": "string", "description": "Verbatim key passage, or empty string if not found"},
-        "question":    {"type": "string", "description": "Verbatim question from text, or empty string if not found"},
         "motivation":  {"type": "string", "description": "Verbatim motivation text, or empty string if not found"},
+        "example":     {"type": "string", "description": "Verbatim example or application, or empty string if not found"},
+        "question":    {"type": "string", "description": "Verbatim question from text, or empty string if not found"},
     },
-    "required": ["key_passage", "question", "motivation"],
+    "required": ["key_passage", "motivation", "example", "question"],
 }
 
 # ── Text cleanup ──────────────────────────────────────────────────────────────
@@ -123,10 +126,11 @@ def _process(rec: dict, raw_body: str, model: str) -> dict:
     out = {
         "id": rec["id"],
         "key_passage": None,
-        "question":    None,
         "motivation":  None,
+        "example":     None,
+        "question":    None,
     }
-    for slot in ("key_passage", "question", "motivation"):
+    for slot in ("key_passage", "motivation", "example", "question"):
         val = result.get(slot)
         if isinstance(val, str):
             v = val.strip()
@@ -215,15 +219,16 @@ def main() -> None:
         s = slots_by_id.get(c["id"])
         if not s:
             continue
-        for slot in ("key_passage", "question", "motivation"):
+        for slot in ("key_passage", "motivation", "example", "question"):
             val = s.get(slot)
             if val:
                 c[slot] = {"text": val, "section": c.get("source", {}).get("section", "")}
                 filled += 1
-        # Update provenance: if verbatim motivation found, note it
-        if s.get("motivation"):
-            prov = c.setdefault("_provenance", {})
-            prov["motivation"] = "book_extracted"
+        # Update provenance: verbatim slots are book_extracted
+        prov = c.setdefault("_provenance", {})
+        for slot in ("key_passage", "motivation", "example", "question"):
+            if s.get(slot):
+                prov[slot] = "book_extracted"
 
     graph_path.write_text(json.dumps(graph, indent=2))
     print(f"[fill_slots] Merged {filled} slot values into {graph_path}", flush=True)
@@ -240,7 +245,7 @@ def main() -> None:
             s = slots_by_id.get(c["id"])
             if not s:
                 continue
-            for slot in ("key_passage", "question", "motivation"):
+            for slot in ("key_passage", "motivation", "example", "question"):
                 val = s.get(slot)
                 if val:
                     c[slot] = {"text": val, "section": c.get("source", {}).get("section", "")}

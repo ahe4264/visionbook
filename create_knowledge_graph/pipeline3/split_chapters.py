@@ -79,7 +79,8 @@ def main():
                     "motivation":  get_slot(c, "motivation") or c.get("motivation_md"),
                     "key_passage": get_slot(c, "key_passage") or c.get("recap_md"),
                     "question":    get_slot(c, "question"),
-                    "example":     c.get("content") or c.get("one_liner"),
+                    # prefer verbatim example from fill_slots; fall back to Pass B content
+                    "example":     get_slot(c, "example") or c.get("content") or c.get("one_liner"),
                 },
             })
 

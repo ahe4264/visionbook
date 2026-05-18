@@ -47,11 +47,11 @@ from llm import call_llm_json, GEMINI_DEFAULT
 _DOMAIN_FILLS: dict[str, dict] = {
     "computer vision": {
         "book_description": "computer vision textbook",
-        "concept_definition_examples": '"Lambertian surface", "convolution", "BRDF", "perceptron", "convolutional neural network"',
-        "concept_theorem_examples": '"Nyquist sampling theorem", "backpropagation gradient rule"',
-        "concept_technique_examples": '"gradient descent", "backpropagation", "Gaussian blur", "Sobel edge detection"',
-        "concept_idea_examples": '"why convolutions model translation invariance", "the multiple-views metaphor in vision"',
-        "slug_examples": '`lambertian_surface`, `ex_imaging_brdf`, `thm_nyquist`, `fig_neural_net_perceptron`',
+        "concept_definition_examples": '"Lambertian surface", "Lambertian view independence", "surface albedo", "BRDF", "Phong reflection model", "ambient reflection term", "Phong specular highlight", "pinhole camera model", "virtual image plane", "principal point offset", "perspective projection", "orthographic projection", "telephoto approximation", "world coordinate system", "image coordinate system", "camera coordinate system", "perceptron", "convolutional neural network"',
+        "concept_theorem_examples": '"Nyquist sampling theorem", "backpropagation gradient rule", "linearity of reflection"',
+        "concept_technique_examples": '"gradient descent", "backpropagation", "Gaussian blur", "Sobel edge detection", "similar triangles derivation", "straw camera ray filtering", "directional selection for imaging", "perspective projection equations"',
+        "concept_idea_examples": '"why convolutions model translation invariance", "accidental camera obscura", "aperture blur-brightness tradeoff", "one direction per pixel", "depth-dependent size scaling", "constant scale with depth"',
+        "slug_examples": '`lambertian_surface`, `lambertian_view_independence`, `perspective_projection`, `orthographic_projection`, `ex_imaging_brdf`, `thm_nyquist`, `pinhole_camera_model`',
     },
     "calculus": {
         "book_description": "calculus textbook",
@@ -113,7 +113,14 @@ Atomic teachable ideas. Four kinds:
 - "technique": a named computational or algorithmic procedure (e.g. {concept_technique_examples}).
 - "idea": a motivational/conceptual discussion that is a distinct teachable unit (e.g. {concept_idea_examples}).
 
-Do NOT create concepts for: individual examples, running commentary, figure captions, decorative descriptions.
+**Granularity rule (critical):** Prefer MANY specific concepts over FEW broad ones.
+- Each named model VARIANT gets its own concept (e.g., "Lambertian Reflection Model" and "Phong Reflection Model" are two concepts, not one "reflection model").
+- Each named CONSEQUENCE or PROPERTY of a model gets its own concept (e.g., "Lambertian View Independence" is separate from "Lambertian Reflection Model").
+- Each named COORDINATE SYSTEM, PROJECTION TYPE, or CAMERA MODEL variant is a separate concept.
+- Each named STEP in a derivation that has a distinct name gets its own concept (e.g., "Similar Triangles Derivation", "Perspective Projection Equations").
+- Think: "would a student search for this term separately on Wikipedia or in a textbook index?" If yes, it is its own concept.
+
+Do NOT create concepts for: purely worked numerical calculations with no named result, figure captions without a named concept, or decorative section introductions that introduce no specific idea.
 
 ## Items
 
