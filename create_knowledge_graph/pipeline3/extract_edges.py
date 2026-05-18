@@ -55,7 +55,7 @@ Edge kinds:
   `teaches_after`   — pedagogical ordering only (rare; use `requires` when there's a true dependency).
 
 Rules:
-  1. For each focus concept, 0-5 edges total. Quality over quantity.
+  1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity — do not invent weak connections, but do not artificially limit the count.
   2. `from` in FOCUS; `to` in FOCUS (earlier in book) or VISIBLE.
   3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans (one or more line ranges copied from the focus concept's source.spans — a tighter range inside is preferred).
   4. `evidence_spans` is always an array — typically a single-element array with one {start, end} range.

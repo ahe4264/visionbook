@@ -276,6 +276,15 @@ def build_stages(src: Path, book_stem: str, data_dir: Path) -> list[Stage]:
                "--items",            str(d / "items.jsonl"),
                "--out-concepts-raw", str(d / "concepts.raw.jsonl"),
                "--out-items-raw",    str(d / "items.raw.jsonl")]),
+
+        Stage("fill_slots",
+              "fill_slots.py",
+              ["--raw",      str(d / "concepts.raw.jsonl"),
+               "--concepts", str(d / "concepts.jsonl"),
+               "--out",      str(d / "concepts.slotted.jsonl"),
+               "--graph",    str(d / "graph.json"),
+               "--workers",  "16"],
+              llm=True),
     ]
 
 
