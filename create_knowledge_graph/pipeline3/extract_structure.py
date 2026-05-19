@@ -114,11 +114,20 @@ Atomic teachable ideas. Four kinds:
 - "idea": a motivational/conceptual discussion that is a distinct teachable unit (e.g. {concept_idea_examples}).
 
 **Granularity rule (critical):** Prefer MANY specific concepts over FEW broad ones.
-- Each named model VARIANT gets its own concept (e.g., "Lambertian Reflection Model" and "Phong Reflection Model" are two concepts, not one "reflection model").
-- Each named CONSEQUENCE or PROPERTY of a model gets its own concept (e.g., "Lambertian View Independence" is separate from "Lambertian Reflection Model").
-- Each named COORDINATE SYSTEM, PROJECTION TYPE, or CAMERA MODEL variant is a separate concept.
-- Each named STEP in a derivation that has a distinct name gets its own concept (e.g., "Similar Triangles Derivation", "Perspective Projection Equations").
-- Think: "would a student search for this term separately on Wikipedia or in a textbook index?" If yes, it is its own concept.
+
+The guiding question for every potential concept: **"Would a student search for this specific term on Wikipedia or Google?"**
+- "Edge Camera" → yes. But also "Edge Camera Integration", "Edge Camera Derivative Inversion" → also yes, each is its own concept.
+- "Pinhole Camera Model" → yes. But also "Pinhole Identity Mapping", "One Direction Per Pixel" → also yes.
+- "Regularization" → yes. But also "Tikhonov Regularization", "Noise Amplification by Inversion", "Ill-Conditioned Inverse Problem" → each is its own concept.
+
+Specific rules:
+- Each named model VARIANT gets its own concept ("Lambertian Model" and "Phong Model" are two concepts).
+- Each named PROPERTY or CONSEQUENCE of a model gets its own concept ("Lambertian View Independence" is separate from "Lambertian Model").
+- Each named PROBLEM or FAILURE MODE gets its own concept ("Noise Amplification by Inversion", "Ill-Conditioned Inverse Problem").
+- Each named SUB-TECHNIQUE or STEP within a broader method gets its own concept ("Faint Signal Averaging", "Mean Subtraction for Motion").
+- Each named SPECIAL CASE or VARIANT gets its own concept ("Tikhonov Regularization" is separate from "Regularization").
+- Each named COORDINATE SYSTEM, PROJECTION TYPE, or CAMERA variant is a separate concept.
+- A concept like "Edge Camera" should also produce "Edge Camera Integration" and "Edge Camera Derivative Inversion" if those are discussed as distinct ideas.
 
 Do NOT create concepts for: purely worked numerical calculations with no named result, figure captions without a named concept, or decorative section introductions that introduce no specific idea.
 
