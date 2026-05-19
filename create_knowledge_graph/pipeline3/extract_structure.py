@@ -39,7 +39,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from llm import call_llm_json, GEMINI_DEFAULT
+from llm import call_llm_json, GEMINI_DEFAULT, OPENAI_DEFAULT
 
 
 # ── Book-profile-driven prompt builder ───────────────────────────────────────
@@ -81,13 +81,24 @@ def _domain_fills(profile: dict) -> dict:
     return _GENERIC_FILLS
 
 
-def build_system_prompt(profile: dict) -> str:
+def build_system_prompt(profile: dict, vocab_terms: list[str] | None = None) -> str:
     """Fill template variables in the system prompt using simple string replace.
     This avoids conflicts with the many literal {braces} in JSON examples."""
     fills = _domain_fills(profile)
     result = _SYSTEM_PROMPT_TEMPLATE
     for key, val in fills.items():
         result = result.replace(f"{{{key}}}", val)
+    if vocab_terms:
+        # Inject top-500 terms (sorted longest first to surface multi-word phrases)
+        top = vocab_terms[:500]
+        vocab_block = "\n".join(f"  - {t}" for t in top)
+        result += (
+            f"\n\n## Canonical vocabulary (use these exact terms when they match)\n\n"
+            f"The following terms are taken directly from the book (bold/italic text and "
+            f"section headings). When a concept you extract matches one of these terms, "
+            f"use the EXACT spelling from this list as the concept title.\n\n"
+            f"{vocab_block}\n"
+        )
     return result
 
 
@@ -119,7 +130,11 @@ Atomic teachable ideas. Four kinds:
 - A passage that introduces perspective projection equations and then orthographic projection → two concepts, not one.
 - A passage that defines Tikhonov regularization and then discusses ill-conditioned inverse problems → two concepts.
 
-The title MUST be a name or phrase that appears (or is clearly implied) in the text — do not invent names. If the book says "the **Lambertian model**" and then discusses "**view independence**" as a consequence, those are two concept titles: "Lambertian Model" and "Lambertian View Independence" — both grounded in the text.
+The title MUST be copied verbatim from the text — use the exact phrase as it appears in the chunk (bold, italic, or heading). Do not paraphrase, shorten, or invent names.
+
+`title_line` is REQUIRED: the exact line marker (e.g. `L02806`) where the concept's name first appears in the chunk. This must be a real line marker from the input — copy it exactly.
+
+If a vocabulary list is provided in the system prompt, PREFER those exact terms when they match the concept being extracted. Only use a term not in the vocabulary if the concept is genuinely new and unlisted.
 
 Do NOT create concepts for: purely worked numerical calculations with no named result, figure captions without a named concept, or decorative section introductions that introduce no specific idea.
 
@@ -294,11 +309,12 @@ OUTPUT_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["id", "kind", "title", "source"],
+                "required": ["id", "kind", "title", "title_line", "source"],
                 "properties": {
-                    "id":    {"type": "string"},
-                    "kind":  {"type": "string", "enum": ["definition", "theorem", "technique", "idea"]},
-                    "title": {"type": "string"},
+                    "id":         {"type": "string"},
+                    "kind":       {"type": "string", "enum": ["definition", "theorem", "technique", "idea"]},
+                    "title":      {"type": "string", "description": "Exact term as it appears in the text."},
+                    "title_line": {"type": "string", "description": "Line marker Lxxxxx where this concept's name first appears."},
                     "source": _SOURCE_SCHEMA,
                 },
             },
@@ -348,7 +364,12 @@ def process_chunk(chunk_meta: dict, chunks_dir: Path, model: str,
     chunk_path = chunks_dir / f"{chunk_meta['chunk_id']}.md"
     chunk_text = chunk_path.read_text(encoding="utf-8")
     user_msg = build_user_message(chunk_text, chunk_meta)
-    return call_llm_json(system_prompt, user_msg, OUTPUT_SCHEMA, model=model)
+    result = call_llm_json(system_prompt, user_msg, OUTPUT_SCHEMA, model=model,
+                           max_output_tokens=32768)
+    # Ensure title_line is present on every concept (older models may omit it)
+    for c in result.get("concepts", []):
+        c.setdefault("title_line", "")
+    return result
 
 
 def main() -> None:
@@ -360,19 +381,26 @@ def main() -> None:
     ap.add_argument("--out-items",    type=Path, required=True)
     ap.add_argument("--profile",      type=Path, default=None,
                     help="book_profile.json from ingest.py — sets domain-appropriate prompt")
-    ap.add_argument("--model",   default=GEMINI_DEFAULT)
+    ap.add_argument("--vocab",        type=Path, default=None,
+                    help="vocab.json from build_vocab.py — grounds concept names in book terminology")
+    ap.add_argument("--model",   default=OPENAI_DEFAULT)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--limit",   type=int, default=0)
     ap.add_argument("--start",   type=int, default=0)
     args = ap.parse_args()
 
-    # Load profile and build system prompt
+    # Load profile and vocab, build system prompt
     profile: dict = {}
     if args.profile and args.profile.exists():
         profile = json.loads(args.profile.read_text())
-    system_prompt = build_system_prompt(profile)
+    vocab_terms: list[str] | None = None
+    if args.vocab and args.vocab.exists():
+        vocab_data  = json.loads(args.vocab.read_text())
+        vocab_terms = vocab_data.get("terms", [])
+        print(f"vocab: {len(vocab_terms)} terms loaded", file=sys.stderr)
+    system_prompt = build_system_prompt(profile, vocab_terms)
     book_desc = _domain_fills(profile)["book_description"]
-    print(f"book: {book_desc}", file=sys.stderr)
+    print(f"book: {book_desc}  model: {args.model}", file=sys.stderr)
 
     chunks_dir = args.chunks_dir or args.manifest.parent
     with args.manifest.open() as f:

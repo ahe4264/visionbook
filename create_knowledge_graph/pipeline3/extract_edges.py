@@ -26,7 +26,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from llm import call_llm_json, GEMINI_DEFAULT
+from llm import call_llm_json, GEMINI_DEFAULT, OPENAI_DEFAULT
 
 
 SYSTEM_PROMPT = """You extract pedagogical relationships between calculus concepts.
@@ -57,9 +57,11 @@ Edge kinds:
 Rules:
   1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity — do not invent weak connections, but do not artificially limit the count.
   2. `from` in FOCUS; `to` in FOCUS (earlier in book) or VISIBLE.
-  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans (one or more line ranges copied from the focus concept's source.spans — a tighter range inside is preferred).
+  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans, evidence_line.
   4. `evidence_spans` is always an array — typically a single-element array with one {start, end} range.
-  5. No self-loops. No duplicate (from, to, kind) within the same window.
+  5. `evidence_line` is REQUIRED: the single line marker (e.g. L02806) in the focus concept's passage that most directly justifies this edge. Copy it exactly from the source text shown.
+  6. No self-loops. No duplicate (from, to, kind) within the same window.
+  7. ORDERING RULE: `from` must appear LATER in the book than `to`. Edges always point from dependent → prerequisite.
 
 Return JSON with top-level `edges`.
 """
@@ -97,6 +99,10 @@ OUTPUT_SCHEMA = {
                             },
                         },
                     },
+                    "evidence_line": {
+                        "type": "string",
+                        "description": "Single line marker Lxxxxx from the focus concept's passage that most directly justifies this edge.",
+                    },
                 },
             },
         },
@@ -129,16 +135,51 @@ def _spans_repr(c: dict) -> str:
     return ", ".join(f"{s['start']}-{s['end']}" for s in spans)
 
 
+_numbered_lines: dict[str, str] = {}  # populated in main()
+
+
+def _load_numbered(path: "Path") -> None:
+    import re
+    LINE_RE = re.compile(r"^L(\d{5}): (.*)$")
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        m = LINE_RE.match(raw)
+        if m:
+            _numbered_lines[f"L{m.group(1)}"] = m.group(2)
+
+
+def _source_passage(c: dict, max_chars: int = 1200) -> str:
+    """Return verbatim lines from book.numbered.md for this concept's source spans."""
+    if not _numbered_lines:
+        return ""
+    spans = _spans_of(c)
+    if not spans:
+        return ""
+    parts = []
+    for sp in spans[:2]:
+        try:
+            start = int(sp["start"][1:])
+            end   = int(sp["end"][1:])
+        except (ValueError, KeyError):
+            continue
+        for n in range(start, min(end + 1, start + 30)):
+            mk = f"L{n:05d}"
+            if mk in _numbered_lines:
+                parts.append(f"{mk}: {_numbered_lines[mk]}")
+    text = "\n".join(parts)
+    return text[:max_chars]
+
+
 def render_focus(c: dict) -> str:
-    section = c.get("position", {}).get("section") or c.get("source", {}).get("section") or "-"
+    section  = c.get("position", {}).get("section") or c.get("source", {}).get("section") or "-"
+    passage  = _source_passage(c)
+    passage_block = f"\n  passage:\n    {passage.replace(chr(10), chr(10)+'    ')}" if passage else ""
     return (
         f"- id: {c['id']}\n"
         f"  kind: {c['kind']}\n"
         f"  title: {c['title']}\n"
         f"  section: {section}\n"
-        f"  source.spans: {_spans_repr(c)}\n"
-        f"  one_liner: {c.get('one_liner', '').strip()}\n"
-        f"  content: {c.get('content', '').strip()[:800]}"
+        f"  source.spans: {_spans_repr(c)}"
+        f"{passage_block}"
     )
 
 
@@ -200,7 +241,10 @@ def process_window(
     model: str,
     all_ids: set[str],
     merge_map: dict[str, str],
+    all_concepts_map: dict[str, dict] | None = None,
 ) -> tuple[list[dict], list[str]]:
+    if all_concepts_map is None:
+        all_concepts_map = {}
     """Translate stale (pre-merge) ids via merge_map before validating them."""
     user_msg = build_user_message(section, focus, visible)
     result = call_llm_json(SYSTEM_PROMPT, user_msg, OUTPUT_SCHEMA, model=model)
@@ -226,6 +270,10 @@ def process_window(
             continue
         if frm == to:
             warns.append(f"self-loop {frm}"); continue
+        # Ordering constraint: from must appear later in book than to
+        if span_start_int(all_concepts_map.get(frm, {})) <= span_start_int(all_concepts_map.get(to, {})):
+            warns.append(f"{frm}->{to}: violates ordering (from not later than to); dropping")
+            continue
         e["confidence"] = e.get("strength", 0.0)
         e["verified"] = False
         e["extraction"] = {"model": model}
@@ -255,12 +303,19 @@ def main() -> None:
     ap.add_argument("--merge-map",   type=Path, default=None,
                     help="Optional concept_merge_map.json from dedup_concepts.py. "
                          "Used to translate pre-merge ids the LLM may still emit.")
-    ap.add_argument("--model",   default=GEMINI_DEFAULT)
+    ap.add_argument("--numbered",    type=Path, default=None,
+                    help="book.numbered.md — used to include verbatim source passages in prompts.")
+    ap.add_argument("--model",   default=OPENAI_DEFAULT)
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
+    if args.numbered and args.numbered.exists():
+        _load_numbered(args.numbered)
+        print(f"loaded {len(_numbered_lines)} numbered lines", file=sys.stderr)
+
     concepts = load_jsonl(args.concepts)
     all_ids = {c["id"] for c in concepts}
+    all_concepts_map = {c["id"]: c for c in concepts}
 
     merge_map: dict[str, str] = {}
     if args.merge_map and args.merge_map.exists():
@@ -278,7 +333,9 @@ def main() -> None:
     def run(idx_section_focus_visible):
         idx, section, focus, visible = idx_section_focus_visible
         try:
-            edges, warns = process_window(section, focus, visible, args.model, all_ids, merge_map)
+            edges, warns = process_window(
+                section, focus, visible, args.model, all_ids, merge_map, all_concepts_map
+            )
             return idx, section, edges, warns, None
         except Exception as e:
             return idx, section, [], [], e

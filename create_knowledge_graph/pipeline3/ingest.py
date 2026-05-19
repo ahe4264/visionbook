@@ -50,10 +50,11 @@ from ingest.from_pdf import extract_pdf
 # QMD uses H1 = chapter, H2 = section, H3 = subsection
 # Attributes like {#sec-id} are stripped for display but ID is extracted.
 
-_H1_RE   = re.compile(r"^# +(.+)$")
-_H2_RE   = re.compile(r"^## +(.+)$")
-_ATTR_RE = re.compile(r"\{[^}]*\}")
-_ID_RE   = re.compile(r"\{#([\w-]+)")   # first {#id ...} in attrs
+_H1_RE    = re.compile(r"^# +(.+)$")
+_H2_RE    = re.compile(r"^## +(.+)$")
+_ATTR_RE  = re.compile(r"\{[^}]*\}")
+_ID_RE    = re.compile(r"\{#([\w-]+)")   # first {#id ...} in attrs
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")  # code fence open/close
 
 
 def _strip_attrs(s: str) -> str:
@@ -99,10 +100,19 @@ def _ingest_qmd(book_dir: Path, out_dir: Path) -> tuple[str, list[dict], list[di
         ch_title = ch["stem"]
         ch_num   = ch["chapter_num"]
         sec_num  = 0
+        in_code  = False
 
         for rel, line in enumerate(ch_lines):
             abs_line = line_offset + rel + 1
             s = line.strip()
+
+            # Track code fences so # comments inside code blocks are not
+            # mistaken for H1 chapter headings.
+            if _FENCE_RE.match(s):
+                in_code = not in_code
+                continue
+            if in_code:
+                continue
 
             m = _H1_RE.match(s)
             if m:

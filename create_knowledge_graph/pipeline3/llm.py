@@ -25,8 +25,14 @@ try:
 except ImportError:  # pragma: no cover
     anthropic = None
 
+try:
+    from openai import OpenAI as _OpenAI
+except ImportError:  # pragma: no cover
+    _OpenAI = None
+
 
 GEMINI_DEFAULT = "gemini-flash-latest"
+OPENAI_DEFAULT = "gpt-4.1-mini"
 
 # The google-genai client auto-detects GOOGLE_API_KEY or GEMINI_API_KEY.
 # This project also uses GEMINI_API_KEY_SHADEN — if present, alias it into
@@ -43,14 +49,17 @@ if not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")):
 def _is_gemini(model: str) -> bool:
     return model.startswith("gemini-")
 
+def _is_openai(model: str) -> bool:
+    return model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3")
+
 
 def call_llm_json(
     system_prompt: str,
     user_message: str,
     output_schema: dict,
     model: str = GEMINI_DEFAULT,
-    max_output_tokens: int = 65536,
-    thinking_budget: int = 8192,
+    max_output_tokens: int = 8192,
+    thinking_budget: int = 0,
     temperature: float = 0.3,
     retries: int = 2,
 ) -> dict:
@@ -63,6 +72,12 @@ def call_llm_json(
                     system_prompt, user_message, output_schema, model,
                     max_output_tokens=max_output_tokens,
                     thinking_budget=thinking_budget,
+                    temperature=temperature,
+                )
+            if _is_openai(model):
+                return _call_openai_json(
+                    system_prompt, user_message, output_schema, model,
+                    max_output_tokens=max_output_tokens,
                     temperature=temperature,
                 )
             return _call_anthropic_json(system_prompt, user_message, output_schema, model)
@@ -85,7 +100,7 @@ def call_llm_json_with_image(
     output_schema: dict,
     model: str = GEMINI_DEFAULT,
     max_output_tokens: int = 8192,
-    thinking_budget: int = 2048,
+    thinking_budget: int = 0,
     temperature: float = 0.3,
     retries: int = 2,
 ) -> dict:
@@ -172,6 +187,41 @@ def _call_gemini_json(
     return json.loads(text)
 
 
+def _call_openai_json(
+    system_prompt: str,
+    user_message: str,
+    output_schema: dict,
+    model: str,
+    max_output_tokens: int,
+    temperature: float,
+) -> dict:
+    if _OpenAI is None:
+        raise RuntimeError("openai not installed. pip install openai")
+    client = _OpenAI()  # reads OPENAI_API_KEY from env
+    cleaned = clean_schema_for_openai(output_schema)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "output",
+                "schema": cleaned,
+                "strict": True,
+            },
+        },
+        max_completion_tokens=max_output_tokens,
+        temperature=temperature,
+    )
+    text = response.choices[0].message.content
+    if not text:
+        raise ValueError("empty response from OpenAI")
+    return json.loads(text)
+
+
 def _call_anthropic_json(
     system_prompt: str,
     user_message: str,
@@ -248,5 +298,28 @@ def clean_schema_for_gemini(schema: Any) -> Any:
 
     if cleaned.get("type") == "array" and "items" not in cleaned:
         cleaned["items"] = {"type": "string"}
+
+    return cleaned
+
+
+def clean_schema_for_openai(schema: Any) -> Any:
+    """Prepare schema for OpenAI strict mode: additionalProperties=false,
+    all properties in required at every object level."""
+    if not isinstance(schema, dict):
+        return schema
+
+    cleaned = dict(schema)
+
+    if cleaned.get("type") == "object":
+        cleaned["additionalProperties"] = False
+        props = cleaned.get("properties", {})
+        # Recursively clean nested schemas
+        cleaned["properties"] = {k: clean_schema_for_openai(v) for k, v in props.items()}
+        # All properties must be required in strict mode
+        cleaned["required"] = list(props.keys())
+
+    elif cleaned.get("type") == "array":
+        if "items" in cleaned:
+            cleaned["items"] = clean_schema_for_openai(cleaned["items"])
 
     return cleaned
