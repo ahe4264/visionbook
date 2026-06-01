@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <style>html,body{margin:0;height:100%;background:#fff;}body>*:not(canvas):not(script):not(.label){box-sizing:border-box;}</style>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
+    #c { width: 100%; height: 100%; display: block; }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      top: 10px; left: 10px;
+      display: flex; flex-direction: column; gap: 6px;
+      font-family: sans-serif; font-size: 13px;
+    }
+    #ui button {
+      padding: 4px 10px; cursor: pointer; border: 1px solid #aaa;
+      background: #f5f5f5; border-radius: 4px;
+    }
+    #ui button:hover { background: #e0e0e0; }
+    #ui button.active { background: #c8e6ff; border-color: #5aabf0; }
+    #ui label { display: flex; flex-direction: column; gap: 2px; }
+    #ui input[type=range] { width: 140px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <button id="btnReset">Reset View</button>
+    <!-- ADD YOUR CONTROLS HERE -->
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    const camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.zoom = 1.2;
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    const HOME_POS = camera.position.clone();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      controls.update();
+    });
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color)      div.style.color      = options.color;
+      if (options.fontSize)   div.style.fontSize   = options.fontSize;
+      if (options.bold)       div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background   = options.background;
+        div.style.padding      = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      document.body.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    /* project labels each frame */
+    const _v = new THREE.Vector3();
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+        const x = ( _v.x * 0.5 + 0.5) * canvas.clientWidth  + offset[0];
+        const y = (-_v.y * 0.5 + 0.5) * canvas.clientHeight + offset[1];
+        div.style.left = x + 'px';
+        div.style.top  = y + 'px';
+      }
+    }
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+    }
+    animate();
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      aspect = w / h;
+      camera.left   = -d * aspect;
+      camera.right  =  d * aspect;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }).observe(canvas);
+
+    // ADD YOUR SCENE OBJECTS, GEOMETRY, LABELS, AND INTERACTION LOGIC BELOW HERE
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    scene.background = new THREE.Color(0x4b4b4b);
+
+    const ui = document.getElementById('ui');
+
+    const alphaWrap = document.createElement('label');
+    alphaWrap.innerHTML = 'Specular Roughness (&alpha;) <span id="alphaReadout">30</span>';
+    const alphaSlider = document.createElement('input');
+    alphaSlider.type = 'range';
+    alphaSlider.min = '2';
+    alphaSlider.max = '120';
+    alphaSlider.step = '1';
+    alphaSlider.value = '30';
+    alphaWrap.appendChild(alphaSlider);
+    ui.appendChild(alphaWrap);
+
+    const btnMode = document.createElement('button');
+    btnMode.id = 'btnMode';
+    btnMode.textContent = 'Mode: Phong';
+    btnMode.classList.add('active');
+    ui.appendChild(btnMode);
+
+    const btnAnimate = document.createElement('button');
+    btnAnimate.id = 'btnAnimate';
+    btnAnimate.textContent = 'Animate Rays';
+    ui.appendChild(btnAnimate);
+
+    const lightWrap = document.createElement('label');
+    lightWrap.innerHTML = 'Light rotation';
+    const lightSlider = document.createElement('input');
+    lightSlider.type = 'range';
+    lightSlider.min = '-180';
+    lightSlider.max = '180';
+    lightSlider.step = '1';
+    lightSlider.value = '-40';
+    lightWrap.appendChild(lightSlider);
+    ui.appendChild(lightWrap);
+
+    const note = document.createElement('div');
+    note.style.fontSize = '12px';
+    note.style.color = '#222';
+    note.style.background = 'rgba(255,255,255,0.78)';
+    note.style.padding = '6px 8px';
+    note.style.borderRadius = '4px';
+    note.textContent = 'Drag to orbit. Use sliders to compare Lambertian and Phong shading.';
+    ui.appendChild(note);
+
+    camera.position.set(4.2, 3.0, 4.6);
+    camera.zoom = 1.42;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0.15, 0);
+    controls.update();
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.30);
+    scene.add(ambient);
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    fillLight.position.set(-2.2, 1.5, -1.7);
+    scene.add(fillLight);
+
+    const root = new THREE.Group();
+    scene.add(root);
+
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(2.2, 64),
+      new THREE.MeshBasicMaterial({ color: 0x3d3d3d, transparent: true, opacity: 0.35 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1.13;
+    root.add(ground);
+
+    const sphereRadius = 1.3;
+    const sphereGeo = new THREE.SphereGeometry(sphereRadius, 120, 80);
+
+    const lambertMat = new THREE.MeshLambertMaterial({ color: 0xe9e9e9 });
+    const phongMat = new THREE.MeshPhongMaterial({
+      color: 0xe9e9e9,
+      specular: new THREE.Color(0xffffff),
+      shininess: 30
+    });
+
+    const sphere = new THREE.Mesh(sphereGeo, phongMat);
+    root.add(sphere);
+
+    const wire = new THREE.LineSegments(
+      new THREE.WireframeGeometry(new THREE.SphereGeometry(sphereRadius, 18, 12)),
+      new THREE.LineBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.08 })
+    );
+    wire.visible = false;
+    root.add(wire);
+
+    const pointGeo = new THREE.SphereGeometry(0.045, 18, 18);
+    const pointMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+
+    const surfacePoint = new THREE.Mesh(pointGeo, pointMat);
+    root.add(surfacePoint);
+
+    const normalDir = new THREE.Vector3();
+    const lightDirToPoint = new THREE.Vector3();
+    const reflectionDir = new THREE.Vector3();
+    const viewDir = new THREE.Vector3();
+
+    const arrowGroup = new THREE.Group();
+    root.add(arrowGroup);
+
+    const qArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.9, 0x2f6fff, 0.14, 0.08);
+    const rArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.9, 0xd43d2c, 0.14, 0.08);
+    const nArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 0.65, 0x1c9b4a, 0.12, 0.07);
+    const pArrow = new THREE.ArrowHelper(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(), 0.85, 0xf1aa00, 0.14, 0.08);
+    arrowGroup.add(qArrow, rArrow, nArrow, pArrow);
+
+    function makeLine(color, dashed = false) {
+      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(1, 0, 0)]);
+      const m = dashed
+        ? new THREE.LineDashedMaterial({ color, dashSize: 0.08, gapSize: 0.05, transparent: true, opacity: 0.9 })
+        : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 });
+      const line = new THREE.Line(g, m);
+      if (dashed) line.computeLineDistances();
+      root.add(line);
+      return line;
+    }
+
+    const lightRayLine = makeLine(0xf1aa00, true);
+    const viewLine = makeLine(0x2f6fff, false);
+    const reflectLine = makeLine(0xd43d2c, false);
+
+    function setLinePoints(line, a, b) {
+      line.geometry.setFromPoints([a, b]);
+      if (line.computeLineDistances) line.computeLineDistances();
+    }
+
+    const lightMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 18, 18),
+      new THREE.MeshBasicMaterial({ color: 0xffdd66 })
+    );
+    scene.add(lightMarker);
+
+    const lightHalo = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 18, 18),
+      new THREE.MeshBasicMaterial({ color: 0xffeeaa, transparent: true, opacity: 0.4 })
+    );
+    scene.add(lightHalo);
+
+    const qLabel = addLabel('q', new THREE.Vector3(0, 0, 0), { bold: true, color: '#2f6fff', background: 'rgba(255,255,255,0.75)' });
+    const rLabel = addLabel('r', new THREE.Vector3(0, 0, 0), { bold: true, color: '#d43d2c', background: 'rgba(255,255,255,0.75)' });
+    const nLabel = addLabel('n', new THREE.Vector3(0, 0, 0), { bold: true, color: '#1c9b4a', background: 'rgba(255,255,255,0.75)' });
+    const pLabel = addLabel('p', new THREE.Vector3(0, 0, 0), { bold: true, color: '#b27700', background: 'rgba(255,255,255,0.75)' });
+    const sLabel = addLabel('surface point', new THREE.Vector3(0, 0, 0), { fontSize: '12px', background: 'rgba(255,255,255,0.75)', offset: [0, 15] });
+    const lightLabel = addLabel('light source', new THREE.Vector3(0, 0, 0), { fontSize: '12px', background: 'rgba(255,255,255,0.75)', offset: [0, -14] });
+    const sphereLabel = addLabel('sphere', new THREE.Vector3(0, sphereRadius + 0.2, 0), { bold: true, background: 'rgba(255,255,255,0.75)' });
+    const modelLabel = addLabel('Phong specular', new THREE.Vector3(-1.55, 1.55, 0), { bold: true, background: 'rgba(255,255,255,0.78)' });
+
+    let showPhong = true;
+    let animateRays = false;
+    let phase = 0;
+
+    function updateShadingModel() {
+      sphere.material = showPhong ? phongMat : lambertMat;
+      btnMode.textContent = showPhong ? 'Mode: Phong' : 'Mode: Lambertian';
+      btnMode.classList.toggle('active', showPhong);
+      rArrow.visible = showPhong;
+      reflectLine.visible = showPhong;
+      qArrow.visible = showPhong;
+      viewLine.visible = showPhong;
+      qLabel.div.style.display = showPhong ? 'block' : 'none';
+      rLabel.div.style.display = showPhong ? 'block' : 'none';
+      modelLabel.div.innerHTML = showPhong ? 'Phong specular' : 'Lambertian diffuse';
+    }
+
+    function updateAlpha() {
+      const alpha = Number(alphaSlider.value);
+      phongMat.shininess = alpha;
+      document.getElementById('alphaReadout').textContent = alpha.toString();
+    }
+
+    function updateGeometry() {
+      const angle = THREE.MathUtils.degToRad(Number(lightSlider.value));
+      const lightPos = new THREE.Vector3(
+        3.2 * Math.cos(angle),
+        2.4,
+        3.2 * Math.sin(angle)
+      );
+      keyLight.position.copy(lightPos);
+      lightMarker.position.copy(lightPos);
+      lightHalo.position.copy(lightPos);
+
+      const spAngle = angle * 0.38 + (animateRays ? Math.sin(phase * 0.9) * 0.35 : 0);
+      const spY = -0.18 + 0.22 * Math.cos(phase * 0.8);
+      surfacePoint.position.set(
+        sphereRadius * Math.cos(spAngle) * 0.72,
+        spY,
+        sphereRadius * Math.sin(spAngle) * 0.72
+      );
+      surfacePoint.position.copy(surfacePoint.position.normalize().multiplyScalar(sphereRadius));
+
+      normalDir.copy(surfacePoint.position).normalize();
+      lightDirToPoint.copy(lightPos).sub(surfacePoint.position).normalize();
+      viewDir.copy(camera.position).sub(surfacePoint.position).normalize();
+
+      reflectionDir.copy(normalDir)
+        .multiplyScalar(2 * lightDirToPoint.dot(normalDir))
+        .sub(lightDirToPoint)
+        .normalize();
+
+      nArrow.position.copy(surfacePoint.position);
+      nArrow.setDirection(normalDir);
+      nArrow.setLength(0.68, 0.12, 0.07);
+
+      pArrow.position.copy(surfacePoint.position);
+      pArrow.setDirection(lightDirToPoint.clone().negate());
+      pArrow.setLength(0.92, 0.14, 0.08);
+
+      rArrow.position.copy(surfacePoint.position);
+      rArrow.setDirection(reflectionDir);
+      rArrow.setLength(0.98, 0.14, 0.08);
+
+      qArrow.position.copy(surfacePoint.position);
+      qArrow.setDirection(viewDir);
+      qArrow.setLength(0.96, 0.14, 0.08);
+
+      setLinePoints(lightRayLine, lightPos, surfacePoint.position);
+      setLinePoints(viewLine, surfacePoint.position, surfacePoint.position.clone().add(viewDir.clone().multiplyScalar(1.05)));
+      setLinePoints(reflectLine, surfacePoint.position, surfacePoint.position.clone().add(reflectionDir.clone().multiplyScalar(1.05)));
+
+      nLabel.pos.copy(surfacePoint.position).add(normalDir.clone().multiplyScalar(0.84));
+      pLabel.pos.copy(surfacePoint.position).add(lightDirToPoint.clone().multiplyScalar(-0.62));
+      rLabel.pos.copy(surfacePoint.position).add(reflectionDir.clone().multiplyScalar(1.12));
+      qLabel.pos.copy(surfacePoint.position).add(viewDir.clone().multiplyScalar(1.08));
+      sLabel.pos.copy(surfacePoint.position).add(new THREE.Vector3(0, -0.1, 0));
+      lightLabel.pos.copy(lightPos).add(new THREE.Vector3(0, 0.22, 0));
+      sphereLabel.pos.set(0, sphereRadius + 0.26, 0);
+
+      const ndotl = Math.max(normalDir.dot(lightDirToPoint), 0);
+      const rdotq = Math.max(reflectionDir.dot(viewDir), 0);
+      const alpha = Number(alphaSlider.value);
+      const spec = Math.pow(rdotq, alpha);
+
+      if (showPhong) {
+        const base = 0.86 + spec * 0.18;
+        phongMat.color.setRGB(base, base, base);
+        phongMat.specular.setRGB(0.95, 0.95, 0.95);
+      } else {
+        const tone = 0.78 + ndotl * 0.18;
+        lambertMat.color.setRGB(tone, tone, tone);
+      }
+
+      const pulse = animateRays ? (0.65 + 0.35 * (0.5 + 0.5 * Math.sin(phase * 4.0))) : 1.0;
+      lightHalo.material.opacity = 0.25 + 0.25 * pulse;
+      lightMarker.scale.setScalar(0.95 + 0.12 * pulse);
+    }
+
+    btnMode.addEventListener('click', () => {
+      showPhong = !showPhong;
+      updateShadingModel();
+    });
+
+    btnAnimate.addEventListener('click', () => {
+      animateRays = !animateRays;
+      btnAnimate.classList.toggle('active', animateRays);
+      btnAnimate.textContent = animateRays ? 'Pause Rays' : 'Animate Rays';
+    });
+
+    alphaSlider.addEventListener('input', () => {
+      updateAlpha();
+    });
+
+    lightSlider.addEventListener('input', () => {
+      updateGeometry();
+    });
+
+    const originalUpdate = controls.update.bind(controls);
+    controls.update = function() {
+      originalUpdate();
+      updateGeometry();
+    };
+
+    updateAlpha();
+    updateShadingModel();
+    updateGeometry();
+
+    const clock = new THREE.Clock();
+    setInterval(() => {
+      const dt = clock.getDelta();
+      if (animateRays) {
+        phase += dt;
+        lightSlider.value = String((Number(lightSlider.value) + dt * 28) % 360 - (Number(lightSlider.value) > 180 ? 360 : 0));
+        let lv = Number(lightSlider.value);
+        if (lv > 180) lv -= 360;
+        if (lv < -180) lv += 360;
+        lightSlider.value = String(lv);
+        updateGeometry();
+      }
+    }, 16);
+
+  </script>
+</body>
+</html>

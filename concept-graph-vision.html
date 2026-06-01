@@ -9,6 +9,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"
   onload="window._katexReady=true"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -124,7 +125,7 @@ svg { width: 100%; height: 100%; }
   width: 300px;
   background: #1a1f2e; border: 1px solid #2d3748; border-radius: 8px;
   padding: 12px; overflow-y: auto; display: none; flex-direction: column; gap: 8px;
-  flex-shrink: 0;
+  flex-shrink: 0; z-index: 1000;
 }
 #panel.visible { display: flex; }
 #panel::-webkit-scrollbar { width: 4px; }
@@ -590,19 +591,32 @@ function init(g, raw) {
   nodeById = Object.fromEntries(allNodes.map(n => [n.id, n]));
 
   // Build link lists (prereq + overlay)
-  const prereqLinks = (g.edges?.prereq || []).map(e => ({
-    source: e.from, target: e.to, type: 'prereq',
-    kind: e.kind || 'requires', strength: e.strength || 0.5,
-    rationale: e.rationale || '',
-  })).filter(e => nodeById[e.source] && nodeById[e.target]);
+  // Edge convention: from=dependent (later in book), to=prereq (earlier).
+  // Swap so D3 arrows point prereq → dependent (learning direction).
+  // Tag isCross once here — used by force sim and drawLinks.
+  const prereqLinks = (g.edges?.prereq || []).map(e => {
+    const sc = nodeById[e.to]?.chapter, tc = nodeById[e.from]?.chapter;
+    return { source: e.to, target: e.from, type: 'prereq',
+      kind: e.kind || 'requires', strength: e.strength || 0.5,
+      rationale: e.rationale || '', isCross: !!(sc && tc && sc !== tc) };
+  }).filter(e => nodeById[e.source] && nodeById[e.target]);
 
-  const overlayLinks = (g.edges?.overlay || []).map(e => ({
-    source: e.from, target: e.to, type: 'overlay',
-    kind: e.kind || 'see_also', strength: e.strength || 0.5,
-    rationale: e.rationale || '',
-  })).filter(e => nodeById[e.source] && nodeById[e.target]);
+  const overlayLinks = (g.edges?.overlay || []).map(e => {
+    const sc = nodeById[e.to]?.chapter, tc = nodeById[e.from]?.chapter;
+    return { source: e.to, target: e.from, type: 'overlay',
+      kind: e.kind || 'see_also', strength: e.strength || 0.5,
+      rationale: e.rationale || '', isCross: !!(sc && tc && sc !== tc) };
+  }).filter(e => nodeById[e.source] && nodeById[e.target]);
 
   allLinks = { prereq: prereqLinks, overlay: overlayLinks };
+
+  // Drop isolated nodes (no edges in either direction)
+  const connectedIds = new Set([
+    ...prereqLinks.flatMap(e => [e.source, e.target]),
+    ...overlayLinks.flatMap(e => [e.source, e.target]),
+  ]);
+  allNodes = allNodes.filter(n => connectedIds.has(n.id));
+  nodeById = Object.fromEntries(allNodes.map(n => [n.id, n]));
 
   // Build chapter sidebar
   buildSidebar(g.chapters);
@@ -698,25 +712,52 @@ function buildGraph() {
     });
   svg.call(zoom);
 
-  // Chapter cluster centers arranged in a grid (shared by both layouts)
+  // Chapter cluster centers (fixed grid)
   const chapters = [...new Set(allNodes.map(n => n.chapter))].sort((a,b) => a-b);
-  const cols = 8;
-  const spacingX = 210, spacingY = 180;
+  const cols = 8, spacingX = 340, spacingY = 280;
   chapters.forEach((ch, i) => {
     clusterCenter[ch] = {
       x: (i % cols) * spacingX + spacingX / 2,
-      y: Math.floor(i / cols) * spacingY + spacingY / 2
+      y: Math.floor(i / cols) * spacingY + spacingY / 2,
     };
+  });
+
+  // ── Intra-cluster DAG offsets ─────────────────────────────────────────────
+  const dagOffset = {};
+  const byChapter = {};
+  allNodes.forEach(n => { (byChapter[n.chapter] = byChapter[n.chapter] || []).push(n); });
+  const intraByChapter = {};
+  allLinks.prereq.forEach(e => {
+    if (!e.isCross) {
+      const ch = nodeById[e.source]?.chapter;
+      if (ch) (intraByChapter[ch] = intraByChapter[ch] || []).push({ src: e.source, tgt: e.target });
+    }
+  });
+  Object.entries(byChapter).forEach(([chStr, nodes]) => {
+    const dg = new dagre.graphlib.Graph({ directed: true, multigraph: false });
+    dg.setGraph({ rankdir: 'LR', nodesep: 13, ranksep: 22, marginx: 4, marginy: 4 });
+    dg.setDefaultEdgeLabel(() => ({}));
+    nodes.forEach(n => dg.setNode(n.id, { width: 10, height: 10 }));
+    (intraByChapter[chStr] || []).forEach(e => {
+      if (dg.hasNode(e.src) && dg.hasNode(e.tgt)) dg.setEdge(e.src, e.tgt);
+    });
+    dagre.layout(dg);
+    const pts = nodes.map(n => { const p = dg.node(n.id); return p ? {id:n.id,x:p.x,y:p.y} : {id:n.id,x:0,y:0}; });
+    const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+    const cx = (Math.min(...xs)+Math.max(...xs))/2, cy = (Math.min(...ys)+Math.max(...ys))/2;
+    const w = Math.max(...xs)-Math.min(...xs)||1, h = Math.max(...ys)-Math.min(...ys)||1;
+    pts.forEach(p => { dagOffset[p.id] = { x:(p.x-cx)/w*210, y:(p.y-cy)/h*150 }; });
   });
 
   // Pre-compute book-order positions
   computeBookPositions(chapters);
 
-  // Initial positions near cluster centers
+  // Initial positions near cluster centers + DAG offset
   allNodes.forEach(n => {
-    const c = clusterCenter[n.chapter] || { x: W / 2, y: H / 2 };
-    n.x = c.x + (Math.random() - 0.5) * 60;
-    n.y = c.y + (Math.random() - 0.5) * 60;
+    const c = clusterCenter[n.chapter] || { x: W/2, y: H/2 };
+    const d = dagOffset[n.id] || { x:0, y:0 };
+    n.x = c.x + d.x + (Math.random()-0.5)*20;
+    n.y = c.y + d.y + (Math.random()-0.5)*20;
   });
 
   // Active links based on toggle state
@@ -727,14 +768,17 @@ function buildGraph() {
   nodeLayer  = root.append('g').attr('class', 'nodes');
   labelLayer = root.append('g').attr('class', 'labels');
 
-  // Build simulation
+  // ALL links in forceLink so D3 resolves source/target refs for ticked().
+  // Intra-cluster links have near-zero strength so DAG offsets dominate.
   sim = d3.forceSimulation(allNodes)
     .force('link', d3.forceLink(activeLinks)
-      .id(d => d.id).distance(40).strength(0.15))
-    .force('charge', d3.forceManyBody().strength(-28).distanceMax(160))
-    .force('collide', d3.forceCollide(9).strength(0.7))
-    .force('clusterX', d3.forceX(n => clusterCenter[n.chapter]?.x || W/2).strength(0.22))
-    .force('clusterY', d3.forceY(n => clusterCenter[n.chapter]?.y || H/2).strength(0.22))
+      .id(d => d.id)
+      .distance(d => d.isCross ? 120 : 30)
+      .strength(d => d.isCross ? 0.04 : 0.001))
+    .force('charge', d3.forceManyBody().strength(-20).distanceMax(140))
+    .force('collide', d3.forceCollide(14).strength(0.85))
+    .force('clusterX', d3.forceX(n => (clusterCenter[n.chapter]?.x||W/2)+(dagOffset[n.id]?.x||0)).strength(0.62))
+    .force('clusterY', d3.forceY(n => (clusterCenter[n.chapter]?.y||H/2)+(dagOffset[n.id]?.y||0)).strength(0.62))
     .alphaDecay(0.015)
     .on('tick', ticked);
 
@@ -781,7 +825,9 @@ function getActiveLinks() {
 
 function refreshLinks() {
   const links = getActiveLinks();
-  sim.force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(0.15));
+  sim.force('link', d3.forceLink(links).id(d => d.id)
+    .distance(d => d.isCross ? 120 : 30)
+    .strength(d => d.isCross ? 0.04 : 0.001));
   sim.alpha(0.3).restart();
   drawLinks(links);
 }
@@ -793,6 +839,8 @@ function drawLinks(links) {
     .join('line')
     .attr('class', d => `link ${d.type}${EDGE_GROUP[d.kind] === 'prereq' ? ' prereq' : ''}`)
     .attr('stroke', d => edgeColor(d.kind))
+    .attr('stroke-opacity', d => d.isCross ? null : 0.7)
+    .attr('stroke-width', d => d.isCross ? null : 1.1)
     .attr('marker-end', d => `url(#arr-${EDGE_GROUP[d.kind] || 'reference'})`)
     .on('mouseenter', (event, d) => showEdgeTooltip(event, d))
     .on('mousemove',  (event) => moveEdgeTooltip(event))
@@ -814,7 +862,13 @@ function drawNodesForce() {
     .join('g')
     .attr('class', 'node')
     .style('cursor', 'pointer')
-    .on('click', (event, d) => { event.stopPropagation(); lockedId = d.id; applyHighlight(d.id); showPanel(d); hideTooltip(); })
+    .on('click', (event, d) => {
+      event.stopPropagation();
+      lockedId = d.id;
+      applyHighlight(d.id);
+      try { showPanel(d); } catch(err) { console.error('showPanel error:', err); document.getElementById('panel').style.display = 'flex'; }
+      hideTooltip();
+    })
     .on('mouseenter', (event, d) => { highlightNode(d); showTooltip(event, d); })
     .on('mousemove',  (event) => moveTooltip(event))
     .on('mouseleave', () => { clearHighlight(); hideTooltip(); })
@@ -825,10 +879,12 @@ function drawNodesForce() {
     ).filter(e => !e.ctrlKey);
 
   // Invisible hit area — large transparent circle for easy hover/click
+  // Use pointer-events:all so the zero-opacity fill still captures clicks
   nodeG.append('circle')
     .attr('r', 14)
-    .attr('fill', 'transparent')
-    .attr('stroke', 'none');
+    .attr('fill', 'rgba(0,0,0,0)')
+    .attr('stroke', 'none')
+    .attr('pointer-events', 'all');
 
   // Visible node circle
   nodeG.append('circle')
@@ -884,7 +940,13 @@ function drawNodesBook() {
   });
 
   const nodeAttach = (sel) => sel
-    .on('click', (event, d) => { event.stopPropagation(); lockedId = d.id; applyHighlight(d.id); showPanel(d); hideTooltip(); })
+    .on('click', (event, d) => {
+      event.stopPropagation();
+      lockedId = d.id;
+      applyHighlight(d.id);
+      try { showPanel(d); } catch(err) { console.error('showPanel error:', err); document.getElementById('panel').style.display = 'flex'; }
+      hideTooltip();
+    })
     .on('mouseenter', (event, d) => { highlightNode(d); showTooltip(event, d); })
     .on('mousemove',  (event) => moveTooltip(event))
     .on('mouseleave', () => { clearHighlight(); hideTooltip(); })
@@ -1232,13 +1294,14 @@ function showPanel(d) {
     exWrapEl.style.display = 'none';
   }
 
-  // ── SOURCE TEXT (raw_body verbatim passage) ───────────────────────────────
+  // ── SOURCE TEXT (raw_body verbatim passage, fallback to content) ─────────
   const raw = rawBody[d.id] || '';
   const rawWrap = document.getElementById('p-raw-wrap');
   const rawBodyEl = document.getElementById('p-raw-body');
-  if (raw) {
+  const sourceText = raw || d.content || '';
+  if (sourceText) {
     // Clean up line-number prefixes and figure tokens for display
-    const cleanedRaw = raw
+    const cleanedRaw = sourceText
       .replace(/^\d{3,4}\s/gm, '')           // strip line-number prefixes
       .replace(/\[FIGURE:[^\]]*\]/g, '[fig]') // condense figure tokens
       .replace(/\{#[^}]*\}/g, '')            // strip anchors
@@ -1249,9 +1312,9 @@ function showPanel(d) {
   } else {
     rawWrap.style.display = 'none';
   }
-  // Collapse the raw body whenever panel opens for a new concept
-  rawBodyEl.style.display = 'none';
-  document.getElementById('p-raw-toggle').textContent = '▶';
+  // Auto-expand source text whenever panel opens
+  rawBodyEl.style.display = 'block';
+  document.getElementById('p-raw-toggle').textContent = '▼';
 
   // ── TAGS ──────────────────────────────────────────────────────────────────
   document.getElementById('p-tags').innerHTML =

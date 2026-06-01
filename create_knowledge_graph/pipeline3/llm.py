@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 from typing import Any
 
@@ -84,8 +85,10 @@ def call_llm_json(
         except Exception as e:  # broad: Gemini/Anthropic exceptions vary
             last_err = e
             if attempt < retries:
-                sleep = 2 ** attempt
-                print(f"  [llm] call failed ({type(e).__name__}: {e}); retry in {sleep}s")
+                is_rate_limit = any(x in str(e).lower() for x in ('429', 'rate', 'quota', 'resource exhausted'))
+                base = 30 if is_rate_limit else 2 ** attempt
+                sleep = base + random.uniform(0, base * 0.5)
+                print(f"  [llm] call failed ({type(e).__name__}: {e}); retry in {sleep:.1f}s")
                 time.sleep(sleep)
             else:
                 raise
@@ -139,9 +142,11 @@ def call_llm_json_with_image(
         except Exception as e:
             last_err = e
             if attempt < retries:
-                sleep = 2 ** attempt
+                is_rate_limit = any(x in str(e).lower() for x in ('429', 'rate', 'quota', 'resource exhausted'))
+                base = 30 if is_rate_limit else 2 ** attempt
+                sleep = base + random.uniform(0, base * 0.5)
                 print(f"  [llm-vision] call failed ({type(e).__name__}: {e}); "
-                      f"retry in {sleep}s")
+                      f"retry in {sleep:.1f}s")
                 time.sleep(sleep)
             else:
                 raise

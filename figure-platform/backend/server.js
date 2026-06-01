@@ -1462,11 +1462,23 @@ app.get('/api/figure-image/:stem', (req, res) => {
   res.status(404).end();
 });
 
-// ── Serve standalone HTML tools ───────────────────────────────────────────────
+// ── Serve standalone HTML tools + their static assets ────────────────────────
 const REPO_ROOT = path.join(__dirname, '..', '..');
 app.get('/concept-graph.html', (req, res) => {
   res.sendFile(path.join(REPO_ROOT, 'concept-graph.html'));
 });
+app.get('/concept-graph-vision.html', (req, res) => {
+  res.sendFile(path.join(REPO_ROOT, 'concept-graph-vision.html'));
+});
+// Serve repo-root data files used by the graph visualizations
+app.use('/chapter_graphs', express.static(path.join(REPO_ROOT, 'chapter_graphs')));
+app.use('/concept-graph-vision-data.json', (req, res) => {
+  res.sendFile(path.join(REPO_ROOT, 'concept-graph-vision-data.json'));
+});
+app.use('/concept-graph-raw.json', (req, res) => {
+  res.sendFile(path.join(REPO_ROOT, 'concept-graph-raw.json'));
+});
+app.use('/vision_images', express.static(path.join(REPO_ROOT, 'vision_images')));
 
 // ── Serve React build in production ───────────────────────────────────────────
 const frontendBuild = path.join(__dirname, '..', 'frontend', 'build');

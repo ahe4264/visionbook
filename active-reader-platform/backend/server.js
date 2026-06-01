@@ -671,6 +671,282 @@ Evaluate the student's answer.`,
   }
 });
 
+/* ──────────────────────────────────────────────────────────────────────
+ * LESSON-ENGINE INTEGRATION
+ *
+ * Serves the compiled lesson plans, figure assets, chapter index, and a
+ * persistent student model from disk. Mounted under /api/lessons/* and
+ * /lesson-assets/* — the existing chat endpoints above are untouched.
+ *
+ * Source of truth on disk:
+ *   chapter_graphs/ch01.json … ch55.json   — concept nodes + edges
+ *   active-reader-demo/lesson_plans/*.json — compiled state-machine plans
+ *   active-reader-demo/assets/figures/     — figure HTML + static images
+ *   active-reader-demo/figures_index.json  — figure index
+ *
+ * ────────────────────────────────────────────────────────────────────── */
+const path = require('path');
+const fs   = require('fs');
+const fsp  = require('fs/promises');
+
+const REPO_ROOT          = path.resolve(__dirname, '../../');                  // /Users/su/Documents/su/alex
+const DEMO_DIR           = path.join(REPO_ROOT, 'active-reader-demo');
+const CHAPTER_GRAPHS_DIR = path.join(REPO_ROOT, 'chapter_graphs');
+const PLANS_DIR          = path.join(DEMO_DIR, 'lesson_plans');
+const ASSETS_DIR         = path.join(DEMO_DIR, 'assets');
+const STUDENT_MODEL_DIR  = path.join(__dirname, 'student_model');
+const FIGURES_INDEX_FILE = path.join(DEMO_DIR, 'figures_index.json');
+
+if (!fs.existsSync(STUDENT_MODEL_DIR)) fs.mkdirSync(STUDENT_MODEL_DIR, { recursive: true });
+
+// Static mount for figure assets used by VISUAL/HINT lesson states
+app.use('/lesson-assets', express.static(ASSETS_DIR, { maxAge: '1h' }));
+
+// Static mount for QMD-relative figures + a sibling endpoint to fetch the
+// raw QMD source. Both rooted at the repo root because the QMD figure
+// links look like "figures/imaging/brdf.png" relative to the book root.
+app.use('/qmd-assets', express.static(REPO_ROOT, {
+  maxAge: '1h',
+  setHeaders: (res) => res.set('Access-Control-Allow-Origin', '*'),
+}));
+
+app.get('/api/qmd/source', async (req, res) => {
+  try {
+    const name = String(req.query.name || '');
+    if (!/^[a-z0-9_\-]+\.(qmd|md)$/i.test(name)) return res.status(400).json({ error: 'bad name' });
+    const p = path.join(REPO_ROOT, name);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
+    res.json({ name, text: await fsp.readFile(p, 'utf8') });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Caches — chapter graphs and plan files are static on disk
+const _chapterCache = new Map();
+const _planCache    = new Map();
+let   _figuresIndex = null;
+
+async function loadChapter(n) {
+  if (_chapterCache.has(n)) return _chapterCache.get(n);
+  const filename = `ch${String(n).padStart(2, '0')}.json`;
+  const p = path.join(CHAPTER_GRAPHS_DIR, filename);
+  const raw = await fsp.readFile(p, 'utf8');
+  const data = JSON.parse(raw);
+  _chapterCache.set(n, data);
+  return data;
+}
+
+async function listChapters() {
+  const out = [];
+  const dirents = await fsp.readdir(CHAPTER_GRAPHS_DIR);
+  const matches = dirents.filter(f => /^ch\d{2}\.json$/.test(f)).sort();
+  // Set of concept ids that have a compiled plan
+  let compiledIds = new Set();
+  try {
+    const planFiles = (await fsp.readdir(PLANS_DIR)).filter(f => f.endsWith('.json'));
+    compiledIds = new Set(planFiles.map(f => f.replace(/\.json$/, '')));
+  } catch { /* no plans dir yet */ }
+  for (const f of matches) {
+    const n = parseInt(f.match(/^ch(\d{2})\.json$/)[1], 10);
+    try {
+      const ch = await loadChapter(n);
+      const conceptIds = (ch.concepts || []).map(c => c.id);
+      const matched = conceptIds.filter(id => compiledIds.has(id));
+      // Title resolution: top-level `chapterTitle`, else first concept's
+      // `position.chapter_title`, else just "Ch N". Display as "Ch N. Title".
+      const rawTitle = ch.chapterTitle
+                    || ch.meta?.title
+                    || (ch.concepts?.[0]?.position?.chapter_title)
+                    || '';
+      // The raw title may already include "Ch N. " — strip it so we can
+      // re-emit a consistent format.
+      const bareTitle = rawTitle.replace(/^ch\s*\d+\.\s*/i, '').trim();
+      const title = bareTitle ? `Ch ${n}. ${bareTitle}` : `Ch ${n}`;
+      out.push({
+        chapter: n,
+        slug: `ch${String(n).padStart(2, '0')}`,
+        title,
+        concept_count: conceptIds.length,
+        has_plans: matched.length > 0,
+        compiled_concepts: matched.length,
+      });
+    } catch (e) {
+      console.warn(`[lessons] failed to load ${f}:`, e.message);
+    }
+  }
+  return out;
+}
+
+async function loadFiguresIndex() {
+  if (_figuresIndex) return _figuresIndex;
+  try {
+    _figuresIndex = JSON.parse(await fsp.readFile(FIGURES_INDEX_FILE, 'utf8'));
+  } catch (e) {
+    console.warn('[lessons] figures_index.json missing:', e.message);
+    _figuresIndex = { figures: [], by_concept: {} };
+  }
+  return _figuresIndex;
+}
+
+app.get('/api/lessons/chapters', async (_req, res) => {
+  try { res.json(await listChapters()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/lessons/chapter/:n', async (req, res) => {
+  const n = parseInt(req.params.n, 10);
+  if (!Number.isFinite(n)) return res.status(400).json({ error: 'bad chapter' });
+  try {
+    const ch = await loadChapter(n);
+    const figuresIndex = await loadFiguresIndex();
+    const figByConcept = figuresIndex.by_concept || {};
+
+    let planIds = new Set();
+    try {
+      const planFiles = (await fsp.readdir(PLANS_DIR)).filter(f => f.endsWith('.json'));
+      planIds = new Set(planFiles.map(f => f.replace(/\.json$/, '')));
+    } catch {}
+
+    const concepts = (ch.concepts || [])
+      .filter(c => planIds.has(c.id))
+      .map(c => ({
+        id: c.id,
+        title: c.title,
+        kind: c.kind,
+        one_liner: c.one_liner || '',
+        content: c.content || '',
+        key_passage: c.key_passage || null,
+        example: c.example || null,
+        plan_file: `lesson_plans/${c.id}.json`,
+        position: c.position || {},
+        section: c.position?.section || null,
+        figure_count: (figByConcept[c.id] || []).length,
+      }));
+    const rawTitle = ch.chapterTitle
+                  || ch.meta?.title
+                  || (ch.concepts?.[0]?.position?.chapter_title)
+                  || '';
+    const bareTitle = rawTitle.replace(/^ch\s*\d+\.\s*/i, '').trim();
+    res.json({
+      chapter: n,
+      chapter_title: bareTitle ? `Ch ${n}. ${bareTitle}` : `Ch ${n}`,
+      concept_count: concepts.length,
+      figures_index_size: (figuresIndex.figures || []).length,
+      concepts,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/lessons/plan/:conceptId', async (req, res) => {
+  const id = req.params.conceptId;
+  if (!/^[a-z0-9_]+$/i.test(id)) return res.status(400).json({ error: 'bad id' });
+  if (_planCache.has(id)) return res.json(_planCache.get(id));
+  try {
+    const p = path.join(PLANS_DIR, `${id}.json`);
+    const raw = await fsp.readFile(p, 'utf8');
+    const plan = JSON.parse(raw);
+    _planCache.set(id, plan);
+    res.json(plan);
+  } catch (e) {
+    res.status(404).json({ error: `plan not found: ${id}` });
+  }
+});
+
+app.get('/api/lessons/figures', async (_req, res) => {
+  try { res.json(await loadFiguresIndex()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Student model: event-sourced JSONL on disk, aggregated on read ───
+function safeUserFile(userId) {
+  const safe = String(userId || 'anon').replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60) || 'anon';
+  return path.join(STUDENT_MODEL_DIR, `${safe}.jsonl`);
+}
+
+app.post('/api/lessons/event', async (req, res) => {
+  try {
+    const { user_id, concept_id, event, payload } = req.body || {};
+    if (!event) return res.status(400).json({ error: 'event required' });
+    const row = { ts: new Date().toISOString(), user_id: user_id || 'anon',
+                  concept_id: concept_id || null, event, payload: payload || null };
+    await fsp.appendFile(safeUserFile(user_id), JSON.stringify(row) + '\n');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/lessons/student-model', async (req, res) => {
+  try {
+    const userId = req.query.user_id || 'anon';
+    const fp = safeUserFile(userId);
+    if (!fs.existsSync(fp)) return res.json({ user_id: userId, per_concept: {}, events: 0 });
+    const raw = await fsp.readFile(fp, 'utf8');
+    const rows = raw.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const per = {};
+    for (const r of rows) {
+      const id = r.concept_id || '_';
+      const slot = per[id] = per[id] || {
+        attempts: 0, passes: 0, fails: 0, hints: 0, interrupts: 0,
+        last_event: null, completed: false,
+      };
+      if (r.event === 'lesson_started')   slot.attempts++;
+      if (r.event === 'gate_pass')        slot.passes++;
+      if (r.event === 'gate_fail')        slot.fails++;
+      if (r.event === 'hint_shown')       slot.hints++;
+      if (r.event === 'lesson_complete')  slot.completed = true;
+      if (r.event === 'interrupt')        slot.interrupts++;
+      slot.last_event = r.event;
+    }
+    res.json({ user_id: userId, per_concept: per, events: rows.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Interrupt answer: LLM grounded in the active concept ─────────────
+app.post('/api/lessons/answer-question', async (req, res) => {
+  try {
+    const { question, concept, state, history } = req.body || {};
+    if (!question) return res.status(400).json({ error: 'question required' });
+
+    const groundingBits = [];
+    if (concept?.title)        groundingBits.push(`Concept: ${concept.title}`);
+    if (concept?.one_liner)    groundingBits.push(`One-liner: ${concept.one_liner}`);
+    if (concept?.content)      groundingBits.push(`Content:\n${concept.content.slice(0, 1500)}`);
+    if (concept?.key_passage)  groundingBits.push(`Key passage: "${concept.key_passage.quote || ''}" (§${concept.key_passage.section || '?'})`);
+    if (state?.kind)           groundingBits.push(`Student is currently in lesson state: ${state.kind}`);
+    const grounding = groundingBits.join('\n\n');
+
+    const systemPrompt = `You are a focused tutor answering a student's clarifying question DURING a structured lesson. Your reply should:
+- Stay tightly grounded in the concept currently being taught (do not drift)
+- Be short (≤4 sentences) so the lesson can resume quickly
+- Use plain language; one concrete example if it helps
+- Do NOT include any markdown code blocks unless absolutely necessary
+
+${grounding}`.trim();
+
+    const recent = Array.isArray(history) ? history.slice(-6) : [];
+    const userBody = `Student question: ${question}`;
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 400,
+      system: systemPrompt,
+      messages: [...recent.map(h => ({ role: h.role, content: h.content })), { role: 'user', content: userBody }],
+    });
+    const reply = response.content[0]?.text?.trim() || '(no reply)';
+    res.json({ reply });
+  } catch (e) {
+    console.error('[answer-question] error:', e.message);
+    res.status(500).json({ error: e.message, reply: 'Sorry — I had trouble answering that. Try rephrasing?' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
+  console.log(`Lesson plans dir: ${PLANS_DIR}`);
+  console.log(`Lesson assets dir: ${ASSETS_DIR}`);
 });

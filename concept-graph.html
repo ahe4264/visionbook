@@ -56,6 +56,7 @@
     display: none;
     overflow-y: auto;
     animation: fadeIn 0.15s ease;
+    z-index: 1000;
   }
   #panel.visible { display: flex; flex-direction: column; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
@@ -244,8 +245,8 @@ function adaptPipelineGraph(json) {
     const fr = e.from;
     const to = e.to;
     if (!fr || !to) return;
-    if (!depMap[to]) depMap[to] = [];
-    depMap[to].push(fr);
+    if (!depMap[fr]) depMap[fr] = [];
+    depMap[fr].push(to);
   });
 
   const rawConcepts = conceptsArrayFromBundle(json);
@@ -269,9 +270,9 @@ function adaptPipelineGraph(json) {
         label: c.title || c.id,
         tier,
         slots: {
-          motivation:  c.slots?.motivation  || c.motivation?.text  || c.motivation_md  || null,
-          key_passage: c.slots?.key_passage || c.key_passage?.text || c.recap_md       || null,
-          question:    c.slots?.question    || c.question?.text    || null,
+          motivation:  c.motivation?.text  || c.slots?.motivation  || c.motivation_md  || null,
+          key_passage: c.key_passage?.text || c.slots?.key_passage || c.recap_md       || null,
+          question:    c.question?.text    || c.slots?.question    || null,
           example:     c.slots?.example     || c.content           || c.one_liner      || null,
           demo:        [],
           pset:        '',
@@ -285,6 +286,10 @@ function adaptPipelineGraph(json) {
   const edges = [];
   nodes.forEach(n => n.deps.forEach(d => edges.push({ source: d, target: n.id, type: 'dep' })));
 
+  // Drop isolated nodes (no edges within this chapter view)
+  const connectedIds = new Set(edges.flatMap(e => [e.source, e.target]));
+  const filteredNodes = nodes.filter(n => connectedIds.has(n.id));
+
   const meta = json.meta || {};
   const counts = meta.counts || {};
   const sub = [
@@ -296,7 +301,7 @@ function adaptPipelineGraph(json) {
     .join(' · ');
 
   return {
-    nodes,
+    nodes: filteredNodes,
     edges,
     title: json.chapterTitle || 'Concept Graph',
     subtitle: sub || null,
@@ -657,7 +662,7 @@ function renderGraph(graphData) {
         return;
       }
       event.stopPropagation();
-      showPanel(d, nodes);
+      try { showPanel(d, nodes); } catch(err) { console.error('showPanel error:', err); document.getElementById('panel').classList.add('visible'); }
     });
 
   nodeG.append('rect')

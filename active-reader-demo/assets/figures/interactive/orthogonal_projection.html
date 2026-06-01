@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <style>html,body{margin:0;height:100%;background:#fff;}body>*:not(canvas):not(script):not(.label){box-sizing:border-box;}</style>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
+    #c { width: 100%; height: 100%; display: block; }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      top: 10px; left: 10px;
+      display: flex; flex-direction: column; gap: 6px;
+      font-family: sans-serif; font-size: 13px;
+    }
+    #ui button {
+      padding: 4px 10px; cursor: pointer; border: 1px solid #aaa;
+      background: #f5f5f5; border-radius: 4px;
+    }
+    #ui button:hover { background: #e0e0e0; }
+    #ui button.active { background: #c8e6ff; border-color: #5aabf0; }
+    #ui label { display: flex; flex-direction: column; gap: 2px; }
+    #ui input[type=range] { width: 140px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <button id="btnReset">Reset View</button>
+    <!-- ADD YOUR CONTROLS HERE -->
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    const camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.zoom = 1.2;
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    const HOME_POS = camera.position.clone();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      controls.update();
+    });
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color)      div.style.color      = options.color;
+      if (options.fontSize)   div.style.fontSize   = options.fontSize;
+      if (options.bold)       div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background   = options.background;
+        div.style.padding      = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      document.body.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    /* project labels each frame */
+    const _v = new THREE.Vector3();
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+        const x = ( _v.x * 0.5 + 0.5) * canvas.clientWidth  + offset[0];
+        const y = (-_v.y * 0.5 + 0.5) * canvas.clientHeight + offset[1];
+        div.style.left = x + 'px';
+        div.style.top  = y + 'px';
+      }
+    }
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+    }
+    animate();
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      aspect = w / h;
+      camera.left   = -d * aspect;
+      camera.right  =  d * aspect;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }).observe(canvas);
+
+    // ADD YOUR SCENE OBJECTS, GEOMETRY, LABELS, AND INTERACTION LOGIC BELOW HERE
+
+    camera.position.set(7.2, 4.2, 6.8);
+    camera.zoom = 1.05;
+    camera.updateProjectionMatrix();
+    controls.target.set(1.9, 0.45, 2.5);
+    controls.update();
+
+    const ui = document.getElementById('ui');
+
+    const modeBtn = document.createElement('button');
+    modeBtn.id = 'btnMode';
+    modeBtn.textContent = 'Mode: Orthographic';
+    modeBtn.classList.add('active');
+    ui.appendChild(modeBtn);
+
+    const animateBtn = document.createElement('button');
+    animateBtn.id = 'btnAnimate';
+    animateBtn.textContent = 'Animate Rotation';
+    ui.appendChild(animateBtn);
+
+    const raysBtn = document.createElement('button');
+    raysBtn.id = 'btnRays';
+    raysBtn.textContent = 'Hide Rays';
+    ui.appendChild(raysBtn);
+
+    const depthLabel = document.createElement('label');
+    depthLabel.innerHTML = 'Object distance (Z)<span id="depthVal">3.0</span>';
+    const depthSlider = document.createElement('input');
+    depthSlider.type = 'range';
+    depthSlider.min = '1.8';
+    depthSlider.max = '5.5';
+    depthSlider.step = '0.01';
+    depthSlider.value = '3.0';
+    depthLabel.appendChild(depthSlider);
+    ui.appendChild(depthLabel);
+
+    const kLabel = document.createElement('label');
+    kLabel.innerHTML = 'Scale factor k <span id="kVal">1.00</span>';
+    const kSlider = document.createElement('input');
+    kSlider.type = 'range';
+    kSlider.min = '0.6';
+    kSlider.max = '1.6';
+    kSlider.step = '0.01';
+    kSlider.value = '1.00';
+    kLabel.appendChild(kSlider);
+    ui.appendChild(kLabel);
+
+    const depthVal = document.getElementById('depthVal');
+    const kVal = document.getElementById('kVal');
+
+    scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+    const axisColor = 0x111111;
+    const xAxis = new THREE.ArrowHelper(new THREE.Vector3(-0.72, 0.72, 0).normalize(), new THREE.Vector3(-3.6, 0, 0), 2.7, axisColor, 0.22, 0.13);
+    const yAxis = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(-3.6, 0, 0), 2.55, axisColor, 0.22, 0.13);
+    const zAxis = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(-3.6, 0, 0), 10.3, axisColor, 0.26, 0.16);
+    scene.add(xAxis, yAxis, zAxis);
+
+    addLabel('X', new THREE.Vector3(-2.55, 1.95, 0.02), { bold: true, fontSize: '28px' });
+    addLabel('Y', new THREE.Vector3(-3.25, 2.75, 0.02), { bold: true, fontSize: '28px' });
+    addLabel('Z', new THREE.Vector3(6.95, -0.45, 0.02), { bold: true, fontSize: '28px' });
+
+    const planeGroup = new THREE.Group();
+    scene.add(planeGroup);
+
+    const planePts = [
+      new THREE.Vector3(-2.15, -4.2, 0),
+      new THREE.Vector3(-2.15, 0.62, 0),
+      new THREE.Vector3(0.7, 4.95, 0),
+      new THREE.Vector3(0.7, 0.58, 0)
+    ];
+
+    const planeShape = new THREE.Shape();
+    planeShape.moveTo(planePts[0].x, planePts[0].y);
+    for (let i = 1; i < planePts.length; i++) planeShape.lineTo(planePts[i].x, planePts[i].y);
+    planeShape.closePath();
+
+    const planeMesh = new THREE.Mesh(
+      new THREE.ShapeGeometry(planeShape),
+      new THREE.MeshBasicMaterial({ color: 0xdfe6ea, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+    );
+    planeGroup.add(planeMesh);
+
+    const planeOutlineGeom = new THREE.BufferGeometry().setFromPoints([...planePts, planePts[0]]);
+    const planeOutline = new THREE.Line(planeOutlineGeom, new THREE.LineBasicMaterial({ color: 0x222222 }));
+    planeGroup.add(planeOutline);
+
+    const planeTextLabel = addLabel('Projection plane', new THREE.Vector3(-0.35, -2.85, 0.02), {
+      fontSize: '24px',
+      background: 'rgba(255,255,255,0.7)'
+    });
+
+    const objGroup = new THREE.Group();
+    scene.add(objGroup);
+
+    function makePrism(y0, y1) {
+      const shape = new THREE.Shape();
+      shape.moveTo(0, y0);
+      shape.lineTo(1, y0);
+      shape.lineTo(1, y1);
+      shape.lineTo(0, y1);
+      shape.closePath();
+      const geom = new THREE.ExtrudeGeometry(shape, { depth: 1.3, bevelEnabled: false });
+      const mats = [
+        new THREE.MeshBasicMaterial({ color: 0x4fc0e0 }),
+        new THREE.MeshBasicMaterial({ color: 0xff3b17 }),
+        new THREE.MeshBasicMaterial({ color: 0x39ff00 }),
+        new THREE.MeshBasicMaterial({ color: 0x39ff00 }),
+        new THREE.MeshBasicMaterial({ color: 0xff3b17 }),
+        new THREE.MeshBasicMaterial({ color: 0x4fc0e0 })
+      ];
+      const mesh = new THREE.Mesh(geom, mats);
+      mesh.renderOrder = 2;
+      return mesh;
+    }
+
+    const lowerPrism = makePrism(-0.75, 0.1);
+    const upperPrism = makePrism(0.65, 1.5);
+    objGroup.add(lowerPrism, upperPrism);
+
+    const outlineMaterial = new THREE.LineBasicMaterial({ color: 0x111111 });
+    function addEdges(mesh) {
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), outlineMaterial);
+      edges.position.copy(mesh.position);
+      edges.rotation.copy(mesh.rotation);
+      edges.scale.copy(mesh.scale);
+      mesh.add(edges);
+    }
+    addEdges(lowerPrism);
+    addEdges(upperPrism);
+
+    const projGroup = new THREE.Group();
+    scene.add(projGroup);
+
+    function buildProjectedShape(y0, y1) {
+      const shape = new THREE.Shape();
+      shape.moveTo(0, y0);
+      shape.lineTo(1, y0);
+      shape.lineTo(1, y1);
+      shape.lineTo(0, y1);
+      shape.closePath();
+      const geom = new THREE.ShapeGeometry(shape);
+      const mats = [
+        new THREE.MeshBasicMaterial({ color: 0x4fc0e0, side: THREE.DoubleSide, transparent: true, opacity: 0.95 }),
+        new THREE.MeshBasicMaterial({ color: 0xff3b17, side: THREE.DoubleSide, transparent: true, opacity: 0.95 }),
+        new THREE.MeshBasicMaterial({ color: 0x39ff00, side: THREE.DoubleSide, transparent: true, opacity: 0.95 })
+      ];
+      const group = new THREE.Group();
+
+      const front = new THREE.Mesh(geom, mats[1]);
+      group.add(front);
+
+      const sideGeom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(1, y0, 0),
+        new THREE.Vector3(1, y1, 0),
+        new THREE.Vector3(1.26, y1 + 0.22, 0),
+        new THREE.Vector3(1.26, y0 + 0.22, 0),
+        new THREE.Vector3(1, y0, 0)
+      ]);
+      const sideMesh = new THREE.Mesh(
+        new THREE.ShapeGeometry(new THREE.Shape([
+          new THREE.Vector2(1, y0),
+          new THREE.Vector2(1, y1),
+          new THREE.Vector2(1.26, y1 + 0.22),
+          new THREE.Vector2(1.26, y0 + 0.22)
+        ])),
+        mats[0]
+      );
+      group.add(sideMesh);
+
+      const topMesh = new THREE.Mesh(
+        new THREE.ShapeGeometry(new THREE.Shape([
+          new THREE.Vector2(0, y1),
+          new THREE.Vector2(1, y1),
+          new THREE.Vector2(1.26, y1 + 0.22),
+          new THREE.Vector2(0.26, y1 + 0.22)
+        ])),
+        mats[2]
+      );
+      group.add(topMesh);
+
+      const pts = [];
+      pts.push(new THREE.Vector3(0, y0, 0), new THREE.Vector3(1, y0, 0));
+      pts.push(new THREE.Vector3(1, y0, 0), new THREE.Vector3(1, y1, 0));
+      pts.push(new THREE.Vector3(1, y1, 0), new THREE.Vector3(0, y1, 0));
+      pts.push(new THREE.Vector3(0, y1, 0), new THREE.Vector3(0, y0, 0));
+      pts.push(new THREE.Vector3(1, y0, 0), new THREE.Vector3(1.26, y0 + 0.22, 0));
+      pts.push(new THREE.Vector3(1, y1, 0), new THREE.Vector3(1.26, y1 + 0.22, 0));
+      pts.push(new THREE.Vector3(1.26, y0 + 0.22, 0), new THREE.Vector3(1.26, y1 + 0.22, 0));
+      pts.push(new THREE.Vector3(0, y1, 0), new THREE.Vector3(0.26, y1 + 0.22, 0));
+      pts.push(new THREE.Vector3(0.26, y1 + 0.22, 0), new THREE.Vector3(1.26, y1 + 0.22, 0));
+
+      const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), outlineMaterial);
+      group.add(lines);
+
+      return group;
+    }
+
+    const lowerProj = buildProjectedShape(-0.75, 0.1);
+    const upperProj = buildProjectedShape(0.65, 1.5);
+    projGroup.add(lowerProj, upperProj);
+
+    const raysGroup = new THREE.Group();
+    scene.add(raysGroup);
+
+    const pDots = [];
+    const qDots = [];
+
+    function dashedLine(a, b) {
+      const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+      const l = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0x222222, dashSize: 0.08, gapSize: 0.06 }));
+      l.computeLineDistances();
+      return l;
+    }
+
+    function pointSphere(color, r = 0.035) {
+      return new THREE.Mesh(
+        new THREE.SphereGeometry(r, 20, 20),
+        new THREE.MeshBasicMaterial({ color })
+      );
+    }
+
+    const objectRaySamples = [
+      new THREE.Vector3(0, -0.75, 0),
+      new THREE.Vector3(1, -0.75, 0),
+      new THREE.Vector3(0, 0.1, 0),
+      new THREE.Vector3(1, 0.1, 0),
+      new THREE.Vector3(0, 0.65, 0),
+      new THREE.Vector3(1, 0.65, 0),
+      new THREE.Vector3(0, 1.5, 0),
+      new THREE.Vector3(1, 1.5, 0)
+    ];
+
+    for (let i = 0; i < objectRaySamples.length; i++) {
+      const line = dashedLine(new THREE.Vector3(), new THREE.Vector3(1, 0, 0));
+      raysGroup.add(line);
+      const p = pointSphere(0x35d916, 0.03);
+      const q = pointSphere(0x35d916, 0.03);
+      raysGroup.add(p, q);
+      pDots.push(p);
+      qDots.push(q);
+    }
+
+    const xLine = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x35d916 })
+    );
+    const yLine = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x35d916 })
+    );
+    scene.add(xLine, yLine);
+
+    const xArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 1, 0x35d916, 0.18, 0.11);
+    const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 1, 0x35d916, 0.18, 0.11);
+    scene.add(xArrow, yArrow);
+
+    const xLabel = addLabel('x', new THREE.Vector3(0, 0, 0), { color: '#111', fontSize: '26px', bold: true, background: 'rgba(255,255,255,0.55)' });
+    const yLabel = addLabel('y', new THREE.Vector3(0, 0, 0), { color: '#111', fontSize: '26px', bold: true, background: 'rgba(255,255,255,0.55)' });
+
+    const perspRay = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0x35d916 })
+    );
+    scene.add(perspRay);
+    perspRay.visible = false;
+
+    const cameraDot = pointSphere(0x111111, 0.045);
+    scene.add(cameraDot);
+    cameraDot.visible = false;
+    const cameraLabel = addLabel('camera center', new THREE.Vector3(-3.25, 0, 0), {
+      fontSize: '12px',
+      background: 'rgba(255,255,255,0.85)'
+    });
+    cameraLabel.div.style.display = 'none';
+
+    const baseObjectPos = new THREE.Vector3(2.2, 0, 0);
+    let objectDepth = parseFloat(depthSlider.value);
+    let scaleK = parseFloat(kSlider.value);
+    let perspectiveMode = false;
+    let showRays = true;
+    let autoRotate = false;
+    let angle = 0;
+
+    function setLinePoints(line, a, b) {
+      line.geometry.setFromPoints([a, b]);
+      if (line.material.isLineDashedMaterial) line.computeLineDistances();
+    }
+
+    function projectedToWorld(localX, localY) {
+      const wx = -0.95 + localX * 0.9;
+      const wy = localY;
+      return new THREE.Vector3(wx, wy, 0.02);
+    }
+
+    function updateProjection() {
+      depthVal.textContent = objectDepth.toFixed(2);
+      kVal.textContent = scaleK.toFixed(2);
+
+      objGroup.position.set(baseObjectPos.x + objectDepth, 0, 0);
+      objGroup.rotation.y = angle;
+
+      const projectedZ = perspectiveMode ? 0.72 * objectDepth : 0;
+      projGroup.position.set(baseObjectPos.x + projectedZ, 0, 0);
+      projGroup.scale.setScalar(scaleK);
+
+      const source = new THREE.Vector3(-3.6, 0, 0);
+
+      const localMeasure = new THREE.Vector3(0.62, -0.78, 0.18);
+      const objMeasure = localMeasure.clone().applyAxisAngle(new THREE.Vector3(0,1,0), angle).add(objGroup.position);
+
+      const planeAnchor = projectedToWorld(scaleK * localMeasure.z, scaleK * localMeasure.y);
+
+      if (!perspectiveMode) {
+        setLinePoints(xLine, new THREE.Vector3(planeAnchor.x, -1.75, 0.03), new THREE.Vector3(planeAnchor.x, planeAnchor.y, 0.03));
+        setLinePoints(yLine, new THREE.Vector3(planeAnchor.x, -0.02, 0.03), new THREE.Vector3(planeAnchor.x, planeAnchor.y, 0.03));
+        xArrow.position.copy(new THREE.Vector3(planeAnchor.x, -1.75, 0.03));
+        xArrow.setDirection(new THREE.Vector3(0.75, 0.66, 0).normalize());
+        xArrow.setLength(2.25, 0.18, 0.11);
+
+        yArrow.position.copy(new THREE.Vector3(planeAnchor.x, -1.15, 0.03));
+        yArrow.setDirection(new THREE.Vector3(0, 1, 0));
+        yArrow.setLength(3.2, 0.18, 0.11);
+
+        xLabel.pos.copy(new THREE.Vector3(planeAnchor.x + 1.05, 1.55, 0.03));
+        yLabel.pos.copy(new THREE.Vector3(planeAnchor.x - 0.28, 1.72, 0.03));
+        perspRay.visible = false;
+        cameraDot.visible = false;
+        cameraLabel.div.style.display = 'none';
+      } else {
+        setLinePoints(xLine, new THREE.Vector3(planeAnchor.x, -1.75, 0.03), new THREE.Vector3(planeAnchor.x, planeAnchor.y, 0.03));
+        setLinePoints(yLine, new THREE.Vector3(planeAnchor.x, -0.02, 0.03), new THREE.Vector3(planeAnchor.x, planeAnchor.y, 0.03));
+        xArrow.position.copy(new THREE.Vector3(planeAnchor.x, -1.75, 0.03));
+        xArrow.setDirection(new THREE.Vector3(0.75, 0.66, 0).normalize());
+        xArrow.setLength(2.25, 0.18, 0.11);
+        yArrow.position.copy(new THREE.Vector3(planeAnchor.x, -1.15, 0.03));
+        yArrow.setDirection(new THREE.Vector3(0, 1, 0));
+        yArrow.setLength(3.2, 0.18, 0.11);
+
+        xLabel.pos.copy(new THREE.Vector3(planeAnchor.x + 1.02, 1.5, 0.03));
+        yLabel.pos.copy(new THREE.Vector3(planeAnchor.x - 0.28, 1.66, 0.03));
+
+        setLinePoints(perspRay, source, objMeasure);
+        perspRay.visible = showRays;
+        cameraDot.position.copy(source);
+        cameraDot.visible = true;
+        cameraLabel.pos.copy(source.clone().add(new THREE.Vector3(-0.2, -0.2, 0)));
+        cameraLabel.div.style.display = 'block';
+      }
+
+      for (let i = 0; i < objectRaySamples.length; i++) {
+        const local = objectRaySamples[i];
+        const objPoint = local.clone().applyAxisAngle(new THREE.Vector3(0,1,0), angle).add(objGroup.position);
+        let projPoint;
+
+        if (!perspectiveMode) {
+          projPoint = projectedToWorld(scaleK * local.z, scaleK * local.y);
+          setLinePoints(raysGroup.children[i * 3], objPoint, projPoint);
+        } else {
+          const t = (0 - source.x) / (objPoint.x - source.x);
+          const intersect = source.clone().lerp(objPoint, t);
+          projPoint = new THREE.Vector3(intersect.x, intersect.y * scaleK, 0.02);
+          setLinePoints(raysGroup.children[i * 3], source, objPoint);
+        }
+
+        pDots[i].position.copy(objPoint);
+        qDots[i].position.copy(projPoint);
+        raysGroup.children[i * 3].visible = showRays;
+        pDots[i].visible = showRays;
+        qDots[i].visible = showRays && !perspectiveMode;
+      }
+
+      xLine.visible = !perspectiveMode || showRays;
+      yLine.visible = !perspectiveMode || showRays;
+
+      const objectScale = perspectiveMode ? Math.max(0.6, 1.45 / (0.55 * objectDepth)) : 1;
+      objGroup.scale.setScalar(objectScale);
+
+      modeBtn.textContent = perspectiveMode ? 'Mode: Perspective' : 'Mode: Orthographic';
+      modeBtn.classList.toggle('active', !perspectiveMode);
+      raysBtn.textContent = showRays ? 'Hide Rays' : 'Show Rays';
+      animateBtn.classList.toggle('active', autoRotate);
+    }
+
+    modeBtn.addEventListener('click', () => {
+      perspectiveMode = !perspectiveMode;
+      updateProjection();
+    });
+
+    raysBtn.addEventListener('click', () => {
+      showRays = !showRays;
+      updateProjection();
+    });
+
+    animateBtn.addEventListener('click', () => {
+      autoRotate = !autoRotate;
+      animateBtn.textContent = autoRotate ? 'Stop Rotation' : 'Animate Rotation';
+      updateProjection();
+    });
+
+    depthSlider.addEventListener('input', () => {
+      objectDepth = parseFloat(depthSlider.value);
+      updateProjection();
+    });
+
+    kSlider.addEventListener('input', () => {
+      scaleK = parseFloat(kSlider.value);
+      updateProjection();
+    });
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.zoom = 1.05;
+      camera.updateProjectionMatrix();
+      controls.target.set(1.9, 0.45, 2.5);
+      controls.update();
+    });
+
+    function tick() {
+      if (autoRotate) {
+        angle += 0.01;
+        updateProjection();
+      }
+      requestAnimationFrame(tick);
+    }
+
+    updateProjection();
+    tick();
+  </script>
+</body>
+</html>

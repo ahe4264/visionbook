@@ -6,6 +6,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import './App.css';
 import tutorAvatar from './tutor-avatar.png';
 import tutorAvatar2 from './tutor-avatar-2.png'; // reserved for future use
+import { detectChapter } from './lessonHelpers';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -353,6 +354,14 @@ export default function App() {
   const [pinnedContext, setPinnedContext] = useState('');
   const [loading, setLoading]             = useState(false);
 
+  // ── Concept-graph awareness ───────────────────────────────────
+  // The tutor uses the chapter's concept nodes as grounding context. There
+  // is no "linear lesson" — transitions are event-driven (see lesson_state).
+  const [availableChapters, setAvailableChapters] = useState([]); // /api/lessons/chapters
+  const [detectedChapter, setDetectedChapter]     = useState(null);
+  const [chapterConcepts, setChapterConcepts]     = useState([]); // raw concept nodes for current chapter
+  const [activeConcepts, setActiveConcepts]       = useState([]); // concepts relevant to current PDF position
+
   // Split
   const [splitPos, setSplitPos] = useState(58);
   const dragging = useRef(false);
@@ -554,6 +563,74 @@ export default function App() {
       setOutline(await resolve(raw));
     } catch { setOutline([]); }
   }, []);
+
+  // ── Concept graph: fetch available chapters once ──────────
+  useEffect(() => {
+    fetch(`${BACKEND}/api/lessons/chapters`)
+      .then(r => r.json())
+      .then(setAvailableChapters)
+      .catch(err => console.warn('[concepts] chapters fetch failed:', err.message));
+  }, []);
+
+  // ── Detect which chapter the open PDF maps to ─────────────
+  useEffect(() => {
+    setDetectedChapter(null);
+    setChapterConcepts([]);
+    if (!title || !availableChapters.length || !pdfDocRef.current) return;
+    let cancelled = false;
+    (async () => {
+      let firstText = '';
+      try {
+        for (const p of [1, 2]) {
+          if (p <= numPages) firstText += ' ' + (await extractPageText(p));
+        }
+      } catch {}
+      if (cancelled) return;
+      const match = detectChapter(title, firstText, availableChapters);
+      if (!match) return;
+      setDetectedChapter(match);
+      if (match.has_plans) {
+        try {
+          const chap = await fetch(`${BACKEND}/api/lessons/chapter/${match.chapter}`).then(r => r.json());
+          if (!cancelled) setChapterConcepts(chap.concepts || []);
+        } catch (e) { console.warn('[concepts] chapter fetch failed:', e.message); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [title, availableChapters, numPages, extractPageText]);
+
+  // ── Tutor event logger (for student model + state transitions) ─
+  const logTutorEvent = useCallback((concept_id, event, payload) => {
+    fetch(`${BACKEND}/api/lessons/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: title || 'anon', concept_id, event, payload: payload || null }),
+    }).catch(() => {});
+  }, [title]);
+
+  // ── Recompute active concepts whenever currentPage / pageText / chapter changes.
+  // Heuristic: a concept is "active" for the current page if either
+  //   (a) its position.section_title appears in the current page text, OR
+  //   (b) its key_passage quote appears in the current page text.
+  // We rank by overlap so the most-mentioned concept comes first.
+  useEffect(() => {
+    if (!chapterConcepts.length || !pageText) { setActiveConcepts([]); return; }
+    const txt = pageText.toLowerCase();
+    const scored = chapterConcepts.map(c => {
+      let score = 0;
+      const sectionTitle = (c.position?.section_title || '').toLowerCase();
+      if (sectionTitle && txt.includes(sectionTitle)) score += 3;
+      const title = (c.title || '').toLowerCase();
+      if (title && txt.includes(title)) score += 4;
+      const aliases = c.aliases || [];
+      for (const a of aliases) if (a && txt.includes(a.toLowerCase())) score += 2;
+      const kp = c.key_passage?.quote ? c.key_passage.quote.toLowerCase() : '';
+      if (kp && txt.includes(kp.slice(0, 40))) score += 5;
+      return { ...c, _score: score };
+    }).filter(c => c._score > 0)
+      .sort((a, b) => b._score - a._score);
+    setActiveConcepts(scored.slice(0, 4));
+  }, [chapterConcepts, pageText, currentPage]);
 
   // ── Page nav ─────────────────────────────────────────────
   const goTo = useCallback((p) => {
@@ -1865,6 +1942,18 @@ export default function App() {
               <span className="tutor-label">Tutor</span>
             </div>
           </div>
+
+          {/* ── Concept context strip ── */}
+          {detectedChapter && activeConcepts.length > 0 && (
+            <div className="concept-strip" title="Concepts the tutor is grounded in for the current page">
+              <span className="cs-chip-chapter">📚 {detectedChapter.title}</span>
+              {activeConcepts.map(c => (
+                <span key={c.id} className="cs-chip-concept" title={c.one_liner || ''}>
+                  {c.title}
+                </span>
+              ))}
+            </div>
+          )}
 
           <div className="chat-messages">
             {/* ── Annotation preview mode ── */}
