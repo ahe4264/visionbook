@@ -11,13 +11,12 @@ const {
   evaluateRecord,
   saveRecord,
 } = require('./figure_pipeline');
-const { planForFigure, planChapter } = require('./planner');
-const { plan2dFigure } = require('./planner-2d');
-const { generate2dFigureHtml } = require('./generation-2d');
-const { listChapters, list3dCandidates, list2dCandidates } = require('./chapter-discovery');
+const { planForFigure, planChapter, PLANNER_MODEL } = require('./planner');
+const { listChapters, list3dCandidates } = require('./chapter-discovery');
 const { getAvailableModels } = require('./models');
-const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage } = require('./result_schema');
+const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage, upsertAttempts } = require('./result_schema');
 const { getCriticContext } = require('./critic');
+const { runFigureLoop } = require('./figure_loop');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -26,22 +25,6 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:3001/')
   .map(origin => origin.trim())
   .filter(Boolean);
 const generationJobs = new Map();
-
-// Prevent crashes from unhandled rejections / exceptions
-process.on('unhandledRejection', (reason) => {
-  console.error('[unhandledRejection]', reason?.message || reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err.message);
-});
-
-// Periodically evict jobs older than 30 minutes to free memory
-setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  for (const [id, job] of generationJobs) {
-    if (new Date(job.updatedAt).getTime() < cutoff) generationJobs.delete(id);
-  }
-}, 5 * 60 * 1000); // run every 5 minutes
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 const EXPERIMENTS_DIR = path.join(__dirname, '..', '..', 'prompt_experiments');
@@ -58,8 +41,7 @@ const CURRENT_CRITIC_MODEL = 'gpt-4o';       // model used by evaluator by defau
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({
   origin(origin, callback) {
-    // Allow no-origin requests (server-to-server / curl) and any localhost origin
-    if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin) || CORS_ORIGINS.includes('*') || CORS_ORIGINS.includes(origin)) {
+    if (!origin || CORS_ORIGINS.includes('*') || CORS_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`Origin not allowed by CORS: ${origin}`));
@@ -73,7 +55,7 @@ app.use(express.json({ limit: '20mb' }));
 // The model extends this file instead of writing from scratch.
 // It provides: renderer, scene, orthographic camera, OrbitControls,
 // floating label system (addLabel), resize handler, Reset View button, CSS.
-// Edit backend/base_scene_robust.html to change the starting point for all generations.
+// Edit backend/base_scene_new.html to change the starting point for all generations.
 let BASE_SCAFFOLD_PATH;
 let BASE_SCAFFOLD;
 try {
@@ -116,6 +98,7 @@ app.get('/api/prompt', (req, res) => {
     experiment: CURRENT_EXPERIMENT,
     model: CURRENT_MODEL,
     criticModel: CURRENT_CRITIC_MODEL,
+    plannerModel: PLANNER_MODEL,
     criticVersion: CURRENT_CRITIC_VERSION,
   });
 });
@@ -125,30 +108,28 @@ app.get('/api/models', (req, res) => {
   res.json(getAvailableModels());
 });
 
-// ── GET /api/chapters — list chapters with 3D + 2D candidate counts ──────────
+// ── GET /api/chapters — list chapters with 3D candidate counts ────────────────
 app.get('/api/chapters', (req, res) => {
   try {
-    return res.json(listChapters());
+    const chapters = listChapters();
+    return res.json(chapters);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// ── GET /api/chapter-candidates/:chapter — list 3D + 2D candidates ───────────
+// ── GET /api/chapter-candidates/:chapter — list 3D candidate images in a chapter ─
 app.get('/api/chapter-candidates/:chapter', (req, res) => {
-  function readCandidates(list, type) {
-    return list.map(c => {
+  try {
+    const candidates = list3dCandidates(req.params.chapter);
+    // Return filename + base64 thumbnail for each
+    const result = candidates.map(c => {
       const base64 = fs.readFileSync(c.fullPath).toString('base64');
       const ext = path.extname(c.filename).toLowerCase();
-      const mediaType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-      return { filename: c.filename, stem: c.stem, base64, mediaType, type };
+      const mediaType = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+      return { filename: c.filename, stem: c.stem, base64, mediaType };
     });
-  }
-  try {
-    const chapter = req.params.chapter;
-    const candidates3d = readCandidates(list3dCandidates(chapter), '3d');
-    const candidates2d = readCandidates(list2dCandidates(chapter), '2d');
-    return res.json([...candidates3d, ...candidates2d]);
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -156,7 +137,7 @@ app.get('/api/chapter-candidates/:chapter', (req, res) => {
 
 // ── POST /api/plan — plan for a single figure (fast, returns before generation) ──
 app.post('/api/plan', async (req, res) => {
-  const { filename, chapterHint, base64, mediaType } = req.body;
+  const { filename, chapterHint, base64, mediaType, plannerModel } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required.' });
 
   const stem = filename.replace(/\.[^.]+$/, '');
@@ -164,7 +145,7 @@ app.post('/api/plan', async (req, res) => {
   const imageData = base64 && mediaType ? { base64, mediaType } : undefined;
 
   try {
-    const plan = await planForFigure(stem, chapter, imageData);
+    const plan = await planForFigure(stem, chapter, imageData, plannerModel);
     return res.json(plan);
   } catch (err) {
     console.error('Plan error:', err?.message || err);
@@ -172,62 +153,13 @@ app.post('/api/plan', async (req, res) => {
   }
 });
 
-// ── POST /api/plan-2d — vision-based plan for a 2D figure ────────────────────
-app.post('/api/plan-2d', async (req, res) => {
-  const { filename, base64, mediaType, chapterHint } = req.body;
-  if (!filename || !base64 || !mediaType) {
-    return res.status(400).json({ error: 'filename, base64, and mediaType are required.' });
-  }
-  const stem = filename.replace(/\.[^.]+$/, '');
-  try {
-    const plan = await plan2dFigure(stem, chapterHint || null, base64, mediaType);
-    return res.json(plan);
-  } catch (err) {
-    console.error('Plan-2d error:', err?.message || err);
-    return res.status(500).json({ error: err?.message || '2D planning failed.' });
-  }
-});
-
-// ── POST /api/generate-2d-async ───────────────────────────────────────────────
-app.post('/api/generate-2d-async', (req, res) => {
-  const { base64, mediaType, filename, plan, model: requestedModel, iframeWidth, iframeHeight } = req.body;
-  if (!base64 || !mediaType || !filename) {
-    return res.status(400).json({ error: 'base64, mediaType, and filename are required.' });
-  }
-
-  const modelId = requestedModel || CURRENT_MODEL;
-  const jobId = makeId();
-  generationJobs.set(jobId, { id: jobId, status: 'running', type: '2d', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-
-  generate2dFigureHtml({ modelId, base64, mediaType, plan, iframeWidth, iframeHeight })
-    .then(html => {
-      if (!html.trimStart().startsWith('<')) throw new Error('Model did not return valid HTML.');
-      const figureId = makeId();
-      const timestamp = new Date().toISOString();
-      const record = {
-        id: figureId, filename, html, timestamp,
-        source: 'api', type: '2d', model: modelId,
-        base64thumb: base64, mediaType,
-      };
-      fs.writeFileSync(path.join(RESULTS_DIR, `${figureId}.json`), JSON.stringify(record, null, 2));
-      // Don't store html in memory — it's already on disk. Keep only the reference.
-      updateGenerationJob(jobId, { status: 'done', result: { figureId, timestamp, model: modelId } });
-    })
-    .catch(err => {
-      console.error(`[generate-2d] ${filename}:`, err?.message || err);
-      updateGenerationJob(jobId, { status: 'error', error: err?.message || 'Generation failed.' });
-    });
-
-  return res.status(202).json({ jobId });
-});
-
 // ── POST /api/plan-chapter — plan all 3D candidates in a chapter ─────────────
 app.post('/api/plan-chapter', async (req, res) => {
-  const { chapter } = req.body;
+  const { chapter, plannerModel } = req.body;
   if (!chapter) return res.status(400).json({ error: 'chapter is required.' });
 
   try {
-    const plans = await planChapter(chapter);
+    const plans = await planChapter(chapter, {}, plannerModel);
     return res.json(plans);
   } catch (err) {
     console.error('Plan-chapter error:', err?.message || err);
@@ -367,6 +299,123 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   };
 }
 
+/**
+ * Generate figure using auto-iterative loop
+ * Runs plan → generate → critique → decide cycle, saving all iterations
+ */
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3 }) {
+  const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
+
+  if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
+    const err = new Error('base64, mediaType, filename, and figureStem are required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (typeof requestedCriticVersion !== 'string' || !requestedCriticVersion.trim()) {
+    const err = new Error('criticVersion is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (typeof requestedExperiment !== 'string' || !requestedExperiment.trim()) {
+    const err = new Error('experiment is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const modelId = requestedModel || CURRENT_MODEL;
+  const plannerModelId = requestedPlannerModel || CURRENT_MODEL;
+  const criticModelId = requestedEvalModel || CURRENT_CRITIC_MODEL;
+  const experimentName = requestedExperiment.trim();
+
+  if (!requestedModel) {
+    console.warn(`[generate-loop] no model provided; falling back to default "${CURRENT_MODEL}"`);
+  }
+  console.log(`[generate-loop] figureStem="${resolvedFigureStem}" chapter="${chapterName || 'unknown'}" experiment="${experimentName}" maxAttempts=${maxAttempts}`);
+
+  // Run the iterative loop
+  const loopState = await runFigureLoop({
+    figureStem: resolvedFigureStem,
+    chapterName: chapterName || null,
+    imageData: { base64, mediaType },
+    scaffold: BASE_SCAFFOLD,
+    sourceBase64: base64,
+    sourceMediaType: mediaType,
+    maxAttempts,
+    passThreshold: 4.0,
+    plannerModel: plannerModelId,
+    generatorModel: modelId,
+    criticModel: criticModelId,
+  });
+
+  if (loopState.status === 'failed_planning') {
+    const err = new Error(`Failed to generate plan for ${resolvedFigureStem}`);
+    err.statusCode = 502;
+    throw err;
+  }
+
+  // Use best HTML from loop
+  const html = loopState.currentHtml || '';
+  if (!html.trimStart().startsWith('<')) {
+    const err = new Error('Loop did not produce valid HTML output');
+    err.statusCode = 502;
+    throw err;
+  }
+
+  const figureId = makeId();
+  const timestamp = new Date().toISOString();
+  const shot = await screenshotHtml(html);
+
+  // Create result record with attempts attached
+  let record = createResultRecord({
+    id: figureId,
+    filename,
+    html,
+    timestamp,
+    source: 'api',
+    model: modelId,
+    experiment: experimentName,
+    plan: loopState.currentPlan || null,
+    previewBase64: shot ? shot.data : null,
+    previewMediaType: shot ? shot.mediaType : null,
+    fallbackBase64: base64,
+    fallbackMediaType: mediaType || 'image/png',
+    sourceBase64: base64,
+    sourceMediaType: mediaType,
+  });
+
+  // Attach loop iteration history
+  record = upsertAttempts(record, loopState.attempts);
+
+  // Attach best evaluation if available
+  if (loopState.currentEvaluation) {
+    record = upsertEvaluation(record, criticModelId, loopState.currentEvaluation, timestamp, {
+      criticVersion: requestedCriticVersion,
+      criticModel: criticModelId,
+    });
+  }
+
+  const recordPath = path.join(RESULTS_DIR, `${figureId}.json`);
+  saveRecord(record, recordPath);
+  refreshHistoryManifestSafe();
+
+  return {
+    html,
+    figureId,
+    timestamp,
+    model: modelId,
+    experiment: experimentName,
+    loopStatus: loopState.status,
+    attempts: loopState.attempts.length,
+    bestScore: loopState.bestScore,
+    plan: loopState.currentPlan || null,
+    evaluationResults: record.evaluationResults || {},
+    evaluationMeta: record.evaluationMeta || {},
+    evaluationVersions: record.evaluationVersions || {},
+  };
+}
+
 function updateGenerationJob(jobId, patch) {
   const current = generationJobs.get(jobId);
   if (!current) return;
@@ -401,9 +450,7 @@ app.post('/api/generate-async', (req, res) => {
   // Run immediately — no queue, full parallelism
   generateFigure(req.body)
     .then((result) => {
-      // Don't store html in memory — already on disk. Keep only the reference.
-      const { html: _html, ...resultRef } = result;
-      updateGenerationJob(jobId, { status: 'done', result: resultRef });
+      updateGenerationJob(jobId, { status: 'done', result });
     })
     .catch((err) => {
       updateGenerationJob(jobId, {
@@ -419,18 +466,34 @@ app.post('/api/generate-async', (req, res) => {
 app.get('/api/generate-status/:id', (req, res) => {
   const job = generationJobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Generation job not found.' });
-
-  // If done and result has a figureId, read html from disk rather than memory
-  if (job.status === 'done' && job.result?.figureId && !job.result?.html) {
-    try {
-      const filePath = path.join(RESULTS_DIR, `${job.result.figureId}.json`);
-      const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      return res.json({ ...job, result: { ...job.result, html: record.html } });
-    } catch {
-      // Fall through — return job without html if file can't be read
-    }
-  }
   return res.json(job);
+});
+
+// ── POST /api/generate-loop-async ────────────────────────────────────────────
+// Runs iterative figure generation with full loop (plan → generate → critique → decide)
+// Returns jobId immediately; results include full attempts array with all iterations
+app.post('/api/generate-loop-async', (req, res) => {
+  const jobId = makeId();
+  generationJobs.set(jobId, {
+    id: jobId,
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  generateFigureWithLoop(req.body)
+    .then((result) => {
+      updateGenerationJob(jobId, { status: 'done', result });
+    })
+    .catch((err) => {
+      updateGenerationJob(jobId, {
+        status: 'error',
+        error: err?.message || 'Loop generation failed.',
+        ...(err?.raw ? { raw: err.raw } : {}),
+      });
+    });
+
+  return res.status(202).json({ jobId });
 });
 
 // ── Chapter inference ───────────────────────────────────────────────────────
@@ -477,7 +540,6 @@ function readHistoryRecord(fileName, { includeThumb = false } = {}) {
   const chapter = inferChapter(stem);
   const model = parsed.model || 'gpt-4o';
   const experiment = parsed.experiment || 'base_scene_robust';
-
   const record = {
     id: parsed.id,
     filename: parsed.filename,
@@ -489,6 +551,8 @@ function readHistoryRecord(fileName, { includeThumb = false } = {}) {
     evaluationMeta: parsed.evaluationMeta || {},
     evaluationVersions: parsed.evaluationVersions || {},
     chapter,
+    // Number of loop iterations/attempts saved for this result (0 when not applicable)
+    iterations: Array.isArray(parsed.attempts) ? parsed.attempts.length : 0,
   };
 
   if (includeThumb) {
@@ -530,6 +594,8 @@ function listHistoryIndexFromManifest() {
         evaluationMeta: record?.evaluationMeta || {},
         evaluationVersions: record?.evaluationVersions || {},
         chapter: record?.chapter || null,
+        // Prefer explicit iterations property on manifest entry, otherwise fall back to attempts array length
+        iterations: typeof record?.iterations === 'number' ? record.iterations : (Array.isArray(record?.attempts) ? record.attempts.length : 0),
       }))
       .filter(record => record.id)
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -1366,120 +1432,6 @@ Please produce an improved wrapper that makes this figure look great in the chap
   }
 });
 
-// ── Concept Graph API ─────────────────────────────────────────────────────────
-const CONCEPT_GRAPHS_DIR = path.join(__dirname, 'concept-graphs');
-if (!fs.existsSync(CONCEPT_GRAPHS_DIR)) fs.mkdirSync(CONCEPT_GRAPHS_DIR, { recursive: true });
-
-const conceptBuildJobs = new Map();
-
-app.get('/api/concept-graphs', (req, res) => {
-  const graphs = fs.existsSync(CONCEPT_GRAPHS_DIR)
-    ? fs.readdirSync(CONCEPT_GRAPHS_DIR)
-        .filter(f => f.endsWith('.graph.json'))
-        .map(f => {
-          try {
-            const data = JSON.parse(fs.readFileSync(path.join(CONCEPT_GRAPHS_DIR, f), 'utf-8'));
-            return { chapterName: data.chapterName, chapterTitle: data.chapterTitle, conceptCount: data.concepts?.length ?? 0, generatedAt: data.generatedAt };
-          } catch { return null; }
-        })
-        .filter(Boolean)
-    : [];
-  res.json(graphs);
-});
-
-app.get('/api/concept-graph/:chapter/status', (req, res) => {
-  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
-  const job = conceptBuildJobs.get(chapter);
-  const built = fs.existsSync(path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`));
-  if (!job) return res.json({ status: built ? 'done' : 'idle', log: [] });
-  res.json({ status: job.status, log: job.log, error: job.error || null, startedAt: job.startedAt });
-});
-
-app.get('/api/concept-graph/:chapter', (req, res) => {
-  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
-  const graphPath = path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`);
-  if (!fs.existsSync(graphPath)) {
-    return res.status(404).json({ error: `No concept graph for "${chapter}". Trigger a build first.` });
-  }
-  res.json(JSON.parse(fs.readFileSync(graphPath, 'utf-8')));
-});
-
-app.post('/api/concept-graph/:chapter/build', async (req, res) => {
-  const chapter = req.params.chapter.replace(/[^a-zA-Z0-9_-]/g, '');
-  const rebuildRag = req.body?.rebuildRag === true;
-  const existing = conceptBuildJobs.get(chapter);
-  if (existing?.status === 'running') {
-    return res.status(409).json({ error: 'Build already in progress', status: 'running' });
-  }
-  const job = { status: 'running', log: [], startedAt: new Date().toISOString(), error: null };
-  conceptBuildJobs.set(chapter, job);
-  const log = (msg) => { console.log(`[concept-graph:${chapter}] ${msg}`); job.log.push(msg); };
-  res.json({ status: 'started', chapter });
-  (async () => {
-    try {
-      const { buildIndex, loadIndex } = require('./concept-pipeline/rag');
-      const { extractConcepts }       = require('./concept-pipeline/extractor');
-      const { fillAllSlots }          = require('./concept-pipeline/slot-filler');
-      const { detectDependencies }    = require('./concept-pipeline/dependency-detector');
-      log('Step 1/4  RAG — chunking + embedding …');
-      let chunks = rebuildRag ? null : loadIndex(chapter);
-      if (chunks) { log(`↳ loaded cached RAG index (${chunks.length} sections)`); }
-      else { chunks = await buildIndex(chapter); log(`↳ embedded ${chunks.length} sections, index saved`); }
-      const chapterTitle = chunks[0]?.chapterTitle || chapter;
-      log('Step 2/4  Extracting atomic concepts …');
-      const rawConcepts = await extractConcepts(chapterTitle, chunks);
-      log(`↳ ${rawConcepts.length} concepts: ${rawConcepts.map(c => c.label).join(', ')}`);
-      log('Step 3/4  Filling concept slots …');
-      const filled = await fillAllSlots(rawConcepts, chapter, chunks);
-      log('↳ slots filled');
-      log('Step 4/4  Detecting dependencies …');
-      const graph = await detectDependencies(filled);
-      log(`↳ ${graph.filter(c => c.deps.length > 0).length} deps, ${graph.filter(c => c.slots.demo?.length > 0).length} demos linked`);
-      const output = { chapterName: chapter, chapterTitle, generatedAt: new Date().toISOString(), concepts: graph };
-      fs.writeFileSync(path.join(CONCEPT_GRAPHS_DIR, `${chapter}.graph.json`), JSON.stringify(output, null, 2));
-      log('✓ Done');
-      job.status = 'done';
-    } catch (err) {
-      job.status = 'error'; job.error = err.message;
-      console.error(`[concept-graph:${chapter}] Error:`, err.message);
-    }
-  })();
-});
-
-// ── Serve original figure images for concept graph ────────────────────────────
-app.get('/api/figure-image/:stem', (req, res) => {
-  const stem = req.params.stem.replace(/[^a-zA-Z0-9_.\-]/g, '');
-  const CHAPTER_FIG_DIR = path.join(__dirname, '..', 'chapter-figures');
-  if (!fs.existsSync(CHAPTER_FIG_DIR)) return res.status(404).end();
-  for (const ch of fs.readdirSync(CHAPTER_FIG_DIR)) {
-    for (const sub of ['candidates_3d', 'diagrams_2d', 'photographs']) {
-      for (const ext of ['png', 'jpg', 'jpeg', 'PNG', 'JPG']) {
-        const p = path.join(CHAPTER_FIG_DIR, ch, sub, `${stem}.${ext}`);
-        if (fs.existsSync(p)) return res.sendFile(p);
-      }
-    }
-  }
-  res.status(404).end();
-});
-
-// ── Serve standalone HTML tools + their static assets ────────────────────────
-const REPO_ROOT = path.join(__dirname, '..', '..');
-app.get('/concept-graph.html', (req, res) => {
-  res.sendFile(path.join(REPO_ROOT, 'concept-graph.html'));
-});
-app.get('/concept-graph-vision.html', (req, res) => {
-  res.sendFile(path.join(REPO_ROOT, 'concept-graph-vision.html'));
-});
-// Serve repo-root data files used by the graph visualizations
-app.use('/chapter_graphs', express.static(path.join(REPO_ROOT, 'chapter_graphs')));
-app.use('/concept-graph-vision-data.json', (req, res) => {
-  res.sendFile(path.join(REPO_ROOT, 'concept-graph-vision-data.json'));
-});
-app.use('/concept-graph-raw.json', (req, res) => {
-  res.sendFile(path.join(REPO_ROOT, 'concept-graph-raw.json'));
-});
-app.use('/vision_images', express.static(path.join(REPO_ROOT, 'vision_images')));
-
 // ── Serve React build in production ───────────────────────────────────────────
 const frontendBuild = path.join(__dirname, '..', 'frontend', 'build');
 if (fs.existsSync(frontendBuild)) {
@@ -1487,13 +1439,6 @@ if (fs.existsSync(frontendBuild)) {
   app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
   console.log('Serving React build from', frontendBuild);
 }
-
-// ── Global JSON error handler (must be after all routes) ─────────────────────
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err?.message || err);
-  res.status(err.status || err.statusCode || 500).json({ error: err?.message || 'Internal server error.' });
-});
 
 // ── Start server ──────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

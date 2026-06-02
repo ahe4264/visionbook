@@ -2,11 +2,16 @@ import React, { useState, useCallback, useEffect } from 'react';
 
 const FALLBACK_PROMPT = '(Loading system prompt from server…)';
 const MODEL_STORAGE_KEY = 'figure-platform:selectedModel';
+const PLANNER_MODEL_STORAGE_KEY = 'figure-platform:selectedPlannerModel';
 const CRITIC_MODEL_STORAGE_KEY = 'figure-platform:selectedCriticModel';
 const CRITIC_NAME_STORAGE_KEY = 'figure-platform:selectedCriticName';
 const CRITIC_PASSES_STORAGE_KEY = 'figure-platform:selectedCriticPasses';
 const EXPERIMENT_STORAGE_KEY = 'figure-platform:selectedExperiment';
+const FIGURE_TYPE_STORAGE_KEY = 'figure-platform:selectedFigureType';
+const CRITIC_VERSION_STORAGE_KEY = 'figure-platform:selectedCriticVersion';
 const HUMAN_EVAL_MODEL = 'human:manual';
+const DEFAULT_GENERATION_MODEL = 'gpt-5.5';
+const DEFAULT_EVALUATION_MODEL = 'claude-opus-4.7';
 const HUMAN_FAILURE_MODES = [
   'Depth-Wrong',
   'Missing-Labels',
@@ -164,36 +169,6 @@ function apiFetch(input, init = {}) {
   });
 }
 
-async function runGenerationJob(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
-  const createRes = await apiFetch('/api/generate-async', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const createData = await createRes.json();
-  if (!createRes.ok) throw new Error(createData.error || 'Failed to start generation.');
-
-  let transientPollFailures = 0;
-  for (let pollCount = 0; pollCount < maxPolls; pollCount += 1) {
-    await new Promise(resolve => setTimeout(resolve, pollMs));
-    try {
-      const statusRes = await apiFetch(`/api/generate-status/${encodeURIComponent(createData.jobId)}`);
-      const statusData = await statusRes.json();
-      if (!statusRes.ok) throw new Error(statusData.error || 'Failed to check generation status.');
-      transientPollFailures = 0;
-      if (statusData.status === 'done') return statusData.result;
-      if (statusData.status === 'error') throw new Error(statusData.error || 'Generation failed.');
-    } catch (err) {
-      transientPollFailures += 1;
-      if (transientPollFailures >= 5) {
-        throw new Error(err.message || 'Connection error while checking generation status.');
-      }
-    }
-  }
-
-  throw new Error('Generation timed out while waiting for completion.');
-}
-
 async function runGenerationJob2d(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
   const createRes = await apiFetch('/api/generate-2d-async', {
     method: 'POST',
@@ -221,6 +196,35 @@ async function runGenerationJob2d(payload, { pollMs = 2000, maxPolls = 600 } = {
   throw new Error('2D generation timed out.');
 }
 
+// Run iterative loop-based generation (3D). Polls the async job until completion.
+async function runGenerationLoop(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
+  const createRes = await apiFetch('/api/generate-loop-async', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const createData = await createRes.json();
+  if (!createRes.ok) throw new Error(createData.error || 'Failed to start loop generation.');
+
+  let transientPollFailures = 0;
+  for (let pollCount = 0; pollCount < maxPolls; pollCount += 1) {
+    await new Promise(resolve => setTimeout(resolve, pollMs));
+    try {
+      const statusRes = await apiFetch(`/api/generate-status/${encodeURIComponent(createData.jobId)}`);
+      const statusData = await statusRes.json();
+      if (!statusRes.ok) throw new Error(statusData.error || 'Failed to check generation status.');
+      transientPollFailures = 0;
+      if (statusData.status === 'done') return statusData.result;
+      if (statusData.status === 'error') throw new Error(statusData.error || 'Loop generation failed.');
+    } catch (err) {
+      transientPollFailures += 1;
+      if (transientPollFailures >= 5) throw new Error(err.message || 'Connection error while checking generation status.');
+    }
+  }
+
+  throw new Error('Loop generation timed out while waiting for completion.');
+}
+
 export default function App() {
   const [tab, setTab] = useState('generator');
   const [viewerBackTab, setViewerBackTab] = useState('generator');
@@ -233,6 +237,7 @@ export default function App() {
   // Model selection
   const [models, setModels] = useState([]);       // available models from backend
   const [selectedModel, setSelectedModel] = useState(''); // '' = server default
+  const [selectedPlannerModel, setSelectedPlannerModel] = useState('');
   const [selectedCriticModel, setSelectedCriticModel] = useState('');
   const [criticNameOptions, setCriticNameOptions] = useState([]);
   const [selectedCriticName, setSelectedCriticName] = useState('');
@@ -250,6 +255,19 @@ export default function App() {
       if (promptData.criticVersion) setCurrentCriticVersion(promptData.criticVersion);
       setModels(list);
 
+      const storedExperiment = window.localStorage.getItem(EXPERIMENT_STORAGE_KEY);
+      const newestExperiment = historyRecords?.[0]?.experiment || '';
+      if (storedExperiment) setSelectedExperiment(storedExperiment);
+      else if (newestExperiment) setSelectedExperiment(newestExperiment);
+
+      const storedCriticName = window.localStorage.getItem(CRITIC_NAME_STORAGE_KEY);
+      const newestCriticName = collectCriticVersionSummaries(historyRecords || [])[0]?.versionId || '';
+      if (storedCriticName) setSelectedCriticName(storedCriticName);
+      else if (newestCriticName) setSelectedCriticName(newestCriticName);
+
+      const storedFigureType = window.localStorage.getItem(FIGURE_TYPE_STORAGE_KEY);
+      if (storedFigureType === '2d' || storedFigureType === '3d') setFigureType(storedFigureType);
+
       const experimentSet = new Set();
       const criticNameSet = new Set();
       for (const record of historyRecords || []) {
@@ -263,6 +281,14 @@ export default function App() {
       setExperimentOptions(mergedExperiments);
       setCriticNameOptions(mergedCriticNames);
 
+      const storedCriticPassesRaw = window.localStorage.getItem(CRITIC_PASSES_STORAGE_KEY);
+      if (storedCriticPassesRaw !== null) {
+        const storedCriticPasses = Number(storedCriticPassesRaw);
+        if (Number.isInteger(storedCriticPasses) && storedCriticPasses >= 0 && storedCriticPasses <= 3) {
+          setSelectedCriticPasses(storedCriticPasses);
+        }
+      }
+
       if (list.length === 0) return;
 
       const storedModel = window.localStorage.getItem(MODEL_STORAGE_KEY);
@@ -271,19 +297,18 @@ export default function App() {
 
       if (preferredModel) setSelectedModel(preferredModel);
 
+      const storedPlannerModel = window.localStorage.getItem(PLANNER_MODEL_STORAGE_KEY);
+      const preferredPlannerModel = [storedPlannerModel, promptData.plannerModel, list[0]?.id]
+        .find(modelId => modelId && list.some(m => m.id === modelId));
+
+      if (preferredPlannerModel) setSelectedPlannerModel(preferredPlannerModel);
+
       const storedCriticModel = window.localStorage.getItem(CRITIC_MODEL_STORAGE_KEY);
       const preferredCriticModel = [storedCriticModel, promptData.criticModel, list[0]?.id]
         .find(modelId => modelId && list.some(m => m.id === modelId));
 
       if (preferredCriticModel) setSelectedCriticModel(preferredCriticModel);
 
-      const storedCriticPassesRaw = window.localStorage.getItem(CRITIC_PASSES_STORAGE_KEY);
-      if (storedCriticPassesRaw !== null) {
-        const storedCriticPasses = Number(storedCriticPassesRaw);
-        if (Number.isInteger(storedCriticPasses) && storedCriticPasses >= 0 && storedCriticPasses <= 3) {
-          setSelectedCriticPasses(storedCriticPasses);
-        }
-      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -293,6 +318,9 @@ export default function App() {
   useEffect(() => {
     if (selectedModel) window.localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
   }, [selectedModel]);
+  useEffect(() => {
+    if (selectedPlannerModel) window.localStorage.setItem(PLANNER_MODEL_STORAGE_KEY, selectedPlannerModel);
+  }, [selectedPlannerModel]);
   useEffect(() => {
     if (selectedCriticModel) window.localStorage.setItem(CRITIC_MODEL_STORAGE_KEY, selectedCriticModel);
   }, [selectedCriticModel]);
@@ -313,7 +341,11 @@ export default function App() {
   const [evaluation, setEvaluation] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [plan, setPlan] = useState(null);        // planner output for current figure
-  const [planning, setPlanning] = useState(false); // true while planner is running
+  const [planning] = useState(false); // true while planner is running
+
+  useEffect(() => {
+    if (figureType) window.localStorage.setItem(FIGURE_TYPE_STORAGE_KEY, figureType);
+  }, [figureType]);
 
   const syncViewerSelection = useCallback((record, preferredModel = null) => {
     if (!record) {
@@ -357,46 +389,24 @@ export default function App() {
     }
     setError('');
 
-    // Step 1: Plan (fast ~2-3s)
-    setPlanning(true);
-    setPlan(null);
-    let currentPlan = null;
-    try {
-      const planRes = await apiFetch('/api/plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: image.filename,
-          base64: image.base64,
-          mediaType: image.mediaType,
-        }),
-      });
-      const planData = await planRes.json();
-      if (planRes.ok) {
-        currentPlan = planData;
-        setPlan(planData);
-      }
-      // If planning fails, we still continue to generate without a plan
-    } catch (_) { /* planner failure is non-fatal */ }
-    setPlanning(false);
-
-    // Step 2: Generate (slow ~30-60s)
+    // Step 1: Generate (slow ~30-60s, includes planning internally)
     setLoading(true);
     try {
-      const evalModelForRecord = selectedCriticModel || 'gpt-4o';
       const is2d = figureType === '2d';
-      const jobFn = is2d ? runGenerationJob2d : runGenerationJob;
+      // For 3D (non-2d) generations use the iterative loop endpoint to preserve attempts
+      const jobFn = is2d ? runGenerationJob2d : runGenerationLoop;
       const payload = is2d
-        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, plan: currentPlan || undefined, model: selectedModel || undefined }
-        : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, plan: currentPlan || undefined, model: selectedModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: selectedCriticName || undefined, criticPasses: selectedCriticPasses, experiment: selectedExperiment || undefined };
+        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined }
+        : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: selectedCriticName || undefined, criticPasses: selectedCriticPasses, experiment: selectedExperiment || undefined };
       const data = await jobFn(payload);
       const generatedEvaluationResults = data.evaluationResults || {};
       const generatedEvaluationMeta = data.evaluationMeta || {};
       const generatedModel = pickEvaluationModel({
         evaluationResults: generatedEvaluationResults,
         evaluationMeta: generatedEvaluationMeta,
-      }, evalModelForRecord);
+      }, null);
       setGeneratedHtml(data.html);
+      setPlan(data.plan || null);
       setEvaluation(getRecordEvaluation({ evaluationResults: generatedEvaluationResults }, generatedModel));
       setCurrentRecord({
         id: data.figureId,
@@ -410,7 +420,7 @@ export default function App() {
         evaluationResults: generatedEvaluationResults,
         evaluationMeta: generatedEvaluationMeta,
         evaluationVersions: data.evaluationVersions || {},
-        plan: data.plan || currentPlan || null,
+        plan: data.plan || null,
       });
       setViewerEvaluationModel(generatedModel);
       setViewerBackTab(tab);
@@ -420,7 +430,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [figureType, image, selectedCriticModel, selectedCriticName, selectedCriticPasses, selectedExperiment, selectedModel, tab]);
+  }, [image, selectedCriticModel, selectedCriticName, selectedCriticPasses, selectedExperiment, selectedModel, selectedPlannerModel, tab, figureType]);
   const handleLoadFromHistory = useCallback((record) => {
     const normalizedRecord = {
       ...record,
@@ -501,7 +511,7 @@ export default function App() {
     if (!currentRecord) return;
     setEvaluating(true);
     try {
-      const modelId = requestedEvalModel || selectedCriticModel || pickEvaluationModel(currentRecord, null) || 'gpt-4o';
+      const modelId = requestedEvalModel || selectedCriticModel || pickEvaluationModel(currentRecord, null) || DEFAULT_EVALUATION_MODEL;
       const evalModelToUse = modelId;
       let data;
       if (currentRecord.htmlPath) {
@@ -587,13 +597,13 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.logo}>3D Figure Generator</span>
         <nav style={styles.nav}>
-          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'concepts'].map((t) => (
+          {['generator', 'viewer', 'results', 'dashboard', 'preview'].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{ ...styles.navBtn, ...(tab === t ? styles.navBtnActive : {}) }}
             >
-              {({ preview: 'Chapter Preview', concepts: 'Concept Graph' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
+              {({ 'preview': 'Chapter Preview' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
             </button>
           ))}
         </nav>
@@ -616,12 +626,14 @@ export default function App() {
             experimentOptions={experimentOptions}
             selectedExperiment={selectedExperiment}
             selectedModel={selectedModel}
+            selectedPlannerModel={selectedPlannerModel}
             selectedCriticModel={selectedCriticModel}
             selectedCriticName={selectedCriticName}
             selectedCriticPasses={selectedCriticPasses}
             currentCriticVersion={currentCriticVersion}
             onExperimentChange={setSelectedExperiment}
             onGeneratorModelChange={setSelectedModel}
+            onPlannerModelChange={setSelectedPlannerModel}
             onCriticModelChange={setSelectedCriticModel}
             onCriticNameChange={setSelectedCriticName}
             onCriticPassesChange={setSelectedCriticPasses}
@@ -666,9 +678,6 @@ export default function App() {
         {tab === 'preview' && (
           <ChapterPreviewTab />
         )}
-        {tab === 'concepts' && (
-          <ConceptGraphTab />
-        )}
       </main>
     </div>
   );
@@ -693,7 +702,7 @@ function CriticPassSelector({ value, onChange, compact = false, includeZero = tr
 }
 
 // ── Generator Tab ─────────────────────────────────────────────────────────────
-function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, planning, plan, error, systemPrompt, models, criticNameOptions, experimentOptions, selectedExperiment, selectedModel, selectedCriticModel, selectedCriticName, selectedCriticPasses, onExperimentChange, onGeneratorModelChange, onCriticModelChange, onCriticNameChange, onCriticPassesChange, figureType, onFigureTypeChange }) {
+function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, planning, plan, error, systemPrompt, models, criticNameOptions, experimentOptions, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, selectedCriticName, selectedCriticPasses, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, onCriticNameChange, onCriticPassesChange, figureType, onFigureTypeChange }) {
   const [promptOpen, setPromptOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [mode, setMode] = useState('figure'); // 'figure' | 'chapter'
@@ -784,97 +793,46 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
     }
     setChapterRunning(true);
     setChapterResults([]);
+    setBatchEvalRunning(false);
+    setBatchEvalProgress(null);
+    setBatchEvalResults({});
     chapterAbortRef.current = false;
 
     const total = chapterCandidates.length;
     const results = [];           // shared results array
-    const activeMap = new Map();   // stem → { figureStem, phase, plan }
+    const activeMap = new Map();   // stem → { figureStem, phase }
 
     const updateProgress = () => {
       setChapterProgress({ completed: results.length, total, active: [...activeMap.values()] });
     };
 
-    // Process a single candidate (plan → generate) — routes 2D vs 3D automatically
+    // Process a single candidate through the iterative loop.
     const processFigure = async (candidate) => {
       if (chapterAbortRef.current) return;
-      activeMap.set(candidate.stem, { figureStem: candidate.stem, phase: 'planning', plan: null });
+      activeMap.set(candidate.stem, { figureStem: candidate.stem, phase: 'looping' });
       updateProgress();
 
-      const is2d = candidate.type === '2d';
-
-      // Phase 1: Plan
-      let figurePlan = null;
+      // The backend loop handles planning, generation, and critique internally.
       try {
-        const planEndpoint = is2d ? '/api/plan-2d' : '/api/plan';
-        const planRes = await apiFetch(planEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filename: candidate.filename,
-            chapterHint: selectedChapter,
-            base64: candidate.base64,
-            mediaType: candidate.mediaType,
-          }),
+        const loopResult = await runGenerationLoop({
+          base64: candidate.base64,
+          mediaType: candidate.mediaType,
+          filename: candidate.filename,
+          figureStem: candidate.stem,
+          chapterName: selectedChapter,
+          model: selectedModel || undefined,
+          plannerModel: selectedPlannerModel || undefined,
+          criticVersion: selectedCriticName || undefined,
+          experiment: selectedExperiment || undefined,
         });
-        if (planRes.ok) figurePlan = await planRes.json();
-      } catch (_) { }
 
-      if (chapterAbortRef.current) { activeMap.delete(candidate.stem); return; }
+        if (chapterAbortRef.current) { activeMap.delete(candidate.stem); return; }
 
-      activeMap.set(candidate.stem, { figureStem: candidate.stem, phase: 'generating', plan: figurePlan });
-      updateProgress();
-
-      // Phase 2: Generate
-      try {
-        if (is2d) {
-          // 2D: async job — start then poll
-          const startRes = await apiFetch('/api/generate-2d-async', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              base64: candidate.base64,
-              mediaType: candidate.mediaType,
-              filename: candidate.filename,
-              plan: figurePlan || undefined,
-              model: selectedModel || undefined,
-            }),
-          });
-          const startData = await startRes.json();
-          if (!startRes.ok) throw new Error(startData.error || '2D generation failed to start.');
-
-          // Poll until done
-          for (let i = 0; i < 300; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            if (chapterAbortRef.current) { activeMap.delete(candidate.stem); return; }
-            const statusRes = await apiFetch(`/api/generate-status/${encodeURIComponent(startData.jobId)}`);
-            const statusData = await statusRes.json();
-            if (statusData.status === 'done') {
-              results.push({ figureStem: candidate.stem, status: 'ok', figureId: statusData.result.figureId });
-              break;
-            }
-            if (statusData.status === 'error') throw new Error(statusData.error || '2D generation failed.');
-            if (i === 299) throw new Error('2D generation timed out.');
-          }
-        } else {
-          // 3D: direct synchronous call
-          const genRes = await apiFetch('/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              base64: candidate.base64,
-              mediaType: candidate.mediaType,
-              filename: candidate.filename,
-              plan: figurePlan || undefined,
-              model: selectedModel || undefined,
-              criticVersion: selectedCriticName || undefined,
-              experiment: selectedExperiment || undefined,
-              evaluate: false,
-            }),
-          });
-          const genData = await genRes.json();
-          if (!genRes.ok) throw new Error(genData.error || 'Generation failed.');
-          results.push({ figureStem: candidate.stem, status: 'ok', figureId: genData.figureId });
-        }
+        results.push({
+          figureStem: candidate.stem,
+          status: 'ok',
+          figureId: loopResult.figureId,
+        });
       } catch (err) {
         results.push({ figureStem: candidate.stem, status: 'error', error: err.message });
       }
@@ -897,66 +855,9 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
 
     setChapterProgress(null);
     setChapterRunning(false);
-
-    // Auto-evaluate all successful figures
-    if (results.some(r => r.status === 'ok')) {
-      runBatchEvaluation(results);
-    }
   };
 
   const handleAbortChapter = () => { chapterAbortRef.current = true; };
-
-  // Deferred batch evaluation: evaluate all successful figures after generation completes
-  const runBatchEvaluation = async (finalResults) => {
-    const successIds = (finalResults || chapterResults).filter(r => r.status === 'ok' && r.figureId).map(r => ({ figureId: r.figureId, figureStem: r.figureStem }));
-    if (successIds.length === 0) return;
-    setBatchEvalRunning(true);
-    setBatchEvalProgress({ completed: 0, total: successIds.length, current: successIds[0].figureStem });
-    setBatchEvalResults({});
-
-    try {
-      const res = await apiFetch('/api/evaluate-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ids: successIds.map(s => s.figureId),
-          evalModel: selectedCriticModel || undefined,
-          criticVersion: selectedCriticName || undefined,
-          criticPasses: selectedCriticPasses,
-        }),
-      });
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let completed = 0;
-      const evalMap = {};
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop(); // keep incomplete line
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const parsed = JSON.parse(line);
-            completed += 1;
-            evalMap[parsed.id] = parsed;
-            setBatchEvalResults({ ...evalMap });
-            const nextStem = completed < successIds.length ? successIds[completed].figureStem : null;
-            setBatchEvalProgress({ completed, total: successIds.length, current: nextStem });
-          } catch (_) { }
-        }
-      }
-    } catch (err) {
-      console.error('Batch evaluation error:', err);
-    }
-
-    setBatchEvalRunning(false);
-    setBatchEvalProgress(null);
-  };
 
   // Select a chapter candidate to load it into the figure drop zone (still works for individual)
   const handleSelectCandidate = (candidate) => {
@@ -984,89 +885,107 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
           onClick={() => setMode('chapter')}
         >Select Chapter</button>
       </div>
-      <div style={styles.generatorControlRow}>
-        <div style={styles.generatorModelStack}>
-          <div style={styles.generatorExperimentCard}>
-            <label style={styles.generatorModelLabel}>Experiment Name</label>
-            <div style={styles.generatorExperimentControls}>
-              <select
-                style={styles.generatorModelSelect}
-                value={experimentOptions.includes(selectedExperiment) ? selectedExperiment : ''}
-                onChange={e => onExperimentChange?.(e.target.value)}
-                disabled={experimentOptions.length === 0}
-              >
-                <option value="">Select a past experiment...</option>
-                {experimentOptions.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-              <input
-                style={styles.generatorTextInput}
-                value={selectedExperiment}
-                onChange={e => onExperimentChange?.(e.target.value)}
-                placeholder="Or type a new experiment name"
-              />
+      <details style={styles.generatorSettingsDetails}>
+        <summary style={styles.generatorSettingsSummary}>Settings</summary>
+        <div style={styles.generatorSettingsBody}>
+          <div style={styles.generatorControlRow}>
+            <div style={styles.generatorModelStack}>
+              <div style={styles.generatorExperimentCard}>
+                <label style={styles.generatorModelLabel}>Experiment Name</label>
+                <div style={styles.generatorExperimentControls}>
+                  <select
+                    style={styles.generatorModelSelect}
+                    value={experimentOptions.includes(selectedExperiment) ? selectedExperiment : ''}
+                    onChange={e => onExperimentChange?.(e.target.value)}
+                    disabled={experimentOptions.length === 0}
+                  >
+                    <option value="">Select a past experiment...</option>
+                    {experimentOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <input
+                    style={styles.generatorTextInput}
+                    value={selectedExperiment}
+                    onChange={e => onExperimentChange?.(e.target.value)}
+                    placeholder="Or type a new experiment name"
+                  />
+                </div>
+                <p style={styles.generatorHint}>
+                  Pick an existing name from the dropdown, or type a new one to create a fresh experiment bucket.
+                </p>
+              </div>
+              <div style={styles.generatorControlCard}>
+                <label style={styles.generatorModelLabel}>Generator Model</label>
+                <select
+                  style={styles.generatorModelSelect}
+                  value={selectedModel}
+                  onChange={e => onGeneratorModelChange?.(e.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} ({m.provider})</option>
+                  ))}
+                </select>
+              </div>
+              <div style={styles.generatorControlCard}>
+                <label style={styles.generatorModelLabel}>Planner Model</label>
+                <select
+                  style={styles.generatorModelSelect}
+                  value={selectedPlannerModel}
+                  onChange={e => onPlannerModelChange?.(e.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} ({m.provider})</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <p style={styles.generatorHint}>
-              Pick an existing name from the dropdown, or type a new one to create a fresh experiment bucket.
-            </p>
-          </div>
-          <div style={styles.generatorControlCard}>
-            <label style={styles.generatorModelLabel}>Generator Model</label>
-            <select
-              style={styles.generatorModelSelect}
-              value={selectedModel}
-              onChange={e => onGeneratorModelChange?.(e.target.value)}
-              disabled={models.length === 0}
-            >
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.label} ({m.provider})</option>
-              ))}
-            </select>
+            <div style={styles.generatorModelStack}>
+              <div style={styles.generatorControlCard}>
+                <label style={styles.generatorModelLabel}>Critic Version</label>
+                <div style={styles.generatorExperimentControls}>
+                  <select
+                    style={styles.generatorModelSelect}
+                    value={criticNameOptions.includes(selectedCriticName) ? selectedCriticName : ''}
+                    onChange={e => onCriticNameChange?.(e.target.value)}
+                    disabled={criticNameOptions.length === 0}
+                  >
+                    <option value="">Select a past critic name...</option>
+                    {criticNameOptions.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <input
+                    style={styles.generatorTextInput}
+                    value={selectedCriticName}
+                    onChange={e => onCriticNameChange?.(e.target.value)}
+                    placeholder="Or type a new critic name"
+                  />
+                </div>
+                <p style={styles.generatorHint}>
+                  Pick an existing name from the dropdown, or type a new one to create a fresh critic bucket.
+                </p>
+              </div>
+              <div style={styles.generatorControlCard}>
+                <label style={styles.generatorModelLabel}>Critic Model</label>
+                <select
+                  style={styles.generatorModelSelect}
+                  value={selectedCriticModel}
+                  onChange={e => onCriticModelChange?.(e.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} ({m.provider})</option>
+                  ))}
+                </select>
+              </div>
+              <CriticPassSelector value={selectedCriticPasses} onChange={onCriticPassesChange} />
+            </div>
           </div>
         </div>
-        <div style={styles.generatorModelStack}>
-          <div style={styles.generatorControlCard}>
-            <label style={styles.generatorModelLabel}>Critic Version</label>
-            <div style={styles.generatorExperimentControls}>
-              <select
-                style={styles.generatorModelSelect}
-                value={criticNameOptions.includes(selectedCriticName) ? selectedCriticName : ''}
-                onChange={e => onCriticNameChange?.(e.target.value)}
-                disabled={criticNameOptions.length === 0}
-              >
-                <option value="">Select a past critic name...</option>
-                {criticNameOptions.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-              <input
-                style={styles.generatorTextInput}
-                value={selectedCriticName}
-                onChange={e => onCriticNameChange?.(e.target.value)}
-                placeholder="Or type a new critic name"
-              />
-            </div>
-            <p style={styles.generatorHint}>
-              Pick an existing name from the dropdown, or type a new one to create a fresh critic bucket.
-            </p>
-          </div>
-          <div style={styles.generatorControlCard}>
-            <label style={styles.generatorModelLabel}>Critic Model</label>
-            <select
-              style={styles.generatorModelSelect}
-              value={selectedCriticModel}
-              onChange={e => onCriticModelChange?.(e.target.value)}
-              disabled={models.length === 0}
-            >
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.label} ({m.provider})</option>
-              ))}
-            </select>
-          </div>
-          <CriticPassSelector value={selectedCriticPasses} onChange={onCriticPassesChange} />
-        </div>
-      </div>
+      </details>
 
       {mode === 'figure' ? (
         <>
@@ -1104,43 +1023,62 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
               )}
               {plan && (
                 <>
-                  <div style={styles.planHeader}>
-                    <span style={styles.planTitle}>📋 Interaction Plan</span>
-                    {plan.chapterName && <span style={styles.planChapter}>Chapter: {plan.chapterName}</span>}
-                  </div>
-                  {plan.interactionPlan ? (
-                    <>
-                      {plan.interactionPlan.concept && (
-                        <p style={styles.planConcept}>{plan.interactionPlan.concept}</p>
-                      )}
-                      {plan.interactionPlan.elements?.length > 0 && (
-                        <div style={{ marginBottom: 6 }}>
-                          <span style={styles.planSubhead}>Elements:</span>
-                          <span style={styles.planList}>{plan.interactionPlan.elements.join(', ')}</span>
+                  {(() => {
+                    const planPayload = plan.interactionPlan || plan;
+                    return (
+                      <>
+                        <div style={styles.planHeader}>
+                          <span style={styles.planTitle}>📋 Interaction Plan</span>
+                          {plan.chapterName && <span style={styles.planChapter}>Chapter: {plan.chapterName}</span>}
                         </div>
-                      )}
-                      {plan.interactionPlan.interactions?.length > 0 && (
-                        <div style={{ marginBottom: 6 }}>
-                          <span style={styles.planSubhead}>Interactions:</span>
-                          {plan.interactionPlan.interactions.map((inter, i) => (
-                            <div key={i} style={styles.planInteraction}>
-                              <span style={styles.planInterType}>{inter.type}</span>
-                              <span style={styles.planInterLabel}>{inter.label}</span>
-                              <span style={styles.planInterTeaches}>— {inter.teaches}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p style={{ fontSize: 12, color: '#c60', margin: '4px 0' }}>⚠ No interaction plan returned — generating from image only.</p>
-                  )}
-                  {plan.contextChunk && (
-                    <details style={{ marginTop: 8 }}>
-                      <summary style={{ fontSize: 11, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}>Show textbook context</summary>
-                      <pre style={styles.planContext}>{plan.contextChunk.slice(0, 1500)}</pre>
-                    </details>
-                  )}
+                        {planPayload ? (
+                          <>
+                            {planPayload.concept && (
+                              <p style={styles.planConcept}>{planPayload.concept}</p>
+                            )}
+                            {planPayload.elements?.length > 0 && (
+                              <div style={{ marginBottom: 6 }}>
+                                <span style={styles.planSubhead}>Elements:</span>
+                                <span style={styles.planList}>{planPayload.elements.join(', ')}</span>
+                              </div>
+                            )}
+                            {planPayload.interactions?.length > 0 && (
+                              <div style={{ marginBottom: 6 }}>
+                                <span style={styles.planSubhead}>Interactions:</span>
+                                {planPayload.interactions.map((inter, i) => (
+                                  <div key={i} style={styles.planInteraction}>
+                                    <span style={styles.planInterType}>{inter.type}</span>
+                                    <span style={styles.planInterLabel}>{inter.label}</span>
+                                    <span style={styles.planInterTeaches}>— {inter.teaches}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {planPayload.demo_steps?.length > 0 && (
+                              <div style={{ marginBottom: 6 }}>
+                                <span style={styles.planSubhead}>Demo Steps:</span>
+                                {planPayload.demo_steps.map((step, i) => (
+                                  <div key={i} style={styles.planInteraction}>
+                                    <span style={styles.planInterType}>step {i + 1}</span>
+                                    <span style={styles.planInterLabel}>{step.title || `Step ${i + 1}`}</span>
+                                    <span style={styles.planInterTeaches}>— {step.narration || ''}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <p style={{ fontSize: 12, color: '#c60', margin: '4px 0' }}>⚠ No interaction plan returned — generating from image only.</p>
+                        )}
+                        {plan.contextChunk && (
+                          <details style={{ marginTop: 8 }}>
+                            <summary style={{ fontSize: 11, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}>Show textbook context</summary>
+                            <pre style={styles.planContext}>{plan.contextChunk.slice(0, 1500)}</pre>
+                          </details>
+                        )}
+                      </>
+                    );
+                  })()}
                 </>
               )}
             </div>
@@ -1163,7 +1101,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
             onClick={onGenerate}
             disabled={loading || planning || !image || !selectedModel}
           >
-            {planning ? 'Planning…' : loading ? 'Generating — this may take 30-60s…' : figureType === '2d' ? 'Generate 2D Figure' : 'Generate 3D Figure'}
+            {planning ? 'Planning…' : loading ? 'Generating — this may take 1-2min…' : figureType === '2d' ? 'Generate 2D Figure' : 'Generate 3D Figure'}
           </button>
         </>
       ) : (
@@ -1233,7 +1171,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
                 </button>
               )}
 
-              {/* Live progress: current figure's plan + context while generating */}
+              {/* Live progress: figures currently running through the iterative loop */}
               {chapterProgress && (
                 <div style={{ ...styles.planPanel, marginTop: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -1251,37 +1189,42 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
                   </div>
 
                   {/* Show each active figure */}
-                  {chapterProgress.active?.map(a => (
-                    <div key={a.figureStem} style={{ marginBottom: 10, padding: '8px 10px', background: '#f8faff', borderRadius: 6, border: '1px solid #e0e8f0' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>
-                          {a.phase === 'planning' ? '⏳' : '🔄'} {a.figureStem} — {a.phase}
-                        </span>
-                        {a.plan?.chapterName && <span style={styles.planChapter}>Chapter: {a.plan.chapterName}</span>}
+                  {chapterProgress.active?.map(a => {
+                    const planPayload = a.plan?.interactionPlan || a.plan;
+                    return (
+                      <div key={a.figureStem} style={{ marginBottom: 10, padding: '8px 10px', background: '#f8faff', borderRadius: 6, border: '1px solid #e0e8f0' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>
+                            🔄 {a.figureStem} — {a.phase}
+                          </span>
+                        </div>
+                        {planPayload?.concept && (
+                          <p style={styles.planConcept}>{planPayload.concept}</p>
+                        )}
+                        {planPayload?.elements?.length > 0 && (
+                          <div style={{ marginBottom: 6 }}>
+                            <span style={styles.planSubhead}>Elements:</span>
+                            <span style={styles.planList}>{planPayload.elements.join(', ')}</span>
+                          </div>
+                        )}
+                        {planPayload?.interactions?.length > 0 && (
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={styles.planSubhead}>Interactions:</span>
+                            {planPayload.interactions.map((inter, i) => (
+                              <div key={i} style={styles.planInteraction}>
+                                <span style={styles.planInterType}>{inter.type}</span>
+                                <span style={styles.planInterLabel}>{inter.label}</span>
+                                <span style={styles.planInterTeaches}>— {inter.teaches}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {planPayload?.demo_steps?.length > 0 && (
+                          <p style={styles.planList}>Demo steps: {planPayload.demo_steps.length}</p>
+                        )}
                       </div>
-                      {a.plan?.interactionPlan?.concept && (
-                        <p style={styles.planConcept}>{a.plan.interactionPlan.concept}</p>
-                      )}
-                      {a.plan?.interactionPlan?.elements?.length > 0 && (
-                        <div style={{ marginBottom: 6 }}>
-                          <span style={styles.planSubhead}>Elements:</span>
-                          <span style={styles.planList}>{a.plan.interactionPlan.elements.join(', ')}</span>
-                        </div>
-                      )}
-                      {a.plan?.interactionPlan?.interactions?.length > 0 && (
-                        <div style={{ marginBottom: 4 }}>
-                          <span style={styles.planSubhead}>Interactions:</span>
-                          {a.plan.interactionPlan.interactions.map((inter, i) => (
-                            <div key={i} style={styles.planInteraction}>
-                              <span style={styles.planInterType}>{inter.type}</span>
-                              <span style={styles.planInterLabel}>{inter.label}</span>
-                              <span style={styles.planInterTeaches}>— {inter.teaches}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -1387,10 +1330,21 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
 
 // ── Viewer Tab ────────────────────────────────────────────────────────────────
 function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluation, evaluationModel, availableEvaluationModels, evaluating, onEvaluate, onSaveHumanEvaluation, onSelectEvaluationModel, selectedCriticPasses, onCriticPassesChange }) {
+  const scoreTextColor = (score) => {
+    if (!Number.isFinite(score)) return '#888';
+    if (score >= 4) return '#2e7d32';
+    if (score >= 3) return '#c77800';
+    return '#c62828';
+  };
   const evaluationResults = React.useMemo(
     () => record?.evaluationResults || {},
     [record?.evaluationResults]
   );
+  const attempts = React.useMemo(
+    () => (Array.isArray(record?.attempts) ? record.attempts.filter(Boolean) : []),
+    [record?.attempts]
+  );
+  const [selectedAttemptIndex, setSelectedAttemptIndex] = React.useState(-1);
   const evaluationModelOptions = React.useMemo(() => {
     const byId = new Map();
     for (const model of availableEvaluationModels || []) {
@@ -1401,6 +1355,10 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
     }
     return Array.from(byId.values());
   }, [availableEvaluationModels, evaluationResults]);
+
+  React.useEffect(() => {
+    setSelectedAttemptIndex(attempts.length > 0 ? attempts.length - 1 : -1);
+  }, [record?.id, attempts.length]);
 
   if (!html) {
     return (
@@ -1420,6 +1378,18 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
       ? `data:${mediaType};base64,${record.base64thumb}`
       : null);
   const viewerPlan = record?.plan || null;
+  const hasAttemptHistory = attempts.length > 0;
+  const selectedAttempt = hasAttemptHistory
+    ? attempts[Math.min(Math.max(selectedAttemptIndex, 0), attempts.length - 1)]
+    : null;
+  const selectedIterationLabel = selectedAttempt
+    ? `Iteration ${typeof selectedAttempt.iteration === 'number' ? Math.max(0, selectedAttempt.iteration - 1) : (selectedAttemptIndex + 1)}`
+    : 'Final result';
+  const previewHtml = selectedAttempt?.html || html;
+  const selectedFeedback = selectedAttempt?.feedback || null;
+  const selectedEvaluation = selectedAttempt?.evaluation || null;
+  const selectedPlan = selectedAttempt?.plan || viewerPlan;
+  const selectedViewerEvaluation = selectedEvaluation || evaluation;
 
   return (
     <div style={styles.viewerWrap}>
@@ -1443,27 +1413,138 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
           </span>
         )}
         <p style={styles.viewerMeta}>Generated by: {record?.model || 'unknown'}</p>
-        {viewerPlan ? (
+        {selectedPlan ? (
           <div style={styles.viewerPlanWrap}>
-            <p style={styles.viewerPlanTitle}>Planner Output</p>
-            {viewerPlan.chapterName && <p style={styles.viewerPlanMeta}>Chapter: {viewerPlan.chapterName}</p>}
-            {viewerPlan.interactionPlan?.concept && <p style={styles.viewerPlanConcept}>{viewerPlan.interactionPlan.concept}</p>}
-            {viewerPlan.interactionPlan?.elements?.length > 0 && (
-              <p style={styles.viewerPlanLine}>Elements: {viewerPlan.interactionPlan.elements.join(', ')}</p>
-            )}
-            {viewerPlan.interactionPlan?.interactions?.length > 0 && (
-              <p style={styles.viewerPlanLine}>Interactions: {viewerPlan.interactionPlan.interactions.map(i => i.label || i.type).join(', ')}</p>
-            )}
-            <details>
-              <summary style={styles.viewerPlanSummary}>Show raw plan JSON</summary>
-              <pre style={styles.viewerPlanRaw}>{JSON.stringify(viewerPlan, null, 2)}</pre>
-            </details>
+            {(() => {
+              const planPayload = selectedPlan.interactionPlan || selectedPlan;
+              return (
+                <>
+                  <p style={styles.viewerPlanTitle}>Planner Output</p>
+                  {selectedPlan.chapterName && <p style={styles.viewerPlanMeta}>Chapter: {selectedPlan.chapterName}</p>}
+                  {planPayload?.concept && <p style={styles.viewerPlanConcept}>{planPayload.concept}</p>}
+                  {planPayload?.elements?.length > 0 && (
+                    <p style={styles.viewerPlanLine}>Elements: {planPayload.elements.join(', ')}</p>
+                  )}
+                  {planPayload?.interactions?.length > 0 && (
+                    <p style={styles.viewerPlanLine}>Interactions: {planPayload.interactions.map(i => i.label || i.type).join(', ')}</p>
+                  )}
+                  {planPayload?.demo_steps?.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {planPayload.demo_steps.map((step, i) => (
+                        <p key={i} style={styles.viewerPlanLine}>Step {i + 1}: {step.title || `Step ${i + 1}`}</p>
+                      ))}
+                    </div>
+                  )}
+                  <details>
+                    <summary style={styles.viewerPlanSummary}>Show raw plan JSON</summary>
+                    <pre style={styles.viewerPlanRaw}>{JSON.stringify(selectedPlan, null, 2)}</pre>
+                  </details>
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div style={styles.viewerPlanPlaceholder}>
             No planner output available for this figure.
           </div>
         )}
+
+        <div style={styles.viewerHistoryWrap}>
+          <div style={styles.viewerHistoryHeader}>
+            <span style={styles.viewerPlanTitle}>Iterations</span>
+            {hasAttemptHistory && (
+              <span style={styles.viewerHistoryCount}>{attempts.length} stored</span>
+            )}
+          </div>
+
+          {hasAttemptHistory ? (
+            <>
+              <div style={styles.viewerHistoryRail}>
+                {attempts.map((attempt, index) => {
+                  const isActive = index === selectedAttemptIndex;
+                  const score = attempt?.evaluation?.overall_average;
+                  const attemptLabel = typeof attempt?.iteration === 'number' ? Math.max(0, attempt.iteration - 1) : index + 1;
+                  return (
+                    <button
+                      key={`${record?.id || 'record'}-${attemptLabel}-${index}`}
+                      type="button"
+                      onClick={() => setSelectedAttemptIndex(index)}
+                      style={{
+                        ...styles.viewerHistoryButton,
+                        ...(isActive ? styles.viewerHistoryButtonActive : {}),
+                      }}
+                    >
+                      <span style={styles.viewerHistoryButtonLabel}>{attemptLabel}</span>
+                      <span style={styles.viewerHistoryButtonMeta}>
+                        {attempt?.status || attempt?.step || 'attempt'}
+                      </span>
+                      {Number.isFinite(score) && (
+                        <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
+                          {score.toFixed(1)}/5
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={styles.viewerHistoryDetail}>
+                <div style={styles.viewerHistoryDetailHeader}>
+                  <span style={styles.viewerHistoryDetailTitle}>{selectedIterationLabel}</span>
+                  {selectedEvaluation?.overall_average != null && (
+                    <span style={{ ...styles.viewerHistoryDetailScore, color: scoreTextColor(selectedEvaluation.overall_average) }}>
+                      {selectedEvaluation.overall_average}/5
+                    </span>
+                  )}
+                </div>
+                {selectedAttempt?.refinement_type && (
+                  <p style={styles.viewerHistoryMeta}>Refinement: {selectedAttempt.refinement_type}</p>
+                )}
+                {selectedFeedback?.next_step && (
+                  <p style={styles.viewerHistoryMeta}>Orchestrator decision: {selectedFeedback.next_step}</p>
+                )}
+                {selectedFeedback?.rationale && (
+                  <p style={styles.viewerHistoryNotes}>{selectedFeedback.rationale}</p>
+                )}
+                {selectedEvaluation?.discrepancies?.length > 0 && (
+                  <>
+                    <p style={{ ...styles.viewerHistoryMeta, fontWeight: 700, color: '#555' }}>Discrepancies</p>
+                    <div style={styles.viewerHistoryList}>
+                      {selectedEvaluation.discrepancies.map((item, index) => (
+                        <div key={`discrepancy-${index}`} style={styles.viewerHistoryItem}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {selectedFeedback?.action_items?.length > 0 ? (
+                  <>
+                    <p style={{ ...styles.viewerHistoryMeta, fontWeight: 700, color: '#555' }}>Action items</p>
+                    <div style={styles.viewerHistoryList}>
+                      {selectedFeedback.action_items.map((item, index) => (
+                        <div key={index} style={styles.viewerHistoryItem}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : selectedEvaluation?.notes ? (
+                  <p style={styles.viewerHistoryNotes}>{selectedEvaluation.notes}</p>
+                ) : (
+                  <p style={styles.viewerHistoryEmpty}>No feedback stored for this iteration.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div style={styles.viewerHistoryEmptyBox}>
+              No iteration history stored for this figure.
+              <br />
+              Older results and direct generations may only include the final output and feedback.
+            </div>
+          )}
+        </div>
+
         <a href={downloadUrl} download={`figure_${Date.now()}.html`} style={styles.downloadBtn}>
           Download HTML
         </a>
@@ -1482,7 +1563,7 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
           </button>
         )}
         <EvaluationPanel
-          evaluation={evaluation}
+          evaluation={selectedViewerEvaluation}
           evaluationModel={evaluationModel}
           evaluationModels={evaluationModelOptions}
           evaluationResults={evaluationResults}
@@ -1501,7 +1582,7 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
       <div style={styles.viewerRight}>
         <iframe
           title="3d-figure"
-          srcDoc={html}
+          srcDoc={previewHtml}
           sandbox="allow-scripts allow-same-origin"
           style={styles.iframe}
         />
@@ -1893,6 +1974,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
   const [loadedApi, setLoadedApi] = React.useState(false);
   const [loadedAgent, setLoadedAgent] = React.useState(false);
   const [selectedCriticVersion, setSelectedCriticVersion] = React.useState('');
+  const criticVersionInitializedRef = React.useRef(false);
 
   const loadApiRecords = React.useCallback(async ({ force = false } = {}) => {
     if (loadedApi && !force) return;
@@ -2001,8 +2083,18 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
     return options.filter(option => option.versionId !== 'default_critic');
   }, [apiRecords, expTree]);
 
-  // Don't auto-select any critic version by default
-  // Previously: React.useEffect(() => {...})
+  React.useEffect(() => {
+    if (criticVersionInitializedRef.current) return;
+    if (criticVersionOptions.length > 0) {
+      setSelectedCriticVersion(criticVersionOptions[0].versionId);
+      criticVersionInitializedRef.current = true;
+      return;
+    }
+    if (!loading && currentCriticVersion) {
+      setSelectedCriticVersion(currentCriticVersion);
+      criticVersionInitializedRef.current = true;
+    }
+  }, [criticVersionOptions, currentCriticVersion, loading]);
 
   const selectedVersionLabel = React.useMemo(() => {
     return selectedCriticVersion || '';
@@ -2027,7 +2119,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
     const tree = {};
     for (const r of apiRecords) {
       const exp = normalizeExperimentName(r.experiment || 'base_scene_robust');
-      const model = r.model || 'gpt-4o';
+      const model = r.model || DEFAULT_GENERATION_MODEL;
       if (!tree[exp]) tree[exp] = {};
       if (!tree[exp][model]) tree[exp][model] = [];
       tree[exp][model].push(r);
@@ -2056,6 +2148,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
                 evaluationVersions: r.evaluationVersions || {},
                 experiment: expName, model: modelName,
                 imagePath: null, htmlPath: null,
+                iterations: r.iterations || 0,
               });
             }
           }
@@ -2097,6 +2190,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
             evaluationVersions: r.evaluationVersions || {},
             experiment: selected.experiment, model: modelName,
             imagePath: null, htmlPath: null,
+            iterations: r.iterations || 0,
           };
         })
       );
@@ -2116,6 +2210,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
             timestamp: null,
             evaluationResults: view.evaluationResults || {}, evaluationMeta: view.evaluationMeta || {},
             evaluationVersions: fig.evaluationVersions || {},
+            iterations: fig.iterations || 0,
           });
         }
       }
@@ -2171,7 +2266,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
     setEvaluatingKey(item.key);
     try {
       let data;
-      const evalModelId = criticModel || pickEvaluationModel(item, null) || 'gpt-4o';
+      const evalModelId = criticModel || pickEvaluationModel(item, null) || DEFAULT_EVALUATION_MODEL;
       const versionId = evaluationCriticVersion || currentCriticVersion || 'legacy_unknown';
       if (item.type === 'api') {
         const res = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: item.id, evalModel: criticModel || undefined, criticVersion: evaluationCriticVersion || undefined, criticPasses: selectedCriticPasses }) });
@@ -2205,7 +2300,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
 
   const handleEvalAll = async (e, chapter, items) => {
     e.stopPropagation();
-    const evalModelId = criticModel || 'gpt-4o';
+    const evalModelId = criticModel || DEFAULT_EVALUATION_MODEL;
     const pending = items.filter(item => !(item.evaluationResults || {})[evalModelId]);
     if (!pending.length) return;
     setEvaluatingAll(chapter);
@@ -2644,15 +2739,15 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
                       <summary style={{ ...styles.resultChapterHeader, cursor: 'pointer', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none' }}>
                         <span style={{ fontSize: 9, color: '#bbb', display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▶</span>{groupKey}
                         <span style={{ fontWeight: 400, color: '#bbb', textTransform: 'none', letterSpacing: 0 }}>({items.length})</span>
-                        {items.some(i => !((i.evaluationResults || {})[criticModel || 'gpt-4o'])) && (
+                        {items.some(i => !((i.evaluationResults || {})[criticModel || DEFAULT_EVALUATION_MODEL])) && (
                           <button
                             style={{ marginLeft: 'auto', fontSize: 10, padding: '1px 8px', borderRadius: 4, border: '1px solid #d0d8e8', background: '#f2f6fb', color: '#5878a0', cursor: 'pointer', fontWeight: 600 }}
                             onClick={e => handleEvalAll(e, groupKey, items)}
                             disabled={evaluatingAll === groupKey}
                           >
                             {evaluatingAll === groupKey
-                              ? `Evaluating… (${items.filter(i => ((i.evaluationResults || {})[criticModel || 'gpt-4o'])).length}/${items.length})`
-                              : `Evaluate all (${items.filter(i => !((i.evaluationResults || {})[criticModel || 'gpt-4o'])).length} pending)`}
+                              ? `Evaluating… (${items.filter(i => ((i.evaluationResults || {})[criticModel || DEFAULT_EVALUATION_MODEL])).length}/${items.length})`
+                              : `Evaluate all (${items.filter(i => !((i.evaluationResults || {})[criticModel || DEFAULT_EVALUATION_MODEL])).length} pending)`}
                           </button>
                         )}
                       </summary>
@@ -2690,6 +2785,7 @@ function ResultsTab({ onOpen, criticModel, currentCriticVersion, selectedCriticP
                                 <p style={styles.cardFilename}>{item.figure}{item.genTotal > 1 && <span style={{ marginLeft: 5, fontSize: 9, background: '#e3e8f0', color: '#556', borderRadius: 6, padding: '1px 5px', fontWeight: 500 }}>g{item.genIndex}</span>}</p>
                                 <p style={styles.cardGenModel}>Gen model: {item.model || 'unknown'}</p>
                                 {item.timestamp && <p style={{ ...styles.cardTs, marginBottom: 3 }}>{new Date(item.timestamp).toLocaleDateString()}</p>}
+                                {item.iterations != null && <p style={{ ...styles.cardTs, marginBottom: 3 }}>Iterations: {item.iterations}</p>}
                                 {evalEntries.length ? (
                                   <>
                                     <span style={{ ...styles.sourceBadge, background: ev.overall_average >= 4 ? '#e8f5e9' : ev.overall_average >= 3 ? '#fff3e0' : '#ffebee', color: sc(ev.overall_average) }}>{ev.overall_average}/5</span>
@@ -2969,6 +3065,14 @@ function DashboardTab({ currentCriticVersion }) {
   const criticVersionInitializedRef = React.useRef(false);
 
   React.useEffect(() => {
+    const storedCriticVersion = window.localStorage.getItem(CRITIC_VERSION_STORAGE_KEY);
+    if (storedCriticVersion) {
+      setSelectedCriticVersion(storedCriticVersion);
+      criticVersionInitializedRef.current = true;
+    }
+  }, []);
+
+  React.useEffect(() => {
     Promise.all([
       apiFetch('/api/history').then(r => r.json()),
       apiFetch('/api/experiments').then(r => r.json()),
@@ -2980,7 +3084,7 @@ function DashboardTab({ currentCriticVersion }) {
   const { agentRecords, copilotRecords } = React.useMemo(() => {
     const agent = apiRecords.map(r => ({
       source: 'agent', experiment: r.experiment || 'base_scene_robust',
-      model: r.model || 'gpt-4o',
+      model: r.model || DEFAULT_GENERATION_MODEL,
       evaluationResults: r.evaluationResults || {},
       evaluationMeta: r.evaluationMeta || {},
       evaluationVersions: r.evaluationVersions || {},
@@ -3019,11 +3123,22 @@ function DashboardTab({ currentCriticVersion }) {
   }, [apiRecords, expTree, currentCriticVersion]);
 
   React.useEffect(() => {
-    if (currentCriticVersion && !criticVersionInitializedRef.current) {
-      setSelectedCriticVersion(prev => (!prev ? currentCriticVersion : prev));
+    if (criticVersionInitializedRef.current) return;
+    if (criticVersionOptions.length > 0) {
+      setSelectedCriticVersion(criticVersionOptions[0].versionId);
+      criticVersionInitializedRef.current = true;
+      return;
+    }
+    if (!loading && currentCriticVersion) {
+      setSelectedCriticVersion(currentCriticVersion);
       criticVersionInitializedRef.current = true;
     }
-  }, [currentCriticVersion, criticVersionOptions, selectedCriticVersion]);
+  }, [criticVersionOptions, currentCriticVersion, loading]);
+
+  React.useEffect(() => {
+    if (selectedCriticVersion) window.localStorage.setItem(CRITIC_VERSION_STORAGE_KEY, selectedCriticVersion);
+    else window.localStorage.removeItem(CRITIC_VERSION_STORAGE_KEY);
+  }, [selectedCriticVersion]);
 
   const selectedVersionLabel = React.useMemo(() => {
     return selectedCriticVersion || currentCriticVersion || '';
@@ -3280,6 +3395,25 @@ const styles = {
   viewerPlanSummary: { fontSize: 10, color: '#777', cursor: 'pointer', userSelect: 'none' },
   viewerPlanRaw: { marginTop: 6, maxHeight: 160, overflowY: 'auto', fontSize: 10, lineHeight: 1.35, color: '#666', background: '#fafafa', border: '1px solid #eee', borderRadius: 4, padding: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
   viewerPlanPlaceholder: { border: '1px dashed #d7d7d7', borderRadius: 6, background: '#fff', color: '#8a8a8a', fontSize: 10, lineHeight: 1.35, padding: '8px 9px' },
+  viewerHistoryWrap: { border: '1px solid #e0e0e0', borderRadius: 6, background: '#fff', padding: '8px 9px', display: 'flex', flexDirection: 'column', gap: 8 },
+  viewerHistoryHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  viewerHistoryCount: { fontSize: 10, color: '#8a8a8a', background: '#f5f5f5', borderRadius: 999, padding: '1px 6px', whiteSpace: 'nowrap' },
+  viewerHistoryRail: { display: 'flex', flexWrap: 'wrap', gap: 6 },
+  viewerHistoryButton: { minWidth: 62, display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '6px 8px', borderRadius: 6, border: '1px solid #d8d8d8', background: '#fafafa', color: '#555', cursor: 'pointer', textAlign: 'left' },
+  viewerHistoryButtonActive: { borderColor: '#111', background: '#111', color: '#fff' },
+  viewerHistoryButtonLabel: { fontSize: 12, fontWeight: 700, lineHeight: 1 },
+  viewerHistoryButtonMeta: { fontSize: 9, opacity: 0.78, lineHeight: 1.1, textTransform: 'uppercase', letterSpacing: '0.05em' },
+  viewerHistoryScore: { fontSize: 10, fontWeight: 700, lineHeight: 1.1 },
+  viewerHistoryDetail: { borderTop: '1px solid #eee', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 },
+  viewerHistoryDetailHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  viewerHistoryDetailTitle: { fontSize: 11, fontWeight: 700, color: '#333', textTransform: 'uppercase', letterSpacing: '0.05em' },
+  viewerHistoryDetailScore: { fontSize: 16, fontWeight: 700, lineHeight: 1 },
+  viewerHistoryMeta: { fontSize: 10, color: '#777', margin: 0 },
+  viewerHistoryList: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 },
+  viewerHistoryItem: { fontSize: 10, color: '#444', lineHeight: 1.35, background: '#fafafa', border: '1px solid #eee', borderRadius: 4, padding: '5px 6px' },
+  viewerHistoryNotes: { margin: 0, fontSize: 10, color: '#666', lineHeight: 1.4 },
+  viewerHistoryEmpty: { margin: 0, fontSize: 10, color: '#8a8a8a', lineHeight: 1.4 },
+  viewerHistoryEmptyBox: { border: '1px dashed #d7d7d7', borderRadius: 6, background: '#fff', color: '#8a8a8a', fontSize: 10, lineHeight: 1.35, padding: '8px 9px' },
   downloadBtn: { display: 'block', padding: '7px 0', textAlign: 'center', background: '#fff', color: '#333', borderRadius: 6, textDecoration: 'none', fontSize: 12, border: '1px solid #ddd' },
   backBtn: { padding: '7px 0', background: '#fff', border: '1px solid #ddd', color: '#333', borderRadius: 6, cursor: 'pointer', fontSize: 12 },
   newBtn: { padding: '7px 0', background: '#fff', border: '1px solid #ddd', color: '#333', borderRadius: 6, cursor: 'pointer', fontSize: 12 },
@@ -3388,282 +3522,16 @@ const styles = {
   criticPassCardCompact: { display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, padding: '4px 8px', border: '1px solid #ccd5e3', borderRadius: 999, background: '#fff', flexShrink: 0 },
   criticPassLabelCompact: { fontSize: 10, fontWeight: 700, color: '#5a6c86', textTransform: 'uppercase', letterSpacing: '0.08em', whiteSpace: 'nowrap' },
   criticPassSelectCompact: { fontSize: 11, border: '1px solid #ccd5e3', borderRadius: 999, padding: '2px 8px', background: '#eef2f7', color: '#445', cursor: 'pointer', minWidth: 88, height: 26 },
-  generatorControlRow: { display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12, flexWrap: 'nowrap' },
-  generatorExperimentCard: { width: 320, display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: 10, background: '#fff' },
-  generatorControlCard: { display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: 10, background: '#fff' },
-  generatorModelStack: { flex: '0 0 320px', width: 320, display: 'flex', flexDirection: 'column', gap: 4 },
+  generatorSettingsDetails: { width: '100%', boxSizing: 'border-box', marginBottom: 14, border: '1px solid #e0e0e0', borderRadius: 10, background: '#fafafa', overflow: 'hidden' },
+  generatorSettingsSummary: { listStyle: 'none', cursor: 'pointer', padding: '10px 14px', fontSize: 12, fontWeight: 700, color: '#445', textTransform: 'uppercase', letterSpacing: '0.06em', userSelect: 'none' },
+  generatorSettingsBody: { padding: '0 14px 14px', boxSizing: 'border-box' },
+  generatorControlRow: { display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 12, flexWrap: 'wrap' },
+  generatorExperimentCard: { width: '100%', display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: 10, background: '#fff', boxSizing: 'border-box' },
+  generatorControlCard: { width: '100%', display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: 10, background: '#fff', boxSizing: 'border-box' },
+  generatorModelStack: { flex: '1 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 },
   generatorModelLabel: { fontSize: 12, fontWeight: 700, color: '#444', textTransform: 'uppercase', letterSpacing: '0.04em' },
   generatorModelSelect: { width: '100%', fontSize: 13, border: '1px solid #ddd', borderRadius: 6, padding: '9px 12px', background: '#fff', color: '#333', cursor: 'pointer' },
   generatorTextInput: { width: '100%', fontSize: 13, border: '1px solid #ddd', borderRadius: 6, padding: '9px 12px', background: '#fff', color: '#333' },
   generatorExperimentControls: { display: 'flex', flexDirection: 'column', gap: 8 },
   generatorHint: { fontSize: 12, color: '#6b7280', margin: '2px 0 0' },
 };
-
-// ── Concept Graph Tab ─────────────────────────────────────────────────────────
-function ConceptGraphTab() {
-  const [chapters, setChapters]         = React.useState([]);
-  const [selected, setSelected]         = React.useState('');
-  const [builtGraphs, setBuiltGraphs]   = React.useState([]);   // [{chapterName,chapterTitle,conceptCount,generatedAt}]
-  const [jobStatus, setJobStatus]       = React.useState(null); // null | {status,log,error}
-  const [pollRef, setPollRef]           = React.useState(null);
-  const [graphData, setGraphData]       = React.useState(null);
-  const [selectedConcept, setSelectedConcept] = React.useState(null);
-  const [rebuildRag, setRebuildRag]     = React.useState(false);
-
-  const API = window.location.origin.replace('3000', '3001');
-
-  // Load chapter list + built graphs on mount
-  React.useEffect(() => {
-    apiFetch('/api/chapters').then(r => r.json()).then(data => {
-      const names = (data || []).map(c => c.name).sort();
-      setChapters(names);
-      if (names.length > 0) setSelected(names[0]);
-    }).catch(() => {});
-    refreshBuiltGraphs();
-  }, []);
-
-  function refreshBuiltGraphs() {
-    apiFetch('/api/concept-graphs').then(r => r.json()).then(setBuiltGraphs).catch(() => {});
-  }
-
-  // Poll build status while a job is running
-  React.useEffect(() => {
-    if (!jobStatus || jobStatus.status !== 'running') return;
-    const id = setInterval(async () => {
-      try {
-        const r = await apiFetch(`/api/concept-graph/${selected}/status`);
-        const s = await r.json();
-        setJobStatus(s);
-        if (s.status !== 'running') {
-          clearInterval(id);
-          refreshBuiltGraphs();
-          if (s.status === 'done') loadGraph(selected);
-        }
-      } catch { clearInterval(id); }
-    }, 1500);
-    return () => clearInterval(id);
-  }, [jobStatus, selected]);
-
-  async function triggerBuild() {
-    setGraphData(null);
-    setSelectedConcept(null);
-    setJobStatus({ status: 'running', log: ['Starting build…'] });
-    try {
-      const r = await apiFetch(`/api/concept-graph/${selected}/build`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rebuildRag }),
-      });
-      const j = await r.json();
-      if (j.error) setJobStatus({ status: 'error', log: [], error: j.error });
-    } catch (e) {
-      setJobStatus({ status: 'error', log: [], error: e.message });
-    }
-  }
-
-  async function loadGraph(chapter) {
-    try {
-      const r = await apiFetch(`/api/concept-graph/${chapter}`);
-      if (!r.ok) return;
-      const data = await r.json();
-      setGraphData(data);
-      setSelectedConcept(null);
-    } catch {}
-  }
-
-  const isRunning = jobStatus?.status === 'running';
-  const built = builtGraphs.find(g => g.chapterName === selected);
-
-  const SLOT_ICONS = { motivation: '💡', example: '📐', question: '❓', key_passage: '📖', demo: '🎮', visual: '🖼' };
-
-  return (
-    <div style={{ display: 'flex', gap: 0, height: '100%', background: '#f8f9fb' }}>
-      {/* ── Sidebar ── */}
-      <div style={{ width: 280, flexShrink: 0, background: '#fff', borderRight: '1px solid #e5e9f0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '20px 18px 14px', borderBottom: '1px solid #e5e9f0' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a2e', marginBottom: 10 }}>Build Concept Graph</div>
-          <select
-            value={selected}
-            onChange={e => { setSelected(e.target.value); setJobStatus(null); setGraphData(null); setSelectedConcept(null); }}
-            style={{ width: '100%', fontSize: 12, padding: '7px 10px', border: '1px solid #dde3ed', borderRadius: 6, marginBottom: 10, background: '#fff' }}
-          >
-            {chapters.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6b7280', marginBottom: 10, cursor: 'pointer' }}>
-            <input type="checkbox" checked={rebuildRag} onChange={e => setRebuildRag(e.target.checked)} />
-            Rebuild RAG index
-          </label>
-          <button
-            onClick={triggerBuild}
-            disabled={isRunning || !selected}
-            style={{ width: '100%', padding: '9px 0', fontSize: 12, fontWeight: 700, borderRadius: 7, border: 'none', background: isRunning ? '#c7d2fe' : '#4f46e5', color: '#fff', cursor: isRunning ? 'default' : 'pointer' }}
-          >
-            {isRunning ? 'Building…' : built ? '↺ Rebuild' : '▶ Build'}
-          </button>
-        </div>
-
-        {/* Build log */}
-        {jobStatus && (
-          <div style={{ padding: '10px 14px', borderBottom: '1px solid #e5e9f0', background: '#fafbfc' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: jobStatus.status === 'error' ? '#dc2626' : jobStatus.status === 'done' ? '#16a34a' : '#6366f1', marginBottom: 6 }}>
-              {jobStatus.status === 'running' ? '⟳ Running' : jobStatus.status === 'done' ? '✓ Done' : '✗ Error'}
-            </div>
-            <div style={{ fontSize: 10, color: '#374151', lineHeight: 1.6, maxHeight: 140, overflowY: 'auto' }}>
-              {(jobStatus.log || []).map((line, i) => <div key={i}>{line}</div>)}
-              {jobStatus.error && <div style={{ color: '#dc2626', marginTop: 4 }}>{jobStatus.error}</div>}
-            </div>
-          </div>
-        )}
-
-        {/* Built graphs list */}
-        <div style={{ padding: '12px 14px 8px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af' }}>Built Graphs</div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {builtGraphs.length === 0 && (
-            <div style={{ padding: '0 14px', fontSize: 12, color: '#9ca3af' }}>None yet — build one above.</div>
-          )}
-          {builtGraphs.map(g => (
-            <button
-              key={g.chapterName}
-              onClick={() => { setSelected(g.chapterName); loadGraph(g.chapterName); setJobStatus(null); }}
-              style={{ width: '100%', textAlign: 'left', padding: '8px 14px', background: graphData?.chapterName === g.chapterName ? '#eef2ff' : 'transparent', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
-            >
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>{g.chapterTitle || g.chapterName}</div>
-              <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{g.conceptCount} concepts · {g.generatedAt?.slice(0, 10)}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Main area ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {!graphData ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10, color: '#9ca3af' }}>
-            <div style={{ fontSize: 40 }}>🧠</div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>Select a chapter and build a concept graph</div>
-            <div style={{ fontSize: 12 }}>Pipeline: RAG → Concept Extraction → Slot Filling → Dependency Detection</div>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-            {/* Concept list */}
-            <div style={{ width: 260, flexShrink: 0, borderRight: '1px solid #e5e9f0', overflowY: 'auto', background: '#fff' }}>
-              <div style={{ padding: '14px 16px 8px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af', borderBottom: '1px solid #f1f5f9' }}>
-                {graphData.chapterTitle} · {graphData.concepts.length} concepts
-              </div>
-              {graphData.concepts.map(c => {
-                const hasDeps = c.deps?.length > 0;
-                const hasDemo = c.slots?.demo?.length > 0;
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedConcept(c)}
-                    style={{ width: '100%', textAlign: 'left', padding: '10px 16px', background: selectedConcept?.id === c.id ? '#eef2ff' : 'transparent', border: 'none', borderBottom: '1px solid #f8f9fb', cursor: 'pointer' }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', marginBottom: 3 }}>{c.label}</div>
-                    <div style={{ display: 'flex', gap: 5 }}>
-                      {hasDeps && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#ede9fe', color: '#6d28d9' }}>deps: {c.deps.length}</span>}
-                      {hasDemo && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#d1fae5', color: '#065f46' }}>demo</span>}
-                      {c.slots?.visual?.length > 0 && <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#fef3c7', color: '#92400e' }}>visual</span>}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Concept detail */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
-              {!selectedConcept ? (
-                <div style={{ color: '#9ca3af', fontSize: 13, paddingTop: 40, textAlign: 'center' }}>Select a concept to inspect its slots</div>
-              ) : (
-                <>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>{selectedConcept.label}</div>
-                  <div style={{ fontSize: 13, color: '#64748b', marginBottom: 20, lineHeight: 1.5 }}>{selectedConcept.one_sentence}</div>
-
-                  {/* Text slots — extracted from book, not generated */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
-                    {['motivation', 'example', 'question', 'key_passage'].map(key => {
-                      const val = selectedConcept.slots?.[key];
-                      if (!val) return null;
-                      return (
-                        <div key={key} style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px' }}>
-                          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 6 }}>
-                            {SLOT_ICONS[key]} {key.replace('_', ' ')}
-                          </div>
-                          <div style={{ fontSize: 13, color: '#1e293b', lineHeight: 1.55, fontStyle: key === 'key_passage' ? 'italic' : 'normal' }}>{val}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Original figures — shown as actual images */}
-                  {selectedConcept.slots?.visual?.length > 0 && (
-                    <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px', marginBottom: 14 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 10 }}>🖼 Original Figures from Book</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                        {selectedConcept.slots.visual.map(v => {
-                          const stem = v.stem || v;
-                          // Direct to backend port — CRA proxy mangles binary responses
-                          const backendBase = window.location.hostname === 'localhost'
-                            ? `http://localhost:${window.location.port === '3000' ? '3001' : window.location.port}`
-                            : '';
-                          return (
-                            <div key={stem} style={{ textAlign: 'center' }}>
-                              <img
-                                src={`${backendBase}/api/figure-image/${encodeURIComponent(stem)}`}
-                                alt={stem}
-                                crossOrigin="anonymous"
-                                style={{ maxWidth: 240, maxHeight: 180, borderRadius: 4, border: '1px solid #e5e9f0', display: 'block', background: '#f8f9fb' }}
-                                onError={e => { e.target.style.display = 'none'; }}
-                              />
-                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>{stem}</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Related concepts — concepts that depend on this one */}
-                  {(() => {
-                    const relatedTo = graphData.concepts.filter(c => c.deps?.includes(selectedConcept.id));
-                    if (relatedTo.length === 0) return null;
-                    return (
-                      <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px', marginBottom: 14 }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 8 }}>Required by</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {relatedTo.map(c => (
-                            <button key={c.id} onClick={() => setSelectedConcept(c)}
-                              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', fontWeight: 600, cursor: 'pointer' }}>
-                              {c.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Deps */}
-                  {selectedConcept.deps?.length > 0 && (
-                    <div style={{ background: '#fff', border: '1px solid #e5e9f0', borderRadius: 8, padding: '14px 16px' }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#94a3b8', marginBottom: 8 }}>Depends on</div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        {selectedConcept.deps.map(depId => {
-                          const dep = graphData.concepts.find(c => c.id === depId);
-                          return (
-                            <button key={depId} onClick={() => setSelectedConcept(dep || selectedConcept)}
-                              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, background: '#f0f4ff', border: '1px solid #c7d2fe', color: '#4338ca', fontWeight: 600, cursor: 'pointer' }}>
-                              {dep?.label || depId}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

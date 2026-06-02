@@ -1,7 +1,7 @@
 /**
  * critic.js — shared critic (evaluator) definition
  *
- * Used by both server.js (single-pass web generation) and agent.js (multi-round loop).
+ * Used by the web generation pipeline.
  * Edit this file to change what the critic looks for, how it scores, or what it outputs.
  */
 
@@ -10,8 +10,8 @@ const { screenshotHtml } = require('./runtime-helpers');
 const fs = require('fs');
 const path = require('path');
 
-const CRITIC_DEFAULT_MODEL = 'gpt-4o';
-const CRITIC_MAX_TOKENS = 512;
+const CRITIC_DEFAULT_MODEL = 'claude-opus-4.7';
+const CRITIC_MAX_TOKENS = 2048;
 // Change this value to start a new evaluation experiment namespace.
 const CRITIC_EXPERIMENT_BASE = 'default_critic';
 
@@ -26,7 +26,7 @@ const FAILURE_MODES = [
   { id: 'Scale-Wrong', desc: 'element proportions are noticeably off' },
   { id: 'Color-Wrong', desc: "colors don't match the original figure" },
   { id: 'Hallucination', desc: 'elements present that do not appear in the original' },
-  { id: 'Concept-Misunderstood', desc: 'the core concept being illustrated is misrepresented' },
+  { id: 'Concept-Misunderstood', desc: 'the core concept being illustrated is    misrepresented' },
 ];
 
 // ── 5 primary scored metrics (each 1–5) ────────────────────────────────────────
@@ -45,9 +45,9 @@ const SCORE_METRICS = [
     id: 'interactivity_usability',
     note: 'CRITICAL: OrbitControls (mouse drag to rotate/zoom) does NOT count as an interaction. Meaningful interactions = buttons, sliders, toggles, step-through animations, parameter controls built by the developer.',
     rubric: [
-      '5 – 3+ meaningful interactions all functional; reset button works; guided step-through demo present',
-      '4 – 2 meaningful interactions functional; reset button present; minor usability issues',
-      '3 – 1 meaningful interaction functional; no guided demo',
+      '5 – 3+ meaningful interactions all functional and pedagogically useful; reset button works; guided step-through demo present',
+      '4 – 2 meaningful interactions functional and pedagogically useful; reset button present; minor usability issues',
+      '3 – 1 meaningful interaction functional and pedagogically useful; no guided demo',
       '2 – Interactions exist in code but are broken or have no visible effect',
       '1 – Only OrbitControls present, or no interactions at all — score MUST be 1',
     ],
@@ -97,25 +97,34 @@ function buildEvalPrompt() {
 
   const exampleOutput = JSON.stringify(
     Object.fromEntries([
+      ['discrepancies', []],
       ['failure_modes', []],
       ...SCORE_METRICS.map(m => [m.id, 3]),
       ['notes', 'one concise sentence summarizing the main strengths and weaknesses'],
+      ['action_items', ['Specific actionable improvement 1', 'Specific actionable improvement 2']],
     ]),
     null,
     2
   );
 
-  return `You are a strict evaluator of generated interactive Three.js 3D figures against original 2D textbook figure images.
-You will receive the original source figure image, the generated HTML/JavaScript code, and a rendered screenshot of the generated HTML (if screenshot capture succeeds). If the screenshot was not received, mention this in the notes. Otherwise, use the screenshot to help evaluate the faithfulness of the generated figure to the original figure.
-Be critical and honest — err toward lower scores when in doubt. Do not give credit for things that are absent or barely present.
-Output ONLY a valid JSON object — no explanation, no markdown, no fences.
+  return `You are a strict critic of generated interactive Three.js 3D figures against original 2D textbook figure images.
+You will receive the original source figure image, the generated HTML/JavaScript code, and a rendered screenshot of the generated HTML (if screenshot capture succeeds). Start by using the screenshot to help evaluate the faithfulness of the generated figure to the source figure, listing discrepancies in the primitive elements between what you see in the source figure versus what you see in the generated figure. If the screenshot was not received, mention this in the notes.
+Score the generated figure using the rubric and give feedback to improve the figure. Be critical and honest — err toward lower scores when in doubt. Do not give credit for things that are absent or barely present. Output ONLY a valid JSON object — no explanation, no markdown, no fences.
+
+DISCREPANCIES - list 0-5 visual discrepancies between the primitive elements in source figure and the generated figure
+- Primitives include color, text size, geometric shapes, geometric relations
 
 FAILURE MODES — list any that apply (use empty array [] if none):
 ${failureModeLines}
 
 SCORES — integer 1–5 for each field:
-
 ${metricLines}
+
+ACTION ITEMS — list 3-5 specific, actionable improvements based on the scores and failure modes:
+- Be concrete and specific to THIS figure, not generic
+- If scores are high (4+), note what works well and minor refinements
+- If scores are low, identify the most impactful fixes (geometry issues, missing labels, broken interactions, concept errors)
+- Give feedback to both the plan and the generation
 
 Output this exact JSON structure and nothing else:
 ${exampleOutput}`;
@@ -198,6 +207,7 @@ async function evaluateHtmlWithCritic(opts) {
     userContent,
     maxTokens,
   });
+
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) content = fenced[1].trim();
   content = content.trim();

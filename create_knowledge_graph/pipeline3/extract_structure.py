@@ -129,6 +129,10 @@ Atomic teachable ideas. Four kinds:
 - A passage that defines BRDF, then defines the Lambertian model, then defines albedo → three separate concepts, not one "reflection" concept.
 - A passage that introduces perspective projection equations and then orthographic projection → two concepts, not one.
 - A passage that defines Tikhonov regularization and then discusses ill-conditioned inverse problems → two concepts.
+- A passage in section "Cues for Support" that explains how a **drop shadow** suggests separation and a **slack string** suggests contact → two concepts (`drop_shadow_support_cue`, `slack_string_support_cue`), not one umbrella "cues for support" concept.
+- A passage in section "Horizontal or Vertical" that bolds both **vanishing points** and **horizon line** → two definition concepts plus optionally one idea concept about orientation perception — NEVER a single concept titled "Horizontal or Vertical".
+
+**Bolded/italicized terms are first-class concept candidates.** When the prose uses `**term**` or `*term*` to introduce a named notion, emit a `definition` concept whose `title` is that exact term. The book uses bold to mark first-mention definitions — never miss a bolded term.
 
 The title MUST be copied verbatim from the text — use the exact phrase as it appears in the chunk (bold, italic, or heading). Do not paraphrase, shorten, or invent names.
 
@@ -136,7 +140,51 @@ The title MUST be copied verbatim from the text — use the exact phrase as it a
 
 If a vocabulary list is provided in the system prompt, PREFER those exact terms when they match the concept being extracted. Only use a term not in the vocabulary if the concept is genuinely new and unlisted.
 
-Do NOT create concepts for: purely worked numerical calculations with no named result, figure captions without a named concept, or decorative section introductions that introduce no specific idea.
+## Section headings are NOT concepts (anti-stub rule)
+
+A section heading like `## Introduction`, `## The Eye of the Artist`, `## The More You Look, the More You See`, `## Concluding Remarks`, `## Accidents Happen` is a navigational label, not a teachable concept. Do NOT emit a concept whose title is just the section heading.
+
+The only exception: when a section is named after a single technical term that is ALSO defined in bold inside the section (e.g., `## Light Field Cameras` paired with `**light field cameras**` in the prose, or `## Vanishing Points` paired with `**vanishing points**` in the prose). In that case, emit ONE definition concept with the bolded term as the title — never a separate "section-title" idea concept.
+
+For every section, ask: "What named/bolded terms or distinct teachable ideas live INSIDE this section?" Emit one concept per such term/idea. If a section has zero extractable named terms and only motivational/narrative prose (rhetorical questions, autobiographical anecdotes, exhortations to "go look at the world"), skip it entirely — produce zero concepts for that section.
+
+### Worked examples (positive vs negative)
+
+Section `## Introduction` containing only motivational prose ("The goal of this chapter is...") → **0 concepts**. Never emit `idea_introduction` or `idea_the_introduction`.
+
+Section `## The Eye of the Artist` containing the prose "Learning to paint is a great way of learning to see..." with no bolded terms and no named technique → **0 concepts**. Never emit `idea_the_eye_of_the_artist`.
+
+Section `## The More You Look, the More You See` containing the bolded term `**visual cognitive load**` and a discussion that "Vision is a dynamical system" → emit `visual_cognitive_load` (definition, the bolded term) AND optionally `vision_as_dynamical_system` (idea, for the dynamical-system framing). Do NOT emit a top-level `idea_the_more_you_look_the_more_you_see` umbrella concept.
+
+Section `## Accidents Happen` containing the bolded term `**principle of continuity**` and a discussion of accidental image alignments → emit `principle_of_continuity` (definition) AND `accidental_coincidences` (idea). Do NOT emit `idea_accidents_happen`.
+
+Section `## Cues for Support` describing both a drop-shadow cue and a slack-string cue → emit `drop_shadow_support_cue` (idea) AND `slack_string_support_cue` (idea). Do NOT emit `cues_for_support` as a single umbrella concept — it is a section title.
+
+### Hard "never extract" list
+
+Never emit a concept whose title is exactly (or near-exactly) one of these section-title phrasings: "Introduction", "Concluding Remarks", "Overview", "Summary", "Background", "Motivation", "Setup", "Preliminaries", "Notation", "Remarks", "Further Reading", "Exercises".
+
+Do NOT create concepts for: purely worked numerical calculations with no named result, figure captions without a named concept, decorative section introductions that introduce no specific idea, or motivational/narrative sections whose prose contains no bolded term, no named technique, and no formally introduced idea.
+
+### DO still extract teachable phenomena even when NOT bolded (idea concepts)
+
+The anti-stub rule above is about **section-title-as-concept**, not about being conservative. Within each section that has substantive prose, look HARDER for `idea` concepts — distinct teachable phenomena, visual cues, or cause-and-effect explanations — even when the phrase is not bolded. Use a descriptive snake_case id that names the phenomenon (not the section title).
+
+Examples of `idea` concepts you should NOT miss:
+- A passage explaining that motion blur depends on object distance from camera → emit `depth_dependent_motion_blur` (idea) even though "motion blur" is the section title (also emit a `motion_blur` definition concept for the phenomenon itself, sharing the section span).
+- A passage in §"Horizontal or Vertical" that explains how the relative position of vanishing points and horizon line tells you whether you're looking at a floor vs. a wall → emit `orientation_perception_from_vanishing_points` (idea) in addition to the bolded `vanishing_points` and `horizon_line` definitions.
+- A passage in §"Cues for Support" that describes a drop shadow as evidence of separation → emit `drop_shadow_support_cue` (idea). A separate sentence in the same section describes a slack string as evidence of contact → emit `slack_string_support_cue` (idea). These are two distinct cues, so two concepts.
+- A passage in §"Accidents Happen" that describes generic alignments and "accidental" image coincidences (Migrant Mother example) → emit `accidental_coincidences` (idea) alongside the bolded `principle_of_continuity` (definition).
+- A passage in §"Looking at Raindrops" that calls raindrops "a naturally occurring light field camera" → emit `raindrops_as_natural_light_field` (idea) alongside the bolded `light_field_cameras` (definition).
+- A passage in §"Plato's Cave" that uses the allegory to argue that an image is a lossy 2D projection of 3D scene and vision must infer the hidden → emit `image_as_lossy_projection` (idea) or `vision_infers_hidden_scene` (idea). Do NOT emit a `platos_cave` or `allegory_of_the_cave` concept — Plato's allegory is the *frame*, not the *concept*.
+- A passage in §"How Do You Know Something Is Wet?" asking why wet sand looks dark and how material perception works → emit `material_perception_wetness` (idea).
+- A passage in §"The More You Look, the More You See" describing vision as a dynamical system (vs an input-output function) → emit `vision_as_dynamical_system` (idea). A separate paragraph in the same section noting that one big image contains many small images that can be treated as a dataset → emit `image_as_dataset_of_patches` (idea).
+
+Aim for 2-4 concepts per substantive narrative section (a mix of bolded `definition`s and unbolded `idea`s), unless the section is truly purely motivational. Sparse extraction (1 concept per section) is a smell that you are pattern-matching on headings instead of reading the prose.
+
+### Avoid duplicates
+
+Never emit two concepts with identical or near-identical titles (e.g., "Plato's Cave" as both an `idea` and a `definition`). Pick one kind per concept and one id per concept. If a single span genuinely deserves two records, the two records must have distinctly different titles that name different things.
 
 ## Items
 

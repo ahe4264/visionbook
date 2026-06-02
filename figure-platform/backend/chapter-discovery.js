@@ -6,7 +6,7 @@
  * - Finding 3D candidate images in a chapter
  * - Inferring chapter from a figure filename
  *
- * Used by server.js, agent.js, and planner.js.
+ * Used by server.js and planner.js.
  */
 
 const fs = require('fs');
@@ -16,12 +16,18 @@ const path = require('path');
 const ROOT_DIR = path.join(__dirname, '..', '..');
 const CHAPTER_FIGURES_DIR = path.join(__dirname, '..', 'chapter-figures');
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
-
-function listImageFiles(dir) {
+// ── List 3D candidate images for a chapter ──────────────────────────────────
+/**
+ * List all 3D candidate image files for a given chapter.
+ * @param {string} chapterName
+ * @returns {Array<{ filename, stem, fullPath }>}
+ */
+function list3dCandidates(chapterName) {
+    const dir = path.join(CHAPTER_FIGURES_DIR, chapterName, 'candidates_3d');
     if (!fs.existsSync(dir)) return [];
+    const exts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
     return fs.readdirSync(dir)
-        .filter(f => IMAGE_EXTS.has(path.extname(f).toLowerCase()))
+        .filter(f => exts.has(path.extname(f).toLowerCase()))
         .map(f => ({
             filename: f,
             stem: f.replace(/\.[^.]+$/, ''),
@@ -30,27 +36,10 @@ function listImageFiles(dir) {
         .sort((a, b) => a.stem.localeCompare(b.stem));
 }
 
-// ── List 3D candidate images for a chapter ──────────────────────────────────
+// ── List all chapters with their 3D candidate counts ──────────────────────────
 /**
- * @param {string} chapterName
- * @returns {Array<{ filename, stem, fullPath }>}
- */
-function list3dCandidates(chapterName) {
-    return listImageFiles(path.join(CHAPTER_FIGURES_DIR, chapterName, 'candidates_3d'));
-}
-
-// ── List 2D diagram images for a chapter ─────────────────────────────────────
-/**
- * @param {string} chapterName
- * @returns {Array<{ filename, stem, fullPath }>}
- */
-function list2dCandidates(chapterName) {
-    return listImageFiles(path.join(CHAPTER_FIGURES_DIR, chapterName, 'diagrams_2d'));
-}
-
-// ── List all chapters with candidate counts ───────────────────────────────────
-/**
- * @returns {Array<{ name, candidateCount, candidateCount2d }>}
+ * List all chapters with their 3D candidate image counts.
+ * @returns {Array<{ name, candidateCount }>}
  */
 function listChapters() {
     if (!fs.existsSync(CHAPTER_FIGURES_DIR)) return [];
@@ -58,11 +47,10 @@ function listChapters() {
         .filter(d => {
             try { return fs.statSync(path.join(CHAPTER_FIGURES_DIR, d)).isDirectory(); } catch { return false; }
         })
-        .map(d => ({
-            name: d,
-            candidateCount: list3dCandidates(d).length,
-            candidateCount2d: list2dCandidates(d).length,
-        }))
+        .map(d => {
+            const candidates = list3dCandidates(d);
+            return { name: d, candidateCount: candidates.length };
+        })
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -102,6 +90,5 @@ function inferChapterFromFilename(filename) {
 module.exports = {
     listChapters,
     list3dCandidates,
-    list2dCandidates,
     inferChapterFromFilename,
 };

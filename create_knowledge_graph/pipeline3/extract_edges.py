@@ -29,7 +29,7 @@ from pathlib import Path
 from llm import call_llm_json, GEMINI_DEFAULT, OPENAI_DEFAULT
 
 
-SYSTEM_PROMPT = """You extract pedagogical relationships between calculus concepts.
+SYSTEM_PROMPT = """You extract pedagogical relationships between textbook concepts.
 
 You receive:
   - FOCUS: concepts from a single section. Each has id, kind, title, one_liner, summary, section, source span.
@@ -54,14 +54,32 @@ Edge kinds:
   `contrast_with`   — A and B are adjacent but distinct; comparing aids understanding.
   `teaches_after`   — pedagogical ordering only (rare; use `requires` when there's a true dependency).
 
+Coverage goals:
+  - Do not treat the graph as prerequisites only. The viewer shows all edge kinds, so capture
+    useful non-prerequisite structure too.
+  - Try to give every FOCUS concept at least one justified edge when the passage supports it.
+    If a concept has no strict prerequisite, look for a `see_also`, `special_case_of`,
+    `generalizes`, `contrast_with`, `formalizes`, or `illustrates` edge.
+  - When a passage lists members of a family/category (e.g. cues, losses, encodings, models),
+    connect each member to the category concept when present (`special_case_of`) and connect
+    sibling members with selective `see_also` edges when cross-reference would help.
+  - When a definition is introduced using nearby terms in the same passage, link it to those
+    terms. Examples: a loss using targets/probabilities, a model using encodings/tokens, a cue
+    used for depth inference.
+  - Use `contrast_with` for paired alternatives in the same discussion, not `see_also`.
+  - Use `illustrates` when a figure/example/concrete cue demonstrates a broader concept.
+
 Rules:
-  1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity — do not invent weak connections, but do not artificially limit the count.
+  1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity — do not invent weak connections, but do not artificially limit the count or leave clearly related concepts isolated.
   2. `from` in FOCUS; `to` in FOCUS (earlier in book) or VISIBLE.
-  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans, evidence_line.
+  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans, evidence_line, evidence_quote.
   4. `evidence_spans` is always an array — typically a single-element array with one {start, end} range.
   5. `evidence_line` is REQUIRED: the single line marker (e.g. L02806) in the focus concept's passage that most directly justifies this edge. Copy it exactly from the source text shown.
-  6. No self-loops. No duplicate (from, to, kind) within the same window.
-  7. ORDERING RULE: `from` must appear LATER in the book than `to`. Edges always point from dependent → prerequisite.
+  6. `evidence_quote` is REQUIRED: copy the shortest exact quote from that line or nearby evidence lines that supports the edge.
+  7. No self-loops. No duplicate (from, to, kind) within the same window.
+  8. ORDERING RULE: for `requires` only, `from` must appear LATER in the book than `to`.
+     Other edge kinds may point to later concepts when the semantic direction requires it
+     (e.g. category/member, contrast pairs, formalization, sibling cross-reference).
 
 Return JSON with top-level `edges`.
 """
@@ -75,7 +93,10 @@ OUTPUT_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["from", "to", "kind", "rationale", "strength", "evidence_spans"],
+                "required": [
+                    "from", "to", "kind", "rationale", "strength",
+                    "evidence_spans", "evidence_line", "evidence_quote",
+                ],
                 "properties": {
                     "from":     {"type": "string"},
                     "to":       {"type": "string"},
@@ -102,6 +123,10 @@ OUTPUT_SCHEMA = {
                     "evidence_line": {
                         "type": "string",
                         "description": "Single line marker Lxxxxx from the focus concept's passage that most directly justifies this edge.",
+                    },
+                    "evidence_quote": {
+                        "type": "string",
+                        "description": "Shortest exact quote from the source text that supports this edge.",
                     },
                 },
             },
@@ -167,6 +192,13 @@ def _source_passage(c: dict, max_chars: int = 1200) -> str:
                 parts.append(f"{mk}: {_numbered_lines[mk]}")
     text = "\n".join(parts)
     return text[:max_chars]
+
+
+def _quote_for_line(line_marker: str | None) -> str:
+    """Return the numbered-book text for an evidence line marker, if available."""
+    if not line_marker:
+        return ""
+    return _numbered_lines.get(str(line_marker).strip(), "")
 
 
 def render_focus(c: dict) -> str:
@@ -270,13 +302,16 @@ def process_window(
             continue
         if frm == to:
             warns.append(f"self-loop {frm}"); continue
-        # Ordering constraint: from must appear later in book than to
-        if span_start_int(all_concepts_map.get(frm, {})) <= span_start_int(all_concepts_map.get(to, {})):
-            warns.append(f"{frm}->{to}: violates ordering (from not later than to); dropping")
+        # Ordering constraint applies only to prerequisites. Overlay edges can
+        # legitimately point to later same-passage concepts (siblings, category
+        # relations, contrast pairs, formalizations).
+        if e.get("kind") in PREREQ_KINDS and span_start_int(all_concepts_map.get(frm, {})) <= span_start_int(all_concepts_map.get(to, {})):
+            warns.append(f"{frm}->{to}: violates prereq ordering (from not later than to); dropping")
             continue
         e["confidence"] = e.get("strength", 0.0)
         e["verified"] = False
         e["extraction"] = {"model": model}
+        e["evidence_quote"] = (e.get("evidence_quote") or _quote_for_line(e.get("evidence_line"))).strip()
         # Normalize evidence_spans: accept either the new field or a legacy
         # `evidence_span` dict. Ensure every entry has a `file` field.
         file_default = focus[0].get("source", {}).get("file", "book.md")

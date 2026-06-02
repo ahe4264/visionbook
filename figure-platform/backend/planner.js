@@ -11,7 +11,7 @@
  *   - contextChunk:    the paragraphs around the figure reference in the .qmd
  *   - interactionPlan: LLM-generated interaction blueprint (fast, ~200 tokens)
  *
- * Used by both server.js (web) and agent.js (CLI).
+ * Used by the web generation pipeline.
  */
 
 const fs = require('fs');
@@ -156,6 +156,7 @@ Rules:
 - At least 3 demo steps, at most 6.
 - Every interaction must appear in at least one demo step's control_values.
 - Narration must be specific to THIS figure — never generic like "notice how things change". Say exactly what changes and what it means physically/mathematically.
+- If the figure shows multiple views of the same object, the same scene in different versions, or repeated panels that swap between alternatives, model that as a toggleable interaction rather than separate independent geometry. The demo should use that toggle to switch between the versions and explain what changes from one view/state to the next.
 - demo_steps must tell a coherent pedagogical story: start simple, build complexity, end with the key insight.`
 
 /**
@@ -163,7 +164,7 @@ Rules:
  * Optionally includes the image for vision-based planning.
  * Returns the parsed plan object.
  */
-async function generateInteractionPlan(contextChunk, figureStem, { base64, mediaType } = {}) {
+async function generateInteractionPlan(contextChunk, figureStem, { base64, mediaType } = {}, plannerModel = PLANNER_MODEL) {
   const userContent = [];
 
   // Include image if provided
@@ -180,30 +181,19 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
     text: `Figure: ${figureStem}\n\nTextbook context:\n${contextChunk.slice(0, 3000)}`,
   });
 
-  let content = await generateWithModel(PLANNER_MODEL, {
+  let content = await generateWithModel(plannerModel || PLANNER_MODEL, {
     systemPrompt: PLAN_SYSTEM_PROMPT,
     userContent,
     maxTokens: PLANNER_MAX_TOKENS,
   });
-
-  // Strip fenced code block if present
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) content = fenced[1].trim();
 
-  // Try direct parse first
   try {
     return JSON.parse(content);
-  } catch (_) {}
-
-  // Fallback: extract the first {...} JSON object from the response
-  try {
-    const objMatch = content.match(/\{[\s\S]*\}/);
-    if (objMatch) return JSON.parse(objMatch[0]);
-  } catch (_) {}
-
-  // Last resort: log raw output and return empty plan
-  console.error('[planner] Could not parse plan. Raw output:\n', content.slice(0, 1000));
-  return { concept: 'Could not parse plan', elements: [], interactions: [], labels: [], raw: content.slice(0, 500) };
+  } catch {
+    return { concept: 'Could not parse plan', elements: [], interactions: [], labels: [], raw: content.slice(0, 500) };
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -216,7 +206,7 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
  * @param {object} imageData   - optional { base64, mediaType }
  * @returns {{ figureStem, chapterName, contextChunk, interactionPlan }}
  */
-async function planForFigure(figureStem, chapterName, imageData) {
+async function planForFigure(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL) {
   const resolvedChapter = chapterName || inferChapterFromFilename(figureStem);
 
   // Try to load chapter text
@@ -228,8 +218,7 @@ async function planForFigure(figureStem, chapterName, imageData) {
   } else {
     contextChunk = `Figure: ${figureStem}. No chapter text found — plan from filename alone.`;
   }
-
-  const interactionPlan = await generateInteractionPlan(contextChunk, figureStem, imageData);
+  const interactionPlan = await generateInteractionPlan(contextChunk, figureStem, imageData, plannerModel);
 
   return {
     figureStem,
@@ -247,7 +236,7 @@ async function planForFigure(figureStem, chapterName, imageData) {
  * @param {object} imageDataMap - optional map of figureStem -> { base64, mediaType }
  * @returns {Array<{ figureStem, chapterName, contextChunk, interactionPlan, imagePath }>}
  */
-async function planChapter(chapterName, imageDataMap = {}) {
+async function planChapter(chapterName, imageDataMap = {}, plannerModel = PLANNER_MODEL) {
   const candidates = list3dCandidates(chapterName);
   if (!candidates.length) return [];
 
@@ -262,7 +251,7 @@ async function planChapter(chapterName, imageDataMap = {}) {
       contextChunk = `Figure: ${candidate.stem} from chapter "${chapterName}". No chapter text found.`;
     }
 
-    const interactionPlan = await generateInteractionPlan(contextChunk, candidate.stem, imageDataMap[candidate.stem]);
+    const interactionPlan = await generateInteractionPlan(contextChunk, candidate.stem, imageDataMap[candidate.stem], plannerModel);
 
     plans.push({
       figureStem: candidate.stem,
@@ -277,7 +266,69 @@ async function planChapter(chapterName, imageDataMap = {}) {
   return plans;
 }
 
+/**
+ * Refine an existing plan based on critic feedback.
+ * Called when plan-level issues are detected (e.g., missing interactions, concept misunderstood).
+ *
+ * @param {object} previousPlan - the interaction plan that failed
+ * @param {object} evaluation - critic evaluation with scores and failure modes
+ * @param {object} feedback - reviewer feedback with actionItems
+ * @param {string} figureStem - e.g. "brdf"
+ * @param {string} plannerModel - e.g. "gpt-4o"
+ * @returns {Promise<object>} - revised interactionPlan
+ */
+async function refinePlan(previousPlan, evaluation, feedback, figureStem, plannerModel = PLANNER_MODEL) {
+  if (!previousPlan) throw new Error('previousPlan is required');
+  if (!evaluation) throw new Error('evaluation is required');
+  if (!feedback) throw new Error('feedback is required');
+  if (!figureStem) throw new Error('figureStem is required');
+
+  const feedbackSummary = [
+    'The previous interaction plan had issues.',
+    'Critic feedback:',
+    ...(feedback.action_items || []).map(a => `  • ${a}`),
+    '',
+    'Specific scores:',
+    `  • Overall: ${evaluation.overall_average}/5`,
+    `  • Concept accuracy: ${evaluation.concept_accuracy}/5`,
+    ...(evaluation.failure_modes || []).map(m => `  • ${m}`),
+    '',
+    'Revise the interaction plan to address these issues.',
+    'Focus on:',
+    '  • Ensuring all required interactions are explicitly specified',
+    '  • Clarifying the core concept that is being illustrated',
+    '  • Specifying demo steps that progressively build understanding',
+    'Output ONLY valid JSON (no markdown, no explanation).',
+  ].join('\n');
+
+  const userContent = [
+    {
+      type: 'text',
+      text: `Figure: ${figureStem}\n\nContext:\n${previousPlan.contextChunk?.slice(0, 2000) || 'N/A'}\n\n${feedbackSummary}\n\nPrevious plan (for reference):\n${JSON.stringify(previousPlan.interactionPlan, null, 2)}`,
+    },
+  ];
+
+  let content = await generateWithModel(plannerModel, {
+    systemPrompt: PLAN_SYSTEM_PROMPT,
+    userContent,
+    maxTokens: PLANNER_MAX_TOKENS,
+  });
+
+  // Strip markdown fences if present
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) content = fenced[1].trim();
+
+  try {
+    const refinedPlan = JSON.parse(content);
+    return refinedPlan;
+  } catch (e) {
+    throw new Error(`Failed to parse refined plan: ${e.message}\n${content.slice(0, 300)}`);
+  }
+}
+
 module.exports = {
   planForFigure,
   planChapter,
+  refinePlan,
+  PLANNER_MODEL,
 };

@@ -44,12 +44,30 @@ Edge kinds:
   `contrast_with`   — A and B are adjacent but distinct; comparing aids understanding.
   `teaches_after`   — pedagogical ordering only (rare; use `requires` when there's a true dependency).
 
+Coverage goals:
+  - Do not treat the graph as prerequisites only. The viewer shows all edge kinds, so capture
+    useful non-prerequisite structure too.
+  - Try to give every FOCUS concept at least one justified edge when the passage supports it.
+    If a concept has no strict prerequisite, look for a `see_also`, `special_case_of`,
+    `generalizes`, `contrast_with`, `formalizes`, or `illustrates` edge.
+  - When a passage lists members of a family/category (e.g. cues, losses, encodings, models),
+    connect each member to the category concept when present (`special_case_of`) and connect
+    sibling members with selective `see_also` edges when cross-reference would help.
+  - When a definition is introduced using nearby terms in the same passage, link it to those
+    terms. Examples: a loss using targets/probabilities, a model using encodings/tokens, a cue
+    used for depth inference.
+  - Use `contrast_with` for paired alternatives in the same discussion, not `see_also`.
+  - Use `illustrates` when a figure/example/concrete cue demonstrates a broader concept.
+
 Rules:
-  1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity.
-  2. `from` in FOCUS; `to` in FOCUS (earlier in list) or VISIBLE.
-  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans.
+  1. For each focus concept, emit as many edges as genuinely exist. Quality over quantity — do not invent weak connections, but do not artificially limit the count or leave clearly related concepts isolated.
+  2. `from` in FOCUS. For `requires`, `to` should be in VISIBLE or an earlier FOCUS concept.
+     For non-prerequisite edge kinds, `to` may be any known FOCUS or VISIBLE concept when
+     the semantic relation is justified.
+  3. Each edge: kind, rationale (1-2 sentences, <=400 chars), strength 0.0-1.0, evidence_spans, evidence_quote.
   4. `evidence_spans` is always an array — use the focus concept's source.spans.
-  5. No self-loops. No duplicate (from, to, kind).
+  5. `evidence_quote` is REQUIRED: copy the shortest exact quote from the focus concept content/source text that supports the edge.
+  6. No self-loops. No duplicate (from, to, kind).
 
 Return JSON with top-level `edges`.
 """
@@ -62,7 +80,10 @@ OUTPUT_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["from", "to", "kind", "rationale", "strength", "evidence_spans"],
+                "required": [
+                    "from", "to", "kind", "rationale", "strength",
+                    "evidence_spans", "evidence_quote",
+                ],
                 "properties": {
                     "from":     {"type": "string"},
                     "to":       {"type": "string"},
@@ -85,6 +106,10 @@ OUTPUT_SCHEMA = {
                                 "end":   {"type": "string"},
                             },
                         },
+                    },
+                    "evidence_quote": {
+                        "type": "string",
+                        "description": "Shortest exact quote from source text that supports this edge.",
                     },
                 },
             },
@@ -160,6 +185,7 @@ def process_chapter(
         e["confidence"] = e.get("strength", 0.0)
         e["verified"] = False
         e["extraction"] = {"model": model}
+        e["evidence_quote"] = (e.get("evidence_quote") or "").strip()
         file_default = focus_sorted[0].get("source", {}).get("file", "book.numbered.md")
         ev_list = e.get("evidence_spans", [])
         clean_ev = []

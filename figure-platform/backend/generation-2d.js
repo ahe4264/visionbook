@@ -67,15 +67,11 @@ WHAT MUST MATCH THE ORIGINAL:
 
 TEXT SIZING — critical for readability at all zoom levels:
   SVG font-size in "px" units does NOT scale with the viewBox — it will appear tiny when the
-  overlay is small. Always use raw user-unit numbers (NO "px" suffix — EVER):
-    <text font-size="16" font-family="sans-serif">   ← CORRECT (scales with viewBox)
-    <text font-size="16px" font-family="sans-serif"> ← WRONG (stays fixed, becomes tiny)
-  Use fontSize from plan.elementSizes.fontSize — this is the measured pixel size from the
-  original image at ~600px width. Trust it. Typical values by figure type:
-    Matplotlib/seaborn line/scatter plots: axis labels 16–20, tick labels 13–15
-    Network diagrams / flow charts:        node labels 11–13
-    Small annotations on data lines:       10–12
-  NEVER apply a "px" or any CSS unit suffix to SVG text font-size attributes.
+  overlay is small. Always use raw user-unit numbers (no "px" suffix):
+    <text font-size="11" font-family="sans-serif">   ← CORRECT (scales with viewBox)
+    <text font-size="11px" font-family="sans-serif"> ← WRONG (stays fixed, becomes tiny)
+  Scale based on W=600: use fontSize from plan.elementSizes.fontSize (default 11).
+  If labels look crowded, reduce to 9. If sparse, use 12. Never below 9 or above 14.
 
 EDGES AND ARROWHEADS — non-negotiable:
   Count edges in the original. Generate EXACTLY that many.
@@ -155,7 +151,6 @@ Before outputting, verify:
   4. Every edge that had an arrowhead has marker-end="url(#arr)"?
   5. Diagonal edge angles correct — computed from actual node center coords?
   6. Default view matches original — layout, colors, every label, proportions?
-  6b. All SVG text uses font-size="N" (no px suffix)? "font-size="16px"" is WRONG — fix it.
   7. html/body no margin/padding, background #fff, SVG width/height 100%?
   8. SVG has preserveAspectRatio="xMidYMid meet"?
   9. No title, toolbar, or description visible by default?
@@ -293,7 +288,7 @@ async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText
       (H_from_ar ? `\n  viewBox="0 0 600 ${H_from_ar}"  ← from aspectRatio=${aspectRatio}` : '') +
       (nodeR    ? `\n  nodeRadius = ${nodeR}px  ← from nodeRadiusFraction=${plan.elementSizes.nodeRadiusFraction}` : '') +
       (strokeW  ? `\n  strokeWidth = ${strokeW}` : '') +
-      (fontSize ? `\n  fontSize = ${fontSize}  ← SVG user units (NO px suffix)` : '') +
+      (fontSize ? `\n  fontSize = ${fontSize}px` : '') +
       (arrSize  ? `\n  arrowheadSize = ${arrSize}` : '')
     : '';
 

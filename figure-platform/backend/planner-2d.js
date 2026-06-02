@@ -24,7 +24,7 @@ Output this exact JSON structure:
   "elementSizes": {
     "nodeRadiusFraction": 0.045,
     "strokeWidth": 1.5,
-    "fontSize": 16,
+    "fontSize": 11,
     "arrowheadSize": 6
   },
   "panels": [
@@ -70,7 +70,7 @@ MEASUREMENT RULES — required for geometry faithfulness:
 - aspectRatio: measure the figure's width divided by its height as a decimal (e.g. a landscape figure ~2× wider than tall = 2.0). This is mandatory.
 - elementSizes.nodeRadiusFraction: for diagrams with circular nodes, measure node radius as a fraction of total figure width (e.g. if node diameter is ~9% of figure width, nodeRadiusFraction = 0.045). If no circular nodes, omit.
 - elementSizes.strokeWidth: the edge/border stroke width in pixels as it appears at ~600px figure width.
-- elementSizes.fontSize: the AXIS LABEL (or largest visible label) font size in pixels as it appears at ~600px figure width. For matplotlib/seaborn plots this is typically 16–20. For small diagram node labels, 11–13. Measure from the actual text height in the image — do not default to 11.
+- elementSizes.fontSize: the dominant label font size in pixels as it appears at ~600px figure width.
 - elementSizes.arrowheadSize: the arrowhead length in pixels as it appears at ~600px figure width.
 These measurements let the generator set the correct viewBox and element scale without guessing.
 
