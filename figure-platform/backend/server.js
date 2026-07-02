@@ -412,7 +412,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 1, fewShot: requestedFewShot }) {
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -485,6 +485,8 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     timestamp,
     source: 'api',
     model: modelId,
+    plannerModel: plannerModelId,
+    criticModel: criticModelId,
     experiment: experimentName,
     plan: loopState.currentPlan || null,
     previewBase64: shot ? shot.data : null,
@@ -1738,9 +1740,9 @@ function computeBradleyTerry(matchups) {
   if (setups.length === 0) return [];
 
   const W = Object.fromEntries(setups.map(s => [s, 0]));
-  const rawWins   = Object.fromEntries(setups.map(s => [s, 0]));
+  const rawWins = Object.fromEntries(setups.map(s => [s, 0]));
   const rawLosses = Object.fromEntries(setups.map(s => [s, 0]));
-  const rawTies   = Object.fromEntries(setups.map(s => [s, 0]));
+  const rawTies = Object.fromEntries(setups.map(s => [s, 0]));
   const Nij = {};
   for (const s of setups) Nij[s] = Object.fromEntries(setups.map(t => [t, 0]));
 
@@ -1749,9 +1751,9 @@ function computeBradleyTerry(matchups) {
     W[b] += (1 - aWins);
     Nij[a][b]++;
     Nij[b][a]++;
-    if (aWins === 1)        { rawWins[a]++;   rawLosses[b]++; }
-    else if (aWins === 0)   { rawLosses[a]++; rawWins[b]++;   }
-    else                    { rawTies[a]++;   rawTies[b]++;   }
+    if (aWins === 1) { rawWins[a]++; rawLosses[b]++; }
+    else if (aWins === 0) { rawLosses[a]++; rawWins[b]++; }
+    else { rawTies[a]++; rawTies[b]++; }
   }
 
   const p = Object.fromEntries(setups.map(s => [s, 1]));
@@ -1778,9 +1780,9 @@ function computeBradleyTerry(matchups) {
     .map(id => ({
       id,
       score: p[id],
-      wins:        rawWins[id],
-      losses:      rawLosses[id],
-      ties:        rawTies[id],
+      wins: rawWins[id],
+      losses: rawLosses[id],
+      ties: rawTies[id],
       comparisons: rawWins[id] + rawLosses[id] + rawTies[id],
     }))
     .sort((a, b) => b.score - a.score);

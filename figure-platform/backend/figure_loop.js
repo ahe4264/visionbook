@@ -161,6 +161,8 @@ async function runFigureLoop(opts) {
                 html: loopState.currentHtml,
                 evalImage: sourceBase64,
                 evalMediaType: sourceMediaType,
+                plan: loopState.currentPlan,
+                chapterName: loopState.chapterName,
                 model: criticModel,
                 useFewShot: fewShot.critic !== false,
             }));

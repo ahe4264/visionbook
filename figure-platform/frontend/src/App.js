@@ -692,6 +692,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [benchmarkProgress, setBenchmarkProgress] = useState(null);
   const [benchmarkResults, setBenchmarkResults] = useState([]);
+  const [benchmarkSkippedStems, setBenchmarkSkippedStems] = useState(new Set());
 
   // Deferred batch evaluation state
   const [batchEvalRunning, setBatchEvalRunning] = useState(false);
@@ -1055,16 +1056,38 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
     });
   }, [mode]);
 
+  // Load which benchmark figures are already done for the selected experiment
+  const refreshBenchmarkSkipped = React.useCallback(() => {
+    if (mode !== 'benchmark' || !selectedExperiment?.trim()) {
+      setBenchmarkSkippedStems(new Set());
+      return;
+    }
+    apiFetch('/api/history-index').then(r => r.json()).then(records => {
+      const done = new Set(
+        records
+          .filter(r => r.experiment === selectedExperiment)
+          .map(r => r.filename ? r.filename.replace(/\.[^.]+$/, '') : null)
+          .filter(Boolean)
+      );
+      setBenchmarkSkippedStems(done);
+    }).catch(() => setBenchmarkSkippedStems(new Set()));
+  }, [mode, selectedExperiment]);
+
+  React.useEffect(() => { refreshBenchmarkSkipped(); }, [refreshBenchmarkSkipped]);
+
   const handleRunBenchmark = async () => {
     if (benchmarkCandidates.length === 0) return;
     if (!selectedModel) { onError?.('Set a generator model in Settings first.'); return; }
     if (!selectedExperiment?.trim()) { onError?.('Select or type an experiment name before generating.'); return; }
 
+    const candidatesToRun = benchmarkCandidates.filter(c => !benchmarkSkippedStems.has(c.stem));
+    if (candidatesToRun.length === 0) return;
+
     setBenchmarkRunning(true);
     setBenchmarkResults([]);
     benchmarkAbortRef.current = false;
 
-    const total = benchmarkCandidates.length;
+    const total = candidatesToRun.length;
     const results = [];
     const activeMap = new Map();
 
@@ -1100,7 +1123,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
       updateProgress();
     };
 
-    const queue = [...benchmarkCandidates];
+    const queue = [...candidatesToRun];
     const runWorker = async () => {
       while (queue.length > 0 && !benchmarkAbortRef.current) {
         const candidate = queue.shift();
@@ -1111,6 +1134,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
 
     setBenchmarkProgress(null);
     setBenchmarkRunning(false);
+    refreshBenchmarkSkipped();
   };
 
   const handleAbortBenchmark = () => { benchmarkAbortRef.current = true; };
@@ -1662,22 +1686,32 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
             <>
               <div style={styles.candidateGrid}>
                 {benchmarkCandidates.map((c) => {
-                  const done = benchmarkResults.find(r => r.figureStem === c.stem);
+                  const sessionResult = benchmarkResults.find(r => r.figureStem === c.stem);
                   const isCurrent = benchmarkProgress?.active?.some(a => a.figureStem === c.stem);
-                  const borderColor = done ? (done.status === 'ok' ? '#4caf50' : '#e74c3c') : isCurrent ? '#4a90d9' : 'transparent';
+                  const alreadyDone = benchmarkSkippedStems.has(c.stem) && !sessionResult;
+                  const borderColor = sessionResult
+                    ? (sessionResult.status === 'ok' ? '#4caf50' : '#e74c3c')
+                    : isCurrent ? '#4a90d9'
+                      : alreadyDone ? '#ccc'
+                        : 'transparent';
+                  const opacity = (benchmarkRunning && !isCurrent && !sessionResult) ? 0.4
+                    : alreadyDone ? 0.45
+                      : 1;
                   return (
-                    <div key={`${c.chapterName}/${c.stem}`} style={{ ...styles.candidateCard, border: `2px solid ${borderColor}`, opacity: benchmarkRunning && !isCurrent && !done ? 0.4 : 1, position: 'relative' }}>
+                    <div key={`${c.chapterName}/${c.stem}`} style={{ ...styles.candidateCard, border: `2px solid ${borderColor}`, opacity, position: 'relative' }}>
                       <img src={`data:${c.mediaType};base64,${c.base64}`} alt={c.stem} style={styles.candidateThumb}
                         onClick={() => handleSelectCandidate(c)} />
                       <p style={styles.candidateName}>
-                        {done ? (done.status === 'ok' ? '✓ ' : '✗ ') : isCurrent ? '⏳ ' : ''}
+                        {sessionResult ? (sessionResult.status === 'ok' ? '✓ ' : '✗ ') : isCurrent ? '⏳ ' : alreadyDone ? '— ' : ''}
                         {c.stem}
                       </p>
-                      <p style={{ fontSize: 9, color: '#aaa', margin: '-4px 0 0', padding: '0 4px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.chapterName}</p>
-                      {done && done.status === 'ok' && done.figureId && (
+                      <p style={{ fontSize: 9, color: alreadyDone ? '#bbb' : '#aaa', margin: '-4px 0 0', padding: '0 4px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {alreadyDone ? 'already done' : c.chapterName}
+                      </p>
+                      {sessionResult && sessionResult.status === 'ok' && sessionResult.figureId && (
                         <button
                           style={{ position: 'absolute', top: 4, right: 4, fontSize: 10, padding: '2px 6px', borderRadius: 4, border: '1px solid #4caf50', background: '#fff', color: '#4caf50', cursor: 'pointer', fontWeight: 600 }}
-                          onClick={(e) => { e.stopPropagation(); handlePreview(done.figureId, c.stem); }}
+                          onClick={(e) => { e.stopPropagation(); handlePreview(sessionResult.figureId, c.stem); }}
                         >👁 View</button>
                       )}
                     </div>
@@ -1691,7 +1725,13 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
                   onClick={handleRunBenchmark}
                   disabled={!selectedModel}
                 >
-                  Run Benchmark ({benchmarkCandidates.length} figures)
+                  {(() => {
+                    const remaining = benchmarkCandidates.filter(c => !benchmarkSkippedStems.has(c.stem)).length;
+                    const total = benchmarkCandidates.length;
+                    return remaining === total
+                      ? `Run Benchmark (${total} figures)`
+                      : `Run Benchmark (${remaining} remaining / ${total} total)`;
+                  })()}
                 </button>
               ) : (
                 <button
@@ -1895,7 +1935,7 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
                 <>
                   <p style={styles.viewerPlanTitle}>Planner Output</p>
                   {selectedPlan.chapterName && <p style={styles.viewerPlanMeta}>Chapter: {selectedPlan.chapterName}</p>}
-                  <details open style={styles.planFieldsDetails}>
+                  <details style={styles.planFieldsDetails}>
                     <summary style={styles.planFieldsSummary}>Plan details</summary>
                     <PlanFields data={planPayload} excludeKeys={['contextChunk', 'chapterName']} />
                   </details>
@@ -4098,11 +4138,11 @@ function ComparisonViewer({ figure, result, setupA, setupB, htmlA, htmlB, loadin
             {loading
               ? <div style={styles.pwCompIframePlaceholder}>Loading…</div>
               : <iframe
-                  style={styles.pwCompIframe}
-                  srcDoc={html || ''}
-                  title={`Setup ${side} — ${setup}`}
-                  sandbox="allow-scripts allow-same-origin"
-                />
+                style={styles.pwCompIframe}
+                srcDoc={html || ''}
+                title={`Setup ${side} — ${setup}`}
+                sandbox="allow-scripts allow-same-origin"
+              />
             }
           </div>
         ))}
@@ -4229,7 +4269,7 @@ function PairwiseTab({ availableModels }) {
     fetch('/api/pairwise/setups')
       .then(r => r.json())
       .then(d => setSetups(d.setups || []))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -4499,445 +4539,445 @@ function PairwiseTab({ availableModels }) {
         onNext={() => setCompViewerFigIndex(i => Math.min(sortedMatchingFigures.length - 1, i + 1))}
       />
     ) : (
-    <div style={styles.pwRoot}>
-      {/* Panel 1 — Rankings (Bradley-Terry) */}
-      <div style={styles.pwCard}>
-        <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-             onClick={() => {
-               const next = !rankingsOpen;
-               setRankingsOpen(next);
-               if (next && !rankings) loadRankings();
-             }}>
-          <span>{rankingsOpen ? '▾' : '▸'} Rankings (Bradley-Terry)</span>
-          {rankingsOpen && (
-            <button style={{ fontSize: 11, color: '#4f46e5', background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px' }}
-                    onClick={e => { e.stopPropagation(); loadRankings(); }}>↻ Refresh</button>
-          )}
-        </div>
-        {rankingsOpen && (
-          <div>
-            <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div style={styles.pwToggleGroup}>
-                {['machine', 'human'].map(src => (
-                  <button key={src}
-                          style={{ ...styles.pwToggleBtn, ...(rankingsSrc === src ? styles.pwToggleBtnActive : {}) }}
-                          onClick={() => { setRankingsSrc(src); if (src === 'human') setRankingsDim('overall'); }}>
-                    {src.charAt(0).toUpperCase() + src.slice(1)}
-                  </button>
-                ))}
-              </div>
-              <div style={styles.pwToggleGroup}>
-                {['overall', ...DIMENSIONS, 'all'].map(d => {
-                  const label = { overall: 'Overall', geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept', all: 'All Scores' }[d];
-                  const disabled = d !== 'overall' && rankingsSrc === 'human';
-                  return (
-                    <button key={d}
-                            style={{ ...styles.pwToggleBtn, fontSize: 10, padding: '3px 9px', ...(rankingsDim === d ? styles.pwToggleBtnActive : {}), ...(disabled ? { opacity: 0.4, cursor: 'not-allowed' } : {}) }}
-                            disabled={disabled}
-                            onClick={() => !disabled && setRankingsDim(d)}
-                            title={disabled ? 'Human evals only have an overall ranking' : ''}>
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            {rankingsLoading ? (
-              <div style={styles.pwEmptyMsg}>Loading…</div>
-            ) : (() => {
-              if (rankingsDim === 'all') {
-                const overallRows = rankings?.[rankingsSrc]?.overall ?? [];
-                if (overallRows.length === 0) return <div style={styles.pwEmptyMsg}>No data yet — run machine evaluations first.</div>;
-                const dimScores = {};
-                for (const d of DIMENSIONS) {
-                  for (const row of (rankings?.[rankingsSrc]?.[d] ?? [])) {
-                    if (!dimScores[row.id]) dimScores[row.id] = {};
-                    dimScores[row.id][d] = row.score;
-                  }
-                }
-                const DIM_LABELS = { geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept' };
-                return (
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ ...styles.pwTable, tableLayout: 'auto', minWidth: 480 }}>
-                      <thead>
-                        <tr>
-                          <th style={{ ...styles.pwTh, width: 28 }}>#</th>
-                          <th style={styles.pwTh}>Setup</th>
-                          <th style={{ ...styles.pwTh, textAlign: 'right' }}>Overall</th>
-                          {DIMENSIONS.map(d => (
-                            <th key={d} style={{ ...styles.pwTh, textAlign: 'right' }}>{DIM_LABELS[d]}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {overallRows.map((row, i) => (
-                          <tr key={row.id}>
-                            <td style={{ ...styles.pwTd, fontWeight: 700, color: i === 0 ? '#4f46e5' : '#9ca3af', fontSize: 11 }}>{i + 1}</td>
-                            <td style={styles.pwTd}>
-                              <div style={{ fontWeight: 600, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.id}>{row.id}</div>
-                            </td>
-                            <td style={{ ...styles.pwTd, textAlign: 'right', fontWeight: 700, color: '#4f46e5', fontSize: 11 }}>{(row.score * 100).toFixed(1)}</td>
-                            {DIMENSIONS.map(d => {
-                              const s = dimScores[row.id]?.[d];
-                              return (
-                                <td key={d} style={{ ...styles.pwTd, textAlign: 'right', fontSize: 11, color: s != null ? '#374151' : '#d1d5db' }}>
-                                  {s != null ? (s * 100).toFixed(1) : '—'}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              }
-              const rows = rankings?.[rankingsSrc]?.[rankingsDim] ?? [];
-              if (rows.length === 0) return <div style={styles.pwEmptyMsg}>No data yet — run machine evaluations first.</div>;
-              const maxScore = rows[0]?.score ?? 1;
-              return (
-                <table style={{ ...styles.pwTable, tableLayout: 'fixed' }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...styles.pwTh, width: 32 }}>#</th>
-                      <th style={styles.pwTh}>Setup</th>
-                      <th style={{ ...styles.pwTh, width: '22%' }}>BT Score</th>
-                      <th style={{ ...styles.pwTh, width: 40 }}>W</th>
-                      <th style={{ ...styles.pwTh, width: 40 }}>L</th>
-                      <th style={{ ...styles.pwTh, width: 40 }}>T</th>
-                      <th style={{ ...styles.pwTh, width: 40 }}>N</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, i) => (
-                      <tr key={row.id}>
-                        <td style={{ ...styles.pwTd, fontWeight: 700, color: i === 0 ? '#4f46e5' : '#9ca3af', fontSize: 12 }}>{i + 1}</td>
-                        <td style={styles.pwTd}>
-                          <div style={{ fontWeight: 600, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.id}>{row.id}</div>
-                        </td>
-                        <td style={styles.pwTd}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <div style={{ flex: 1, height: 6, background: '#e0e7ff', borderRadius: 3, overflow: 'hidden' }}>
-                              <div style={{ height: '100%', width: `${(row.score / maxScore) * 100}%`, background: '#4f46e5', borderRadius: 3 }} />
-                            </div>
-                            <span style={{ fontSize: 10, color: '#6b7280', width: 34, textAlign: 'right', flexShrink: 0 }}>{(row.score * 100).toFixed(1)}</span>
-                          </div>
-                        </td>
-                        <td style={{ ...styles.pwTd, color: '#166534', fontWeight: 600, fontSize: 11 }}>{row.wins}</td>
-                        <td style={{ ...styles.pwTd, color: '#b91c1c', fontWeight: 600, fontSize: 11 }}>{row.losses}</td>
-                        <td style={{ ...styles.pwTd, color: '#64748b', fontSize: 11 }}>{row.ties}</td>
-                        <td style={{ ...styles.pwTd, color: '#9ca3af', fontSize: 11 }}>{row.comparisons}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              );
-            })()}
-          </div>
-        )}
-      </div>
-
-      {/* Panel 2 — Setup Selector */}
-      <div style={styles.pwCard}>
-        <div style={styles.pwCardTitle}>Compare Experiment Setups</div>
-        <div style={styles.pwRow}>
-          <div style={styles.pwStack}>
-            <div style={styles.pwLabel}>Setup A</div>
-            <select style={styles.pwSelect} value={setupA} onChange={e => setSetupA(e.target.value)}>
-              <option value=''>— select —</option>
-              {setups.map(s => <option key={s.id} value={s.id}>{s.experiment} / {s.model}</option>)}
-            </select>
-          </div>
-          <div style={styles.pwStack}>
-            <div style={styles.pwLabel}>Setup B</div>
-            <select style={styles.pwSelect} value={setupB} onChange={e => setSetupB(e.target.value)}>
-              <option value=''>— select —</option>
-              {setups.filter(s => s.id !== setupA).map(s => <option key={s.id} value={s.id}>{s.experiment} / {s.model}</option>)}
-            </select>
-          </div>
-          <div style={styles.pwStack}>
-            <div style={styles.pwLabel}>Eval Model</div>
-            <select style={styles.pwSelect} value={evalModel} onChange={e => setEvalModel(e.target.value)}>
-              {(availableModels || []).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-            </select>
-          </div>
-          {matchingFigures && (
-            <div style={styles.pwMatchCount}>{matchingFigures.length} figure{matchingFigures.length !== 1 ? 's' : ''} in common</div>
-          )}
-          <button
-            style={{ ...styles.pwRunBtn, ...(!matchingFigures || matchingFigures.length === 0 || running ? styles.pwRunBtnDisabled : {}) }}
-            disabled={!matchingFigures || matchingFigures.length === 0 || running}
-            onClick={runMachineEval}
-          >
-            {running ? 'Running…' : 'Run Machine Evaluation'}
-          </button>
-        </div>
-        {(running || progress.done > 0) && progress.total > 0 && (
-          <div style={styles.pwProgress}>
-            <div style={styles.pwProgressBar}>
-              <div style={{ ...styles.pwProgressFill, width: `${progressPct}%` }} />
-            </div>
-            <div style={styles.pwProgressLog}>
-              {progress.log.map((l, i) => <div key={i}>{l}</div>)}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Panel 2 — Machine Results Table */}
-      {setupA && setupB && setupA !== setupB && (
+      <div style={styles.pwRoot}>
+        {/* Panel 1 — Rankings (Bradley-Terry) */}
         <div style={styles.pwCard}>
-          <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} onClick={() => setMachineTableOpen(o => !o)}>
-            <span>{machineTableOpen ? '▾' : '▸'} Machine Results — {shortSetup(setupA)} vs {shortSetup(setupB)}</span>
-            <button style={{ fontSize: 11, color: '#b91c1c', background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px' }}
-                    onClick={e => { e.stopPropagation(); deleteAllMachineEvals(); }}>Delete All</button>
+          <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            onClick={() => {
+              const next = !rankingsOpen;
+              setRankingsOpen(next);
+              if (next && !rankings) loadRankings();
+            }}>
+            <span>{rankingsOpen ? '▾' : '▸'} Rankings (Bradley-Terry)</span>
+            {rankingsOpen && (
+              <button style={{ fontSize: 11, color: '#4f46e5', background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px' }}
+                onClick={e => { e.stopPropagation(); loadRankings(); }}>↻ Refresh</button>
+            )}
           </div>
-          {machineTableOpen && (mergedRows.length === 0 ? (
-            <div style={styles.pwEmptyMsg}>Select two setups with overlapping figures to begin.</div>
-          ) : (
-            <table style={{ ...styles.pwTable, tableLayout: 'fixed' }}>
-              <thead>
-                <tr>
-                  <th style={{ ...styles.pwTh, width: '25%' }}>Figure</th>
-                  {DIMENSIONS.map(d => <th key={d} style={{ ...styles.pwTh, width: '10%' }}>{{ geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept' }[d]}</th>)}
-                  <th style={{ ...styles.pwTh, width: '15%' }}>Overall</th>
-                  <th style={{ ...styles.pwTh, width: '7%' }}>Conf</th>
-                  <th style={{ ...styles.pwTh, width: 80 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {mergedRows.map(r => {
-                  const me = r.machineEval;
-                  return (
-                    <tr key={`${r.chapter}__${r.figure}__machine`}>
-                      <td style={styles.pwTd}>
-                        <div style={{ fontWeight: 600 }}>{r.figure}</div>
-                        <div style={{ fontSize: 10, color: '#9ca3af' }}>{r.chapter}</div>
-                      </td>
-                      {DIMENSIONS.map(d => (
-                        <td key={d} style={styles.pwTd}>
-                          {me?.dimensions?.[d]
-                            ? <span style={winnerBadgeStyle(me.dimensions[d].winner, setupA, setupB)} title={me.dimensions[d].rationale}>
-                                {sideLabel(me.dimensions[d].winner, setupA, setupB)}
-                              </span>
-                            : <span style={{ color: '#d1d5db' }}>—</span>}
-                        </td>
-                      ))}
-                      <td style={styles.pwTd}>
-                        {me?.aggregator
-                          ? <span style={winnerBadgeStyle(me.aggregator.winner, setupA, setupB)} title={me.aggregator.explanation}>
-                              {sideLabel(me.aggregator.winner, setupA, setupB)}
-                            </span>
-                          : <span style={{ color: '#d1d5db' }}>—</span>}
-                      </td>
-                      <td style={styles.pwTd}>{me?.aggregator ? (me.aggregator.confidence * 100).toFixed(0) + '%' : '—'}</td>
-                      <td style={styles.pwTd}>
-                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <button
-                            style={styles.pwAddBtn}
-                            onClick={() => {
-                              const idx = sortedMatchingFigures.findIndex(f => f.name === r.figure && f.chapter === r.chapter);
-                              setCompViewerFigIndex(idx >= 0 ? idx : 0);
-                            }}
-                          >View</button>
-                          {me && (
-                            <button
-                              style={{ ...styles.pwAddBtn, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5', padding: '2px 6px' }}
-                              onClick={() => deleteMachineEval(r)}
-                              title="Delete machine eval"
-                            >×</button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
-                  <td style={{ ...styles.pwTd, fontWeight: 700, color: '#374151', fontSize: 11 }}>Summary</td>
-                  {DIMENSIONS.map(d => {
-                    const evald = mergedRows.filter(r => r.machineEval?.dimensions?.[d]);
-                    const aW = evald.filter(r => r.machineEval.dimensions[d].winner === setupA).length;
-                    const bW = evald.filter(r => r.machineEval.dimensions[d].winner === setupB).length;
-                    const tW = evald.filter(r => r.machineEval.dimensions[d].winner === 'tie').length;
+          {rankingsOpen && (
+            <div>
+              <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={styles.pwToggleGroup}>
+                  {['machine', 'human'].map(src => (
+                    <button key={src}
+                      style={{ ...styles.pwToggleBtn, ...(rankingsSrc === src ? styles.pwToggleBtnActive : {}) }}
+                      onClick={() => { setRankingsSrc(src); if (src === 'human') setRankingsDim('overall'); }}>
+                      {src.charAt(0).toUpperCase() + src.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <div style={styles.pwToggleGroup}>
+                  {['overall', ...DIMENSIONS, 'all'].map(d => {
+                    const label = { overall: 'Overall', geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept', all: 'All Scores' }[d];
+                    const disabled = d !== 'overall' && rankingsSrc === 'human';
                     return (
-                      <td key={d} style={{ ...styles.pwTd, fontSize: 10 }}>
-                        {evald.length === 0
-                          ? <span style={{ color: '#d1d5db' }}>—</span>
-                          : <><span style={{ color: '#5b21b6' }}>A:{aW}</span>{' · '}<span style={{ color: '#166534' }}>B:{bW}</span>{tW > 0 && <>{' · '}<span style={{ color: '#64748b' }}>T:{tW}</span></>}</>}
-                      </td>
+                      <button key={d}
+                        style={{ ...styles.pwToggleBtn, fontSize: 10, padding: '3px 9px', ...(rankingsDim === d ? styles.pwToggleBtnActive : {}), ...(disabled ? { opacity: 0.4, cursor: 'not-allowed' } : {}) }}
+                        disabled={disabled}
+                        onClick={() => !disabled && setRankingsDim(d)}
+                        title={disabled ? 'Human evals only have an overall ranking' : ''}>
+                        {label}
+                      </button>
                     );
                   })}
-                  {(() => {
-                    const evald = mergedRows.filter(r => r.machineEval?.aggregator);
-                    const aW = evald.filter(r => r.machineEval.aggregator.winner === setupA).length;
-                    const bW = evald.filter(r => r.machineEval.aggregator.winner === setupB).length;
-                    const tW = evald.filter(r => r.machineEval.aggregator.winner === 'tie').length;
-                    const avgConf = evald.length > 0 ? evald.reduce((s, r) => s + r.machineEval.aggregator.confidence, 0) / evald.length : null;
+                </div>
+              </div>
+              {rankingsLoading ? (
+                <div style={styles.pwEmptyMsg}>Loading…</div>
+              ) : (() => {
+                if (rankingsDim === 'all') {
+                  const overallRows = rankings?.[rankingsSrc]?.overall ?? [];
+                  if (overallRows.length === 0) return <div style={styles.pwEmptyMsg}>No data yet — run machine evaluations first.</div>;
+                  const dimScores = {};
+                  for (const d of DIMENSIONS) {
+                    for (const row of (rankings?.[rankingsSrc]?.[d] ?? [])) {
+                      if (!dimScores[row.id]) dimScores[row.id] = {};
+                      dimScores[row.id][d] = row.score;
+                    }
+                  }
+                  const DIM_LABELS = { geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept' };
+                  return (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ ...styles.pwTable, tableLayout: 'auto', minWidth: 480 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...styles.pwTh, width: 28 }}>#</th>
+                            <th style={styles.pwTh}>Setup</th>
+                            <th style={{ ...styles.pwTh, textAlign: 'right' }}>Overall</th>
+                            {DIMENSIONS.map(d => (
+                              <th key={d} style={{ ...styles.pwTh, textAlign: 'right' }}>{DIM_LABELS[d]}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {overallRows.map((row, i) => (
+                            <tr key={row.id}>
+                              <td style={{ ...styles.pwTd, fontWeight: 700, color: i === 0 ? '#4f46e5' : '#9ca3af', fontSize: 11 }}>{i + 1}</td>
+                              <td style={styles.pwTd}>
+                                <div style={{ fontWeight: 600, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.id}>{row.id}</div>
+                              </td>
+                              <td style={{ ...styles.pwTd, textAlign: 'right', fontWeight: 700, color: '#4f46e5', fontSize: 11 }}>{(row.score * 100).toFixed(1)}</td>
+                              {DIMENSIONS.map(d => {
+                                const s = dimScores[row.id]?.[d];
+                                return (
+                                  <td key={d} style={{ ...styles.pwTd, textAlign: 'right', fontSize: 11, color: s != null ? '#374151' : '#d1d5db' }}>
+                                    {s != null ? (s * 100).toFixed(1) : '—'}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                }
+                const rows = rankings?.[rankingsSrc]?.[rankingsDim] ?? [];
+                if (rows.length === 0) return <div style={styles.pwEmptyMsg}>No data yet — run machine evaluations first.</div>;
+                const maxScore = rows[0]?.score ?? 1;
+                return (
+                  <table style={{ ...styles.pwTable, tableLayout: 'fixed' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...styles.pwTh, width: 32 }}>#</th>
+                        <th style={styles.pwTh}>Setup</th>
+                        <th style={{ ...styles.pwTh, width: '22%' }}>BT Score</th>
+                        <th style={{ ...styles.pwTh, width: 40 }}>W</th>
+                        <th style={{ ...styles.pwTh, width: 40 }}>L</th>
+                        <th style={{ ...styles.pwTh, width: 40 }}>T</th>
+                        <th style={{ ...styles.pwTh, width: 40 }}>N</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row, i) => (
+                        <tr key={row.id}>
+                          <td style={{ ...styles.pwTd, fontWeight: 700, color: i === 0 ? '#4f46e5' : '#9ca3af', fontSize: 12 }}>{i + 1}</td>
+                          <td style={styles.pwTd}>
+                            <div style={{ fontWeight: 600, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.id}>{row.id}</div>
+                          </td>
+                          <td style={styles.pwTd}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ flex: 1, height: 6, background: '#e0e7ff', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${(row.score / maxScore) * 100}%`, background: '#4f46e5', borderRadius: 3 }} />
+                              </div>
+                              <span style={{ fontSize: 10, color: '#6b7280', width: 34, textAlign: 'right', flexShrink: 0 }}>{(row.score * 100).toFixed(1)}</span>
+                            </div>
+                          </td>
+                          <td style={{ ...styles.pwTd, color: '#166534', fontWeight: 600, fontSize: 11 }}>{row.wins}</td>
+                          <td style={{ ...styles.pwTd, color: '#b91c1c', fontWeight: 600, fontSize: 11 }}>{row.losses}</td>
+                          <td style={{ ...styles.pwTd, color: '#64748b', fontSize: 11 }}>{row.ties}</td>
+                          <td style={{ ...styles.pwTd, color: '#9ca3af', fontSize: 11 }}>{row.comparisons}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+
+        {/* Panel 2 — Setup Selector */}
+        <div style={styles.pwCard}>
+          <div style={styles.pwCardTitle}>Compare Experiment Setups</div>
+          <div style={styles.pwRow}>
+            <div style={styles.pwStack}>
+              <div style={styles.pwLabel}>Setup A</div>
+              <select style={styles.pwSelect} value={setupA} onChange={e => setSetupA(e.target.value)}>
+                <option value=''>— select —</option>
+                {setups.map(s => <option key={s.id} value={s.id}>{s.experiment} / {s.model}</option>)}
+              </select>
+            </div>
+            <div style={styles.pwStack}>
+              <div style={styles.pwLabel}>Setup B</div>
+              <select style={styles.pwSelect} value={setupB} onChange={e => setSetupB(e.target.value)}>
+                <option value=''>— select —</option>
+                {setups.filter(s => s.id !== setupA).map(s => <option key={s.id} value={s.id}>{s.experiment} / {s.model}</option>)}
+              </select>
+            </div>
+            <div style={styles.pwStack}>
+              <div style={styles.pwLabel}>Eval Model</div>
+              <select style={styles.pwSelect} value={evalModel} onChange={e => setEvalModel(e.target.value)}>
+                {(availableModels || []).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </div>
+            {matchingFigures && (
+              <div style={styles.pwMatchCount}>{matchingFigures.length} figure{matchingFigures.length !== 1 ? 's' : ''} in common</div>
+            )}
+            <button
+              style={{ ...styles.pwRunBtn, ...(!matchingFigures || matchingFigures.length === 0 || running ? styles.pwRunBtnDisabled : {}) }}
+              disabled={!matchingFigures || matchingFigures.length === 0 || running}
+              onClick={runMachineEval}
+            >
+              {running ? 'Running…' : 'Run Machine Evaluation'}
+            </button>
+          </div>
+          {(running || progress.done > 0) && progress.total > 0 && (
+            <div style={styles.pwProgress}>
+              <div style={styles.pwProgressBar}>
+                <div style={{ ...styles.pwProgressFill, width: `${progressPct}%` }} />
+              </div>
+              <div style={styles.pwProgressLog}>
+                {progress.log.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Panel 2 — Machine Results Table */}
+        {setupA && setupB && setupA !== setupB && (
+          <div style={styles.pwCard}>
+            <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} onClick={() => setMachineTableOpen(o => !o)}>
+              <span>{machineTableOpen ? '▾' : '▸'} Machine Results — {shortSetup(setupA)} vs {shortSetup(setupB)}</span>
+              <button style={{ fontSize: 11, color: '#b91c1c', background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px' }}
+                onClick={e => { e.stopPropagation(); deleteAllMachineEvals(); }}>Delete All</button>
+            </div>
+            {machineTableOpen && (mergedRows.length === 0 ? (
+              <div style={styles.pwEmptyMsg}>Select two setups with overlapping figures to begin.</div>
+            ) : (
+              <table style={{ ...styles.pwTable, tableLayout: 'fixed' }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...styles.pwTh, width: '25%' }}>Figure</th>
+                    {DIMENSIONS.map(d => <th key={d} style={{ ...styles.pwTh, width: '10%' }}>{{ geometry: 'Geo', interactivity: 'Inter', faithfulness: 'Faith', labels: 'Labels', concept: 'Concept' }[d]}</th>)}
+                    <th style={{ ...styles.pwTh, width: '15%' }}>Overall</th>
+                    <th style={{ ...styles.pwTh, width: '7%' }}>Conf</th>
+                    <th style={{ ...styles.pwTh, width: 80 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mergedRows.map(r => {
+                    const me = r.machineEval;
                     return (
-                      <>
+                      <tr key={`${r.chapter}__${r.figure}__machine`}>
+                        <td style={styles.pwTd}>
+                          <div style={{ fontWeight: 600 }}>{r.figure}</div>
+                          <div style={{ fontSize: 10, color: '#9ca3af' }}>{r.chapter}</div>
+                        </td>
+                        {DIMENSIONS.map(d => (
+                          <td key={d} style={styles.pwTd}>
+                            {me?.dimensions?.[d]
+                              ? <span style={winnerBadgeStyle(me.dimensions[d].winner, setupA, setupB)} title={me.dimensions[d].rationale}>
+                                {sideLabel(me.dimensions[d].winner, setupA, setupB)}
+                              </span>
+                              : <span style={{ color: '#d1d5db' }}>—</span>}
+                          </td>
+                        ))}
+                        <td style={styles.pwTd}>
+                          {me?.aggregator
+                            ? <span style={winnerBadgeStyle(me.aggregator.winner, setupA, setupB)} title={me.aggregator.explanation}>
+                              {sideLabel(me.aggregator.winner, setupA, setupB)}
+                            </span>
+                            : <span style={{ color: '#d1d5db' }}>—</span>}
+                        </td>
+                        <td style={styles.pwTd}>{me?.aggregator ? (me.aggregator.confidence * 100).toFixed(0) + '%' : '—'}</td>
+                        <td style={styles.pwTd}>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <button
+                              style={styles.pwAddBtn}
+                              onClick={() => {
+                                const idx = sortedMatchingFigures.findIndex(f => f.name === r.figure && f.chapter === r.chapter);
+                                setCompViewerFigIndex(idx >= 0 ? idx : 0);
+                              }}
+                            >View</button>
+                            {me && (
+                              <button
+                                style={{ ...styles.pwAddBtn, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5', padding: '2px 6px' }}
+                                onClick={() => deleteMachineEval(r)}
+                                title="Delete machine eval"
+                              >×</button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
+                    <td style={{ ...styles.pwTd, fontWeight: 700, color: '#374151', fontSize: 11 }}>Summary</td>
+                    {DIMENSIONS.map(d => {
+                      const evald = mergedRows.filter(r => r.machineEval?.dimensions?.[d]);
+                      const aW = evald.filter(r => r.machineEval.dimensions[d].winner === setupA).length;
+                      const bW = evald.filter(r => r.machineEval.dimensions[d].winner === setupB).length;
+                      const tW = evald.filter(r => r.machineEval.dimensions[d].winner === 'tie').length;
+                      return (
+                        <td key={d} style={{ ...styles.pwTd, fontSize: 10 }}>
+                          {evald.length === 0
+                            ? <span style={{ color: '#d1d5db' }}>—</span>
+                            : <><span style={{ color: '#5b21b6' }}>A:{aW}</span>{' · '}<span style={{ color: '#166534' }}>B:{bW}</span>{tW > 0 && <>{' · '}<span style={{ color: '#64748b' }}>T:{tW}</span></>}</>}
+                        </td>
+                      );
+                    })}
+                    {(() => {
+                      const evald = mergedRows.filter(r => r.machineEval?.aggregator);
+                      const aW = evald.filter(r => r.machineEval.aggregator.winner === setupA).length;
+                      const bW = evald.filter(r => r.machineEval.aggregator.winner === setupB).length;
+                      const tW = evald.filter(r => r.machineEval.aggregator.winner === 'tie').length;
+                      const avgConf = evald.length > 0 ? evald.reduce((s, r) => s + r.machineEval.aggregator.confidence, 0) / evald.length : null;
+                      return (
+                        <>
+                          <td style={{ ...styles.pwTd, fontSize: 10 }}>
+                            {evald.length === 0
+                              ? <span style={{ color: '#d1d5db' }}>—</span>
+                              : <><span style={{ color: '#5b21b6' }}>A:{aW}</span>{' · '}<span style={{ color: '#166534' }}>B:{bW}</span>{tW > 0 && <>{' · '}<span style={{ color: '#64748b' }}>T:{tW}</span></>}</>}
+                          </td>
+                          <td style={{ ...styles.pwTd, fontSize: 11, color: '#6b7280' }}>
+                            {avgConf !== null ? (avgConf * 100).toFixed(0) + '%' : '—'}
+                          </td>
+                          <td style={styles.pwTd} />
+                        </>
+                      );
+                    })()}
+                  </tr>
+                </tfoot>
+              </table>
+            ))}
+          </div>
+        )}
+
+        {/* Panel 3 — Human Results Table */}
+        {setupA && setupB && setupA !== setupB && (
+          <div style={styles.pwCard}>
+            <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none' }} onClick={() => setHumanTableOpen(o => !o)}>
+              {humanTableOpen ? '▾' : '▸'} Human Results — {shortSetup(setupA)} vs {shortSetup(setupB)}
+            </div>
+            {humanTableOpen && (mergedRows.length === 0 ? (
+              <div style={styles.pwEmptyMsg}>Select two setups with overlapping figures to begin.</div>
+            ) : (
+              <table style={styles.pwTable}>
+                <thead>
+                  <tr>
+                    <th style={{ ...styles.pwTh, width: '40%' }}>Figure</th>
+                    <th style={{ ...styles.pwTh, width: '10%' }}>Winner</th>
+                    <th style={{ ...styles.pwTh, width: '40%' }}>Notes</th>
+                    <th style={{ ...styles.pwTh, width: '10%' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mergedRows.map(r => {
+                    const he = (r.humanEvals || [])[0];
+                    const humanSide = he ? sideLabel(he.winner, setupA, setupB) : null;
+                    const isOpen = humanPanelFig && humanPanelFig.figure === r.figure && humanPanelFig.chapter === r.chapter;
+                    return (
+                      <React.Fragment key={`${r.chapter}__${r.figure}`}>
+                        <tr>
+                          <td style={styles.pwTd}>
+                            <div style={{ fontWeight: 600 }}>{r.figure}</div>
+                            <div style={{ fontSize: 10, color: '#9ca3af' }}>{r.chapter}</div>
+                          </td>
+                          <td style={styles.pwTd}>
+                            {he
+                              ? <span style={winnerBadgeStyle(he.winner, setupA, setupB)}>{humanSide}</span>
+                              : <span style={{ color: '#d1d5db' }}>—</span>}
+                          </td>
+                          <td style={{ ...styles.pwTd, fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {he?.notes || ''}
+                          </td>
+                          <td style={styles.pwTd}>
+                            {he
+                              ? <button
+                                style={{ ...styles.pwAddBtn, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}
+                                onClick={() => clearHumanEvals(r)}
+                                title='Delete human evaluation'
+                              >Delete</button>
+                              : <button style={styles.pwAddBtn} onClick={() => isOpen ? closeHumanPanel() : openHumanPanel(r)}>
+                                Add
+                              </button>
+                            }
+                          </td>
+                        </tr>
+                        {isOpen && iframeOrder && (
+                          <tr>
+                            <td colSpan={4} style={{ padding: 0 }}>
+                              <div style={styles.pwHumanPanel}>
+                                {humanFigOriginalPath && (
+                                  <div style={{ marginBottom: 14, textAlign: 'center' }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Reference Figure</div>
+                                    <img
+                                      src={`/api/experiments/imageurl?path=${encodeURIComponent(humanFigOriginalPath)}`}
+                                      alt="Original reference figure"
+                                      style={{ maxHeight: 220, maxWidth: '100%', border: '1px solid #e5e7eb', borderRadius: 6, display: 'block', margin: '0 auto' }}
+                                    />
+                                  </div>
+                                )}
+                                <div style={styles.pwIframeRow}>
+                                  {[iframeOrder.left, iframeOrder.right].map((setup, idx) => (
+                                    <div key={setup} style={styles.pwIframeWrap}>
+                                      <div style={styles.pwIframeLabel}>{idx === 0 ? 'Left' : 'Right'}</div>
+                                      <iframe
+                                        style={styles.pwIframe}
+                                        srcDoc={setup === setupA ? (iframeHtmlA || '') : (iframeHtmlB || '')}
+                                        title={`${idx === 0 ? 'Left' : 'Right'} figure`}
+                                        sandbox='allow-scripts allow-same-origin'
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                                <div style={styles.pwDimRow}>
+                                  <div style={styles.pwDimName}>Overall winner</div>
+                                  <div style={styles.pwToggleGroup}>
+                                    {['left', 'tie', 'right'].map(side => {
+                                      const resolved = side === 'tie' ? 'tie' : (side === 'left' ? iframeOrder.left : iframeOrder.right);
+                                      const isActive = humanWinner === resolved;
+                                      return (
+                                        <button
+                                          key={side}
+                                          style={{ ...styles.pwToggleBtn, ...(isActive ? styles.pwToggleBtnActive : {}) }}
+                                          onClick={() => pickWinner(side)}
+                                        >
+                                          {side === 'tie' ? 'Tie' : side.charAt(0).toUpperCase() + side.slice(1)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                                <textarea
+                                  style={styles.pwNotesArea}
+                                  placeholder='Optional notes…'
+                                  value={humanNotes}
+                                  onChange={e => setHumanNotes(e.target.value)}
+                                />
+                                <button
+                                  style={{ ...styles.pwSubmitBtn, ...(!canSubmitHuman || humanSubmitting ? styles.pwSubmitBtnDisabled : {}) }}
+                                  disabled={!canSubmitHuman || humanSubmitting}
+                                  onClick={submitHumanEval}
+                                >
+                                  {humanSubmitting ? 'Submitting…' : 'Submit'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  {(() => {
+                    const evald = mergedRows.filter(r => (r.humanEvals || []).length > 0);
+                    const aW = evald.filter(r => r.humanEvals[0].winner === setupA).length;
+                    const bW = evald.filter(r => r.humanEvals[0].winner === setupB).length;
+                    const tW = evald.filter(r => r.humanEvals[0].winner === 'tie').length;
+                    return (
+                      <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
+                        <td style={{ ...styles.pwTd, fontWeight: 700, color: '#374151', fontSize: 11 }}>Summary</td>
                         <td style={{ ...styles.pwTd, fontSize: 10 }}>
                           {evald.length === 0
                             ? <span style={{ color: '#d1d5db' }}>—</span>
                             : <><span style={{ color: '#5b21b6' }}>A:{aW}</span>{' · '}<span style={{ color: '#166534' }}>B:{bW}</span>{tW > 0 && <>{' · '}<span style={{ color: '#64748b' }}>T:{tW}</span></>}</>}
                         </td>
-                        <td style={{ ...styles.pwTd, fontSize: 11, color: '#6b7280' }}>
-                          {avgConf !== null ? (avgConf * 100).toFixed(0) + '%' : '—'}
-                        </td>
                         <td style={styles.pwTd} />
-                      </>
+                        <td style={styles.pwTd} />
+                      </tr>
                     );
                   })()}
-                </tr>
-              </tfoot>
-            </table>
-          ))}
-        </div>
-      )}
-
-      {/* Panel 3 — Human Results Table */}
-      {setupA && setupB && setupA !== setupB && (
-        <div style={styles.pwCard}>
-          <div style={{ ...styles.pwCardTitle, cursor: 'pointer', userSelect: 'none' }} onClick={() => setHumanTableOpen(o => !o)}>
-            {humanTableOpen ? '▾' : '▸'} Human Results — {shortSetup(setupA)} vs {shortSetup(setupB)}
+                </tfoot>
+              </table>
+            ))}
           </div>
-          {humanTableOpen && (mergedRows.length === 0 ? (
-            <div style={styles.pwEmptyMsg}>Select two setups with overlapping figures to begin.</div>
-          ) : (
-            <table style={styles.pwTable}>
-              <thead>
-                <tr>
-                  <th style={{ ...styles.pwTh, width: '40%' }}>Figure</th>
-                  <th style={{ ...styles.pwTh, width: '10%' }}>Winner</th>
-                  <th style={{ ...styles.pwTh, width: '40%' }}>Notes</th>
-                  <th style={{ ...styles.pwTh, width: '10%' }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {mergedRows.map(r => {
-                  const he = (r.humanEvals || [])[0];
-                  const humanSide = he ? sideLabel(he.winner, setupA, setupB) : null;
-                  const isOpen = humanPanelFig && humanPanelFig.figure === r.figure && humanPanelFig.chapter === r.chapter;
-                  return (
-                    <React.Fragment key={`${r.chapter}__${r.figure}`}>
-                      <tr>
-                        <td style={styles.pwTd}>
-                          <div style={{ fontWeight: 600 }}>{r.figure}</div>
-                          <div style={{ fontSize: 10, color: '#9ca3af' }}>{r.chapter}</div>
-                        </td>
-                        <td style={styles.pwTd}>
-                          {he
-                            ? <span style={winnerBadgeStyle(he.winner, setupA, setupB)}>{humanSide}</span>
-                            : <span style={{ color: '#d1d5db' }}>—</span>}
-                        </td>
-                        <td style={{ ...styles.pwTd, fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {he?.notes || ''}
-                        </td>
-                        <td style={styles.pwTd}>
-                          {he
-                            ? <button
-                                style={{ ...styles.pwAddBtn, background: '#fee2e2', color: '#b91c1c', borderColor: '#fca5a5' }}
-                                onClick={() => clearHumanEvals(r)}
-                                title='Delete human evaluation'
-                              >Delete</button>
-                            : <button style={styles.pwAddBtn} onClick={() => isOpen ? closeHumanPanel() : openHumanPanel(r)}>
-                                Add
-                              </button>
-                          }
-                        </td>
-                      </tr>
-                      {isOpen && iframeOrder && (
-                        <tr>
-                          <td colSpan={4} style={{ padding: 0 }}>
-                            <div style={styles.pwHumanPanel}>
-                              {humanFigOriginalPath && (
-                                <div style={{ marginBottom: 14, textAlign: 'center' }}>
-                                  <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Reference Figure</div>
-                                  <img
-                                    src={`/api/experiments/imageurl?path=${encodeURIComponent(humanFigOriginalPath)}`}
-                                    alt="Original reference figure"
-                                    style={{ maxHeight: 220, maxWidth: '100%', border: '1px solid #e5e7eb', borderRadius: 6, display: 'block', margin: '0 auto' }}
-                                  />
-                                </div>
-                              )}
-                              <div style={styles.pwIframeRow}>
-                                {[iframeOrder.left, iframeOrder.right].map((setup, idx) => (
-                                  <div key={setup} style={styles.pwIframeWrap}>
-                                    <div style={styles.pwIframeLabel}>{idx === 0 ? 'Left' : 'Right'}</div>
-                                    <iframe
-                                      style={styles.pwIframe}
-                                      srcDoc={setup === setupA ? (iframeHtmlA || '') : (iframeHtmlB || '')}
-                                      title={`${idx === 0 ? 'Left' : 'Right'} figure`}
-                                      sandbox='allow-scripts allow-same-origin'
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                              <div style={styles.pwDimRow}>
-                                <div style={styles.pwDimName}>Overall winner</div>
-                                <div style={styles.pwToggleGroup}>
-                                  {['left', 'tie', 'right'].map(side => {
-                                    const resolved = side === 'tie' ? 'tie' : (side === 'left' ? iframeOrder.left : iframeOrder.right);
-                                    const isActive = humanWinner === resolved;
-                                    return (
-                                      <button
-                                        key={side}
-                                        style={{ ...styles.pwToggleBtn, ...(isActive ? styles.pwToggleBtnActive : {}) }}
-                                        onClick={() => pickWinner(side)}
-                                      >
-                                        {side === 'tie' ? 'Tie' : side.charAt(0).toUpperCase() + side.slice(1)}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                              <textarea
-                                style={styles.pwNotesArea}
-                                placeholder='Optional notes…'
-                                value={humanNotes}
-                                onChange={e => setHumanNotes(e.target.value)}
-                              />
-                              <button
-                                style={{ ...styles.pwSubmitBtn, ...(!canSubmitHuman || humanSubmitting ? styles.pwSubmitBtnDisabled : {}) }}
-                                disabled={!canSubmitHuman || humanSubmitting}
-                                onClick={submitHumanEval}
-                              >
-                                {humanSubmitting ? 'Submitting…' : 'Submit'}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                {(() => {
-                  const evald = mergedRows.filter(r => (r.humanEvals || []).length > 0);
-                  const aW = evald.filter(r => r.humanEvals[0].winner === setupA).length;
-                  const bW = evald.filter(r => r.humanEvals[0].winner === setupB).length;
-                  const tW = evald.filter(r => r.humanEvals[0].winner === 'tie').length;
-                  return (
-                    <tr style={{ background: '#f8fafc', borderTop: '2px solid #e2e8f0' }}>
-                      <td style={{ ...styles.pwTd, fontWeight: 700, color: '#374151', fontSize: 11 }}>Summary</td>
-                      <td style={{ ...styles.pwTd, fontSize: 10 }}>
-                        {evald.length === 0
-                          ? <span style={{ color: '#d1d5db' }}>—</span>
-                          : <><span style={{ color: '#5b21b6' }}>A:{aW}</span>{' · '}<span style={{ color: '#166534' }}>B:{bW}</span>{tW > 0 && <>{' · '}<span style={{ color: '#64748b' }}>T:{tW}</span></>}</>}
-                      </td>
-                      <td style={styles.pwTd} />
-                      <td style={styles.pwTd} />
-                    </tr>
-                  );
-                })()}
-              </tfoot>
-            </table>
-          ))}
-        </div>
-      )}
-    </div>
+        )}
+      </div>
     )
   );
 }

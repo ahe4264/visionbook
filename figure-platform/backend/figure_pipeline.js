@@ -101,6 +101,8 @@ function createResultRecord({
   timestamp,
   source,
   model,
+  plannerModel,
+  criticModel,
   experiment,
   plan = null,
   previewBase64,
@@ -124,6 +126,8 @@ function createResultRecord({
     plan,
     ...extra,
   };
+  if (plannerModel) record.plannerModel = plannerModel;
+  if (criticModel) record.criticModel = criticModel;
 
   if (sourceBase64) record.source_base64 = sourceBase64;
   if (sourceMediaType) record.source_media_type = sourceMediaType;

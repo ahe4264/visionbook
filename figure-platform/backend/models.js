@@ -68,6 +68,21 @@ function withTimeout(promise, label, timeoutMs = MODEL_CALL_TIMEOUT_MS) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+async function withRetry(label, fn, retries = 2, baseDelayMs = 1000) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = err?.message || String(err);
+      const retryable = /fetch failed|connection error|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|overloaded|timeout/i.test(msg);
+      if (!retryable || attempt >= retries) throw err;
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      console.warn(`[models] ${label} retryable error (attempt ${attempt + 1}/${retries}): ${msg} — retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 function enqueueGemini(task) {
   const run = _geminiQueue.then(task, task);
   _geminiQueue = run.catch(() => { });
@@ -122,7 +137,7 @@ function getOpenAI() {
     _openai = new OpenAI({
       apiKey: key,
       timeout: MODEL_CALL_TIMEOUT_MS,
-      maxRetries: Number(process.env.OPENAI_SDK_MAX_RETRIES) || 1,
+      maxRetries: Number(process.env.OPENAI_SDK_MAX_RETRIES) || 0,
     });
   }
   return _openai;
@@ -360,17 +375,23 @@ const { randomUUID } = require('crypto');
   };
   switch (provider) {
     case 'openai':
-      return callOpenAI(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-        .then((out) => { finalize(out); return out; })
-        .catch((e) => { finalize(null, e); throw e; });
+      return withRetry(modelId, () =>
+        callOpenAI(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
+          .then((out) => { finalize(out); return out; })
+          .catch((e) => { finalize(null, e); throw e; })
+      );
     case 'anthropic':
-      return callAnthropic(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-        .then((out) => { finalize(out); return out; })
-        .catch((e) => { finalize(null, e); throw e; });
+      return withRetry(modelId, () =>
+        callAnthropic(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
+          .then((out) => { finalize(out); return out; })
+          .catch((e) => { finalize(null, e); throw e; })
+      );
     case 'google':
-      return callGemini(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-        .then((out) => { finalize(out); return out; })
-        .catch((e) => { finalize(null, e); throw e; });
+      return withRetry(modelId, () =>
+        callGemini(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
+          .then((out) => { finalize(out); return out; })
+          .catch((e) => { finalize(null, e); throw e; })
+      );
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
