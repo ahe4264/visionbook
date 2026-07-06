@@ -11,6 +11,7 @@ const FIGURE_TYPE_STORAGE_KEY = 'figure-platform:selectedFigureType';
 const CHAPTERS_STORAGE_KEY = 'figure-platform:selectedChapters';
 const BATCH_GEN_TYPE_STORAGE_KEY = 'figure-platform:batchGenType';
 const FEW_SHOT_STORAGE_KEY = 'figure-platform:fewShot';
+const TWO_PHASE_STORAGE_KEY = 'figure-platform:useTwoPhase';
 const HUMAN_EVAL_MODEL = 'human:manual';
 const DEFAULT_GENERATION_MODEL = 'gpt-5.5';
 const DEFAULT_EVALUATION_MODEL = 'claude-opus-4.7';
@@ -217,6 +218,7 @@ export default function App() {
   const [experimentOptions, setExperimentOptions] = useState([]);
   const [selectedExperiment, setSelectedExperiment] = useState('');
   const [fewShot, setFewShot] = useState({ planner: true, critic: true, orchestrator: true });
+  const [useTwoPhase, setUseTwoPhase] = useState(() => window.localStorage.getItem(TWO_PHASE_STORAGE_KEY) === 'true');
 
   // Sync URL hash when tab changes
   useEffect(() => {
@@ -253,6 +255,7 @@ export default function App() {
 
       const storedFewShot = window.localStorage.getItem(FEW_SHOT_STORAGE_KEY);
       if (storedFewShot) { try { setFewShot(JSON.parse(storedFewShot)); } catch { } }
+
 
       const experimentSet = new Set();
       for (const record of historyRecords || []) {
@@ -322,6 +325,9 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(FEW_SHOT_STORAGE_KEY, JSON.stringify(fewShot));
   }, [fewShot]);
+  useEffect(() => {
+    window.localStorage.setItem(TWO_PHASE_STORAGE_KEY, String(useTwoPhase));
+  }, [useTwoPhase]);
 
   const syncViewerSelection = useCallback((record, preferredModel = null) => {
     if (!record) {
@@ -369,7 +375,7 @@ export default function App() {
       const jobFn = is2d ? runGenerationJob2d : runGenerationLoop;
       const payload = is2d
         ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined }
-        : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: 'benchmark', criticPasses: 1, experiment: selectedExperiment || undefined, fewShot };
+        : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: 'benchmark', criticPasses: 1, experiment: selectedExperiment || undefined, fewShot, useTwoPhase: useTwoPhase || undefined };
       const data = await jobFn(payload);
       const generatedEvaluationResults = data.evaluationResults || {};
       const generatedEvaluationMeta = data.evaluationMeta || {};
@@ -393,6 +399,8 @@ export default function App() {
         evaluationMeta: generatedEvaluationMeta,
         evaluationVersions: data.evaluationVersions || {},
         plan: data.plan || null,
+        attempts: data.attempts || [],
+        extra: data.extra || null,
       });
       setViewerEvaluationModel(generatedModel);
       setViewerBackTab(tab);
@@ -402,7 +410,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [image, selectedCriticModel, selectedExperiment, selectedModel, selectedPlannerModel, tab, figureType, fewShot]);
+  }, [image, selectedCriticModel, selectedExperiment, selectedModel, selectedPlannerModel, tab, figureType, fewShot, useTwoPhase]);
   const handleLoadFromHistory = useCallback((record) => {
     const normalizedRecord = {
       ...record,
@@ -436,6 +444,49 @@ export default function App() {
     setViewerEvaluationModel(null);
     setTab('generator');
   }, [currentRecord, handleDelete]);
+
+  // Resume a partial result from where the loop left off
+  const handleResume = useCallback(async () => {
+    if (!currentRecord?.id) return;
+    setError('');
+    setLoading(true);
+    try {
+      const data = await runGenerationLoop({
+        resumeFrom: { resultId: currentRecord.id },
+        criticVersion: 'benchmark',
+        experiment: currentRecord.experiment || selectedExperiment || 'default',
+        evalModel: selectedCriticModel || undefined,
+        fewShot,
+      });
+      const generatedEvaluationResults = data.evaluationResults || {};
+      const generatedEvaluationMeta = data.evaluationMeta || {};
+      const generatedModel = pickEvaluationModel({ evaluationResults: generatedEvaluationResults, evaluationMeta: generatedEvaluationMeta }, null);
+      setGeneratedHtml(data.html);
+      setPlan(data.plan || null);
+      setEvaluation(getRecordEvaluation({ evaluationResults: generatedEvaluationResults }, generatedModel));
+      setCurrentRecord({
+        id: data.figureId,
+        html: data.html,
+        filename: currentRecord.filename,
+        base64thumb: currentRecord.base64thumb,
+        mediaType: currentRecord.mediaType,
+        source_base64: currentRecord.source_base64,
+        source_media_type: currentRecord.source_media_type,
+        timestamp: data.timestamp,
+        model: data.model,
+        experiment: data.experiment || currentRecord.experiment || null,
+        evaluationResults: generatedEvaluationResults,
+        evaluationMeta: generatedEvaluationMeta,
+        evaluationVersions: data.evaluationVersions || {},
+        plan: data.plan || null,
+      });
+      setViewerEvaluationModel(generatedModel);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentRecord, selectedExperiment, selectedCriticModel, fewShot]);
 
   // Open any result (API record by id, or experiment by htmlPath) in the Viewer
   const handleOpenResult = useCallback(async (item) => {
@@ -606,6 +657,8 @@ export default function App() {
             onFigureTypeChange={setFigureType}
             fewShot={fewShot}
             onFewShotChange={setFewShot}
+            useTwoPhase={useTwoPhase}
+            onTwoPhaseChange={setUseTwoPhase}
           />
         )}
         {tab === 'viewer' && (
@@ -616,6 +669,8 @@ export default function App() {
             backLabel={viewerBackTab === 'results' ? 'Back to Results' : viewerBackTab === 'dashboard' ? 'Back to Dashboard' : viewerBackTab === 'preview' ? 'Back to Chapter Preview' : 'Back'}
             onNew={() => setTab('generator')}
             onDelete={handleDeleteCurrent}
+            onResume={handleResume}
+            resuming={loading}
             evaluation={evaluation}
             evaluationModel={viewerEvaluationModel}
             availableEvaluationModels={models}
@@ -655,7 +710,7 @@ export default function App() {
 
 
 // ── Generator Tab ─────────────────────────────────────────────────────────────
-function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, planning, plan, error, systemPrompt, models, experimentOptions, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, figureType, onFigureTypeChange, fewShot = { planner: true, critic: true, orchestrator: true }, onFewShotChange }) {
+function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, planning, plan, error, systemPrompt, models, experimentOptions, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, figureType, onFigureTypeChange, fewShot = { planner: true, critic: true, orchestrator: true }, onFewShotChange, useTwoPhase = false, onTwoPhaseChange }) {
   const chapterGenerationConcurrency = 10;
   const [promptOpen, setPromptOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -826,6 +881,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
             criticVersion: 'benchmark',
             experiment: selectedExperiment || undefined,
             fewShot,
+            useTwoPhase: useTwoPhase || undefined,
           });
 
         if (chapterAbortRef.current) { activeMap.delete(candidate.stem); return; }
@@ -967,6 +1023,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
             criticVersion: 'benchmark',
             experiment: selectedExperiment || undefined,
             fewShot,
+            useTwoPhase: useTwoPhase || undefined,
           });
         if (bookAbortRef.current) { activeMap.delete(item.stem); return; }
         results.push({ figureStem: item.stem, chapter: item.chapterName, status: 'ok', figureId: loopResult.figureId });
@@ -1112,6 +1169,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
           criticVersion: 'benchmark',
           experiment: selectedExperiment || undefined,
           fewShot,
+          useTwoPhase: useTwoPhase || undefined,
         });
         if (benchmarkAbortRef.current) { activeMap.delete(candidate.stem); return; }
         results.push({ figureStem: candidate.stem, status: 'ok', figureId: loopResult.figureId });
@@ -1259,6 +1317,19 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
                 ))}
                 <p style={styles.generatorHint}>Uncheck to ablate few-shot examples from that component's prompt.</p>
               </div>
+              <div style={styles.generatorControlCard}>
+                <label style={styles.generatorModelLabel}>Generation Mode</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#374151', cursor: 'pointer', padding: '2px 0' }}>
+                  <input
+                    type="checkbox"
+                    checked={useTwoPhase}
+                    onChange={e => onTwoPhaseChange?.(e.target.checked)}
+                    style={{ width: 14, height: 14, cursor: 'pointer' }}
+                  />
+                  Two-phase generation
+                </label>
+                <p style={styles.generatorHint}>Phase 1 builds geometry only; Phase 2 adds interactivity on top. Applies to all generation modes (single, chapter, book, benchmark).</p>
+              </div>
             </div>
           </div>
         </div>
@@ -1347,7 +1418,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
             onClick={onGenerate}
             disabled={loading || planning || !image || !selectedModel}
           >
-            {planning ? 'Planning…' : loading ? 'Generating — this may take 1-2min…' : figureType === '2d' ? 'Generate 2D Figure' : 'Generate 3D Figure'}
+            {planning ? 'Planning…' : loading ? 'Generating — this may take up to 10 min…' : figureType === '2d' ? 'Generate 2D Figure' : 'Generate 3D Figure'}
           </button>
         </>
       ) : mode === 'chapter' ? (
@@ -1839,7 +1910,7 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
 }
 
 // ── Viewer Tab ────────────────────────────────────────────────────────────────
-function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluation, evaluationModel, availableEvaluationModels, evaluating, onEvaluate, onSaveHumanEvaluation, onSelectEvaluationModel, defaultEvaluationModel }) {
+function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, onResume, resuming, evaluation, evaluationModel, availableEvaluationModels, evaluating, onEvaluate, onSaveHumanEvaluation, onSelectEvaluationModel, defaultEvaluationModel }) {
   const scoreTextColor = (score) => {
     if (!Number.isFinite(score)) return '#888';
     if (score >= 4) return '#2e7d32';
@@ -1892,15 +1963,23 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
       : null);
   const viewerPlan = record?.plan || null;
   const hasAttemptHistory = attempts.length > 0;
+  const isTwoPhase = record?.extra?.twoPhasePipeline === true || record?.twoPhasePipeline === true;
+  const phase1Evaluation = record?.extra?.phase1Evaluation || record?.phase1Evaluation || null;
+  const phase2Evaluation = record?.extra?.phase2Evaluation || record?.phase2Evaluation || null;
+  const phase1Status = record?.extra?.phase1Status || record?.phase1Status || null;
+  const phase2Status = record?.extra?.phase2Status || record?.phase2Status || null;
   const selectedAttempt = hasAttemptHistory
     ? attempts[Math.min(Math.max(selectedAttemptIndex, 0), attempts.length - 1)]
     : null;
   const selectedIterationLabel = selectedAttempt
-    ? `Iteration ${typeof selectedAttempt.iteration === 'number' ? Math.max(0, selectedAttempt.iteration - 1) : (selectedAttemptIndex + 1)}`
+    ? (isTwoPhase && selectedAttempt.phase
+      ? `${selectedAttempt.phase === 'geometry' ? 'Geometry' : 'Interactivity'} — Iteration ${selectedAttempt.iteration}`
+      : `Iteration ${typeof selectedAttempt.iteration === 'number' ? Math.max(0, selectedAttempt.iteration - 1) : (selectedAttemptIndex + 1)}`)
     : 'Final result';
   const previewHtml = selectedAttempt?.html || html;
   const selectedFeedback = selectedAttempt?.feedback || null;
   const selectedEvaluation = selectedAttempt?.evaluation || null;
+  const selectedActionItems = selectedFeedback?.action_items || selectedFeedback?.actionItems || [];
   const selectedPlan = selectedAttempt?.plan || viewerPlan;
   return (
     <div style={styles.viewerWrap}>
@@ -1923,9 +2002,60 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
             {record.source}
           </span>
         )}
+        {(record?.extra?.partial || record?.partial) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' }}>
+            <span style={{ fontSize: 10, background: '#fff3e0', color: '#e65100', borderRadius: 4, padding: '2px 7px', fontWeight: 600 }}>
+              partial — {((record?.extra?.partialReason || record?.partialReason) || 'incomplete').replace(/_/g, ' ')}
+            </span>
+            {onResume && (
+              <button
+                type="button"
+                onClick={onResume}
+                disabled={resuming}
+                style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid #1565c0', background: resuming ? '#e3f2fd' : '#1565c0', color: resuming ? '#1565c0' : '#fff', cursor: resuming ? 'not-allowed' : 'pointer', fontWeight: 600 }}
+              >
+                {resuming ? 'Resuming…' : 'Resume'}
+              </button>
+            )}
+          </div>
+        )}
+        {(record?.extra?.resumedFrom || record?.resumedFrom) && (
+          <p style={{ ...styles.viewerMeta, color: '#1565c0', fontSize: 10 }}>Resumed from: {record?.extra?.resumedFrom || record?.resumedFrom}</p>
+        )}
         <p style={styles.viewerMeta}>Generated by: {record?.model || 'unknown'}</p>
         {record?.generationDurationMs != null && (
           <p style={styles.viewerMeta}>Generation time: {formatDuration(record.generationDurationMs)}</p>
+        )}
+        {isTwoPhase && (phase1Evaluation || phase2Evaluation) && (
+          <div style={styles.viewerPlanWrap}>
+            <p style={styles.viewerPlanTitle}>Phase Evaluations</p>
+            {[
+              { label: 'Geometry (Phase 1)', eval: phase1Evaluation, keys: ['geometry_accuracy', 'faithfulness', 'label_quality'], keyLabels: ['Geo', 'Faith', 'Lbls'] },
+              { label: 'Interactivity (Phase 2)', eval: phase2Evaluation, keys: ['interactivity_usability', 'concept_accuracy'], keyLabels: ['Inter', 'Conc'] },
+            ].map(({ label, eval: phaseEval, keys, keyLabels }) => phaseEval && (
+              <div key={label} style={{ marginBottom: 8 }}>
+                <p style={{ ...styles.viewerHistoryMeta, marginTop: 4, marginBottom: 2 }}>{label}</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {keys.map((key, i) => {
+                    const score = phaseEval[key];
+                    if (!Number.isFinite(score)) return null;
+                    return (
+                      <div key={key} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                        <span style={{ fontSize: 8, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{keyLabels[i]}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: scoreTextColor(score), lineHeight: 1 }}>{score}</span>
+                      </div>
+                    );
+                  })}
+                  {Number.isFinite(phaseEval.overall_average) && (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                      <span style={{ fontSize: 8, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Avg</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: scoreTextColor(phaseEval.overall_average), lineHeight: 1 }}>{phaseEval.overall_average}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
         {selectedPlan ? (
           <div style={styles.viewerPlanWrap}>
@@ -1963,34 +2093,90 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
 
           {hasAttemptHistory ? (
             <>
-              <div style={styles.viewerHistoryRail}>
-                {attempts.map((attempt, index) => {
-                  const isActive = index === selectedAttemptIndex;
-                  const score = attempt?.evaluation?.overall_average;
-                  const attemptLabel = typeof attempt?.iteration === 'number' ? Math.max(0, attempt.iteration - 1) : index + 1;
+              {isTwoPhase ? (
+                ['geometry', 'content'].map(phase => {
+                  const phaseAttempts = attempts.map((a, i) => ({ attempt: a, index: i })).filter(({ attempt }) => attempt.phase === phase);
+                  if (phaseAttempts.length === 0) return null;
+                  const phaseLabel = phase === 'geometry' ? 'Geometry' : 'Interactivity';
+                  const phaseStatus = phase === 'geometry' ? phase1Status : phase2Status;
+                  const statusPassed = phaseStatus === 'passed';
+                  const statusDone = phaseStatus === 'failed_max_attempts' || phaseStatus === 'best_attempt_used';
+                  const phasePrefix = phase === 'geometry' ? 'G' : 'I';
                   return (
-                    <button
-                      key={`${record?.id || 'record'}-${attemptLabel}-${index}`}
-                      type="button"
-                      onClick={() => setSelectedAttemptIndex(index)}
-                      style={{
-                        ...styles.viewerHistoryButton,
-                        ...(isActive ? styles.viewerHistoryButtonActive : {}),
-                      }}
-                    >
-                      <span style={styles.viewerHistoryButtonLabel}>{attemptLabel}</span>
-                      <span style={styles.viewerHistoryButtonMeta}>
-                        {attempt?.status || attempt?.step || 'attempt'}
-                      </span>
-                      {Number.isFinite(score) && (
-                        <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
-                          {score.toFixed(1)}/5
-                        </span>
-                      )}
-                    </button>
+                    <div key={phase}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0 3px' }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{phaseLabel}</span>
+                        {phaseStatus && (
+                          <span style={{ fontSize: 9, color: statusPassed ? '#2e7d32' : statusDone ? '#1565c0' : '#888', background: statusPassed ? '#e8f5e9' : statusDone ? '#e3f2fd' : '#f5f5f5', borderRadius: 4, padding: '1px 5px' }}>
+                            {statusPassed ? 'passed' : statusDone ? 'done' : phaseStatus.replace(/_/g, ' ')}
+                          </span>
+                        )}
+                      </div>
+                      <div style={styles.viewerHistoryRail}>
+                        {phaseAttempts.map(({ attempt, index }) => {
+                          const isActive = index === selectedAttemptIndex;
+                          const score = attempt?.evaluation?.overall_average;
+                          return (
+                            <button
+                              key={`${record?.id || 'record'}-${phase}-${attempt.iteration}-${index}`}
+                              type="button"
+                              onClick={() => setSelectedAttemptIndex(index)}
+                              style={{
+                                ...styles.viewerHistoryButton,
+                                ...(isActive ? styles.viewerHistoryButtonActive : {}),
+                              }}
+                            >
+                              <span style={styles.viewerHistoryButtonLabel}>{phasePrefix}{attempt.iteration}</span>
+                              <span style={styles.viewerHistoryButtonMeta}>
+                                {attempt?.status === 'max_attempts_reached' ? 'done' : (attempt?.status || attempt?.step || 'attempt')}
+                              </span>
+                              {Number.isFinite(score) && (
+                                <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
+                                  {score.toFixed(1)}/5
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   );
-                })}
-              </div>
+                })
+              ) : (
+                <div style={styles.viewerHistoryRail}>
+                  {attempts.map((attempt, index) => {
+                    const isActive = index === selectedAttemptIndex;
+                    const score = attempt?.evaluation?.overall_average;
+                    const attemptLabel = typeof attempt?.iteration === 'number' ? Math.max(0, attempt.iteration - 1) : index + 1;
+                    return (
+                      <button
+                        key={`${record?.id || 'record'}-${attemptLabel}-${index}`}
+                        type="button"
+                        onClick={() => setSelectedAttemptIndex(index)}
+                        style={{
+                          ...styles.viewerHistoryButton,
+                          ...(isActive ? styles.viewerHistoryButtonActive : {}),
+                        }}
+                      >
+                        <span style={styles.viewerHistoryButtonLabel}>{attemptLabel}</span>
+                        {attempt?.phase && (
+                          <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: attempt.phase === 'geometry' ? '#1565c0' : '#6a1b9a', background: attempt.phase === 'geometry' ? '#e3f2fd' : '#f3e5f5', borderRadius: 3, padding: '1px 4px', lineHeight: 1.4 }}>
+                            {attempt.phase === 'geometry' ? 'Geo' : 'Int'}
+                          </span>
+                        )}
+                        <span style={styles.viewerHistoryButtonMeta}>
+                          {attempt?.status || attempt?.step || 'attempt'}
+                        </span>
+                        {Number.isFinite(score) && (
+                          <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
+                            {score.toFixed(1)}/5
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               <div style={styles.viewerHistoryDetail}>
                 <div style={styles.viewerHistoryDetailHeader}>
@@ -2042,11 +2228,11 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
                     </div>
                   </>
                 )}
-                {selectedFeedback?.action_items?.length > 0 ? (
+                {selectedActionItems.length > 0 ? (
                   <>
                     <p style={{ ...styles.viewerHistoryMeta, fontWeight: 700, color: '#555' }}>Action items</p>
                     <div style={styles.viewerHistoryList}>
-                      {selectedFeedback.action_items.map((item, index) => (
+                      {selectedActionItems.map((item, index) => (
                         <div key={index} style={styles.viewerHistoryItem}>
                           {item}
                         </div>

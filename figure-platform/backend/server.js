@@ -29,7 +29,7 @@ const { listChapters, list3dCandidates, list2dCandidates } = require('./chapter-
 const { getAvailableModels } = require('./models');
 const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage, upsertAttempts } = require('./result_schema');
 const { getCriticContext } = require('./critic');
-const { runFigureLoop } = require('./figure_loop');
+const { runFigureLoop, runTwoPhaseLoop } = require('./figure_loop');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -412,7 +412,39 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot }) {
+async function generateFigureWithLoop({ base64: _base64, mediaType: _mediaType, filename: _filename, figureStem: _figureStem, chapterName: _chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, useTwoPhase: _useTwoPhase = false, maxGeometryAttempts, maxContentAttempts, resumeFrom }) {
+  let base64 = _base64, mediaType = _mediaType, filename = _filename;
+  let figureStem = _figureStem, chapterName = _chapterName, useTwoPhase = _useTwoPhase;
+
+  // ── If resuming, load missing fields from the saved partial result ──────────
+  let loopResumeFrom = null;
+  if (resumeFrom?.resultId) {
+    const srcPath = path.join(RESULTS_DIR, `${resumeFrom.resultId}.json`);
+    if (!fs.existsSync(srcPath)) {
+      const err = new Error(`Resume source record not found: ${resumeFrom.resultId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    const srcRecord = JSON.parse(fs.readFileSync(srcPath, 'utf-8'));
+    base64 = base64 || srcRecord.source_base64;
+    mediaType = mediaType || srcRecord.source_media_type || 'image/png';
+    filename = filename || srcRecord.filename;
+    figureStem = figureStem || (srcRecord.filename ? path.parse(srcRecord.filename).name : null);
+    chapterName = chapterName || srcRecord.chapterName || null;
+    requestedModel = requestedModel || srcRecord.model || null;
+    requestedPlannerModel = requestedPlannerModel || srcRecord.plannerModel || null;
+    requestedExperiment = requestedExperiment || srcRecord.experiment || null;
+    useTwoPhase = useTwoPhase || srcRecord.extra?.twoPhasePipeline || false;
+    loopResumeFrom = {
+      approvedGeometryHtml: srcRecord.extra?.geometryHtml || null,
+      currentPlan: srcRecord.plan || null,
+      phase1Status: srcRecord.extra?.phase1Status || null,
+      lastGeometryEval: srcRecord.extra?.phase1Evaluation || null,
+      originalId: resumeFrom.resultId,
+    };
+    console.log(`[generate-loop] Resuming from ${resumeFrom.resultId} (phase1: ${loopResumeFrom.phase1Status || 'none'}, hasPlan: ${!!loopResumeFrom.currentPlan})`);
+  }
+
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -444,33 +476,42 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
   console.log(`[generate-loop] figureStem="${resolvedFigureStem}" chapter="${chapterName || 'unknown'}" experiment="${experimentName}" maxAttempts=${maxAttempts}`);
 
   // Run the iterative loop
-  const loopState = await runFigureLoop({
+  const sharedLoopOpts = {
     figureStem: resolvedFigureStem,
     chapterName: chapterName || null,
     imageData: { base64, mediaType },
     scaffold: BASE_SCAFFOLD,
     sourceBase64: base64,
     sourceMediaType: mediaType,
-    maxAttempts,
     passThreshold: 4.0,
     plannerModel: plannerModelId,
     generatorModel: modelId,
     criticModel: criticModelId,
     fewShot: requestedFewShot || FEW_SHOT,
-  });
+  };
+  let loopState;
+  try {
+    loopState = useTwoPhase
+      ? await runTwoPhaseLoop({ ...sharedLoopOpts, maxGeometryAttempts: maxGeometryAttempts ?? 3, maxContentAttempts: maxContentAttempts ?? 3, resumeFrom: loopResumeFrom })
+      : await runFigureLoop({ ...sharedLoopOpts, maxAttempts });
+  } catch (e) {
+    loopState = e.partialLoopState;
+    if (!loopState) throw e;
+    console.warn(`[generate-loop] loop threw; saving partial state (status: ${loopState.status}): ${e.message}`);
+  }
 
-  if (loopState.status === 'failed_planning') {
-    const err = new Error(`Failed to generate plan for ${resolvedFigureStem}`);
+  // Use best available HTML — Phase 2 content → approved geometry → nothing
+  const html = loopState.currentHtml || loopState.approvedGeometryHtml || '';
+  if (!html.trimStart().startsWith('<')) {
+    const err = new Error(`Loop produced no usable HTML (status: ${loopState.status})`);
     err.statusCode = 502;
     throw err;
   }
 
-  // Use best HTML from loop
-  const html = loopState.currentHtml || '';
-  if (!html.trimStart().startsWith('<')) {
-    const err = new Error('Loop did not produce valid HTML output');
-    err.statusCode = 502;
-    throw err;
+  // 'failed_max_attempts' means the loop ran all iterations normally and still has usable output — not a partial failure
+  const isPartial = loopState.status !== 'passed' && loopState.status !== 'failed_max_attempts';
+  if (isPartial) {
+    console.log(`[generate-loop] Saving partial result (status: ${loopState.status})`);
   }
 
   const figureId = makeId();
@@ -498,6 +539,9 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     extra: {
       generationDurationMs: loopState.generationDurationMs ?? null,
       generationStartedAt: loopState.generationStartedAt ?? null,
+      ...(isPartial ? { partial: true, partialReason: loopState.status } : {}),
+      ...(loopResumeFrom?.originalId ? { resumedFrom: loopResumeFrom.originalId } : {}),
+      ...(useTwoPhase ? { twoPhasePipeline: true, phase1Status: loopState.phase1Status ?? null, phase2Status: loopState.phase2Status ?? null, geometryHtml: loopState.approvedGeometryHtml ?? null, phase1Evaluation: loopState.phase1Evaluation ?? null, phase2Evaluation: loopState.phase2Evaluation ?? null } : {}),
     },
   });
 
