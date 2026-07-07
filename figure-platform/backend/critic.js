@@ -179,7 +179,7 @@ Evaluate: whether the major geometric layout is preserved; whether the HTML buil
 Watch for: wrong shapes for elements (e.g. cone instead of box for a camera), proportions noticeably off.
 SCORE OVERRIDE — FAKE 3D: If the HTML uses canvas.getContext('2d'), CanvasTexture, a flat PlaneGeometry with a drawn/pasted image as a texture, or any approach that renders a 2D drawing as a substitute for real geometry — score MUST be 1. This overrides all other scoring rules regardless of visual recognizability.
 INLINE REPLACEMENT STANDARD: The rendered first frame must be a drop-in replacement for the source image — same apparent crop, zoom, camera angle, perspective/orthographic feel, object scale, and whitespace. Penalize over-zooming, under-zooming, stretched aspect ratio, shifted object position, changed perspective, or missing whitespace. If the default viewpoint differs meaningfully from the source (e.g. a top face visible in the source is hidden in the render, foreground/background order is reversed), cap score at 3.
-You will receive the original source figure image and the generated HTML/JavaScript code.
+You will receive the original source figure image, a rendered screenshot, and the generated HTML/JavaScript code.
 
 geometry_accuracy — integer 1–5:
   5 – All elements represented; plausible positions, connections, proportions
@@ -282,14 +282,33 @@ Output this exact JSON:
   "concept_accuracy_improvement": "one concrete fix for the most impactful concept issue, or null if score is 5"
 }`;
 
-const CRITIC_PROMPT_AGGREGATOR = `You receive per-dimension scores and analyses for a generated interactive Three.js 3D figure.
+const CRITIC_AGGREGATOR_BASE = `You receive per-dimension scores and analyses for a generated interactive Three.js 3D figure.
 Synthesize a summary and prioritized action list for the next iteration. Up-weight the lowest-scoring active dimensions only.
 Be specific — action items must name the actual elements, labels, controls, claims, or interactions to fix, not generic advice.
-Respond ONLY with valid JSON — no explanation, no markdown, no fences.
-You will receive the original source figure image, the generated HTML/JavaScript code, a rendered screenshot, and the dimension scores and analyses.
+Base your output solely on the dimension scores and analyses provided — do not infer issues from any other source.
+Respond ONLY with valid JSON — no explanation, no markdown, no fences.`;
 
+const CRITIC_AGGREGATOR_FAILURE_MODES_GEOMETRY = `
+FAILURE MODES — list any that apply based on the analyses (use empty array [] if none):
+"Depth-Wrong"              — 3D depth/perspective interpretation is incorrect
+"Missing-Labels"           — important text annotations are absent
+"Wrong-Primitives"         — incorrect geometric shapes used for the concept
+"Camera-Wrong"             — initial viewpoint differs from the source figure
+"Scale-Wrong"              — element proportions are noticeably off
+"Color-Wrong"              — colors don't match the original figure
+"Hallucination"            — elements present that do not appear in the original`;
+
+const CRITIC_AGGREGATOR_FAILURE_MODES_CONTENT = `
+FAILURE MODES — list any that apply based on the analyses (use empty array [] if none):
+"Interaction-Broken"       — interactive controls are present but non-functional
+"Interaction-Missing"      — no meaningful interactions beyond basic OrbitControls rotation
+"Concept-Misunderstood"    — the core concept being illustrated is misrepresented
+"Hallucination"            — elements present that do not appear in the original`;
+
+const CRITIC_AGGREGATOR_OUTPUT = `
 Output this exact JSON:
 {
+  "failure_modes": ["Mode1", "Mode2"],
   "notes": "2-4 sentence holistic summary of overall quality and main issues",
   "action_items": ["Fix X", "Adjust Y"]
 }`;
@@ -306,12 +325,17 @@ function buildCriticSystemPrompt(basePrompt, goldEvalExamples, useFewShot) {
     examples;
 }
 
-function buildAggregatorSystemPrompt(useFewShot) {
-  if (!useFewShot) return CRITIC_PROMPT_AGGREGATOR;
+function buildAggregatorSystemPrompt(useFewShot, activeRubrics = SCORE_KEYS) {
+  const isGeometry = GEOMETRY_PHASE_RUBRICS.some(k => activeRubrics.includes(k));
+  const failureModes = isGeometry
+    ? CRITIC_AGGREGATOR_FAILURE_MODES_GEOMETRY
+    : CRITIC_AGGREGATOR_FAILURE_MODES_CONTENT;
+  const prompt = CRITIC_AGGREGATOR_BASE + failureModes + CRITIC_AGGREGATOR_OUTPUT;
+  if (!useFewShot) return prompt;
   const examples = GOLD_EVAL_AGGREGATOR
     .map((ex, i) => `Example ${i + 1}:\n${JSON.stringify(ex, null, 2)}`)
     .join('\n\n');
-  return CRITIC_PROMPT_AGGREGATOR + '\n\n' +
+  return prompt + '\n\n' +
     'Example outputs for calibration — use these to understand the expected format and specificity. Do not copy these values:\n' +
     examples;
 }
@@ -412,7 +436,7 @@ async function evaluateHtmlWithCritic(opts) {
   }
 
   // Per-dimension userContent per spec.
-  const geometryContent = [...sourceImageParts, htmlPart, outputInstruction];
+  const geometryContent = [...sourceImageParts, ...screenshotParts, htmlPart, outputInstruction];
   const interactivityContent = [...planParts, htmlPart, outputInstruction];
   const faithfulnessContent = [...sourceImageParts, ...screenshotParts, outputInstruction];
   const labelsContent = [...sourceImageParts, ...screenshotParts, outputInstruction];
@@ -431,18 +455,20 @@ async function evaluateHtmlWithCritic(opts) {
   const activeResults = await Promise.all(activeRubrics.map(k => rubricRegistry[k]()));
   const evaluation = Object.assign({}, ...activeRubrics.map((k, i) => parseJsonResponse(activeResults[i])));
 
-  // 6th sequential call: aggregator sees source image + screenshot + HTML + all dimension scores.
+  // 6th sequential call: aggregator sees scores + per-dimension analysis and improvement text.
+  const dimensionSummaries = Object.fromEntries(activeRubrics.map(k => [k, {
+    score: evaluation[k],
+    analysis: evaluation[`${k}_analysis`] ?? null,
+    improvement: evaluation[`${k}_improvement`] ?? null,
+  }]));
   const aggregatorUserContent = [
-    ...sourceImageParts,
-    ...screenshotParts,
-    htmlPart,
     {
       type: 'text',
-      text: `Dimension scores and analyses from the parallel evaluation calls:\n${JSON.stringify(evaluation, null, 2)}\n\nBased on the above scores and the figure itself, output the JSON with "notes" and "action_items".`,
+      text: `Dimension scores and analyses:\n${JSON.stringify(dimensionSummaries, null, 2)}\n\nOutput the JSON with "notes" and "action_items".`,
     },
   ];
   const aggregatorRaw = await generateWithModel(model, {
-    systemPrompt: buildAggregatorSystemPrompt(useFewShot),
+    systemPrompt: buildAggregatorSystemPrompt(useFewShot, activeRubrics),
     userContent: aggregatorUserContent,
     maxTokens,
   });

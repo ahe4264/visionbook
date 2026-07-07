@@ -502,9 +502,159 @@ async function refinePlan(previousPlan, evaluation, feedback, figureStem, planne
   }
 }
 
+// ── Geometry planner ────────────────────────────────────────────────────────
+// Lightweight pre-Phase-1 planner: elements + camera only, no interactions.
+
+function buildGeometryPlannerPrompt(useFewShot = true) {
+  return `You are an expert at planning 3D geometry reconstructions of textbook figures.
+
+PRIMARY CONTEXT:
+The generated figure will be embedded inline as a same-size PDF replacement. The first rendered frame must be a drop-in visual replacement for the source image — same apparent crop, zoom, camera angle, object scale, and whitespace.
+
+Your job is to analyse the source image and output a geometry reconstruction plan: a list of every visible element and precise camera parameters. Interactions are handled separately — do NOT include them here.
+
+Output ONLY valid JSON (no markdown, no explanation):
+{
+  "elements": ["exhaustive list of every geometric element visible in the figure that must be recreated in 3D"],
+  "camera_suggestion": "description of ideal initial viewpoint and zoom level",
+  "view_reasoning": "REQUIRED step-by-step grounding, done BEFORE picking any camera_view numbers: (1) name the dominant baseline/axis/edge/ray visible in the source image and which screen direction it runs, (2) state what azimuth_deg that visible direction implies and why, (3) name the foreshortening/tilt cue that implies elevation_deg.",
+  "camera_view": {
+    "projection": "orthographic",
+    "azimuth_deg": number,
+    "elevation_deg": number,
+    "roll_deg": number,
+    "zoom": number,
+    "target": [0, 0, 0],
+    "height_fraction": number,
+    "view_notes": "specific visual cues from the source image that justify this camera"
+  },
+  "notes": "any special Three.js or rendering considerations"
+}
+
+Rules:
+- camera_view is mandatory. Fill in view_reasoning FIRST, then derive camera_view numbers from that reasoning.
+- azimuth_deg: rotation around vertical Y axis. Must match the direction named in view_reasoning step (1)/(2).
+- elevation_deg: angle above the ground/XZ plane. Shallow textbook diagrams are often 10-30 degrees.
+- roll_deg: usually 0 unless the original image is visibly tilted.
+- projection: use "orthographic".
+- zoom: choose an orthographic zoom that preserves the original crop and margins.
+- height_fraction: how much of iframe height the scene occupies; lower values preserve source whitespace.
+- view_notes must cite concrete source cues.
+- elements must be exhaustive — every visible shape, line, arrow, label anchor, axis, and annotation.
+
+${useFewShot ? `Here are two examples:
+
+=== EXAMPLE 1: Pinhole projection geometry ===
+{
+  "elements": [
+    "pinhole/aperture point at the origin",
+    "3D point P floating in space at coordinates (X, Y, Z)",
+    "projection plane perpendicular to the Z-axis at distance f",
+    "projected point p = (x, y) on the projection plane",
+    "light ray from P through the pinhole continuing to p",
+    "Z-axis (optical axis) running through the pinhole",
+    "X-axis horizontal through the pinhole",
+    "similar-triangle annotations: one triangle in the XZ plane, one in the xf plane",
+    "dimension labels: Z, X, f, x"
+  ],
+  "camera_suggestion": "Side view looking along the Y-axis, slightly elevated, showing the full XZ plane with the pinhole at center-left and the projection plane to the right",
+  "view_reasoning": "(1) The dominant baseline is the optical axis from the pinhole to the projection plane, and in the source image it runs left-to-right across the page. (2) A baseline drawn left-to-right in a flat diagram means the camera looks roughly along the depth axis — azimuth stays near 0. (3) The diagram is nearly flat/side-on with only slight vertical spread, implying a shallow elevation around 5-10 deg.",
+  "camera_view": {
+    "projection": "orthographic",
+    "azimuth_deg": 0,
+    "elevation_deg": 8,
+    "roll_deg": 0,
+    "zoom": 1.1,
+    "target": [0, 0, 0],
+    "height_fraction": 0.58,
+    "view_notes": "Source is mostly a side-on XZ diagram: projection plane sits to the right, rays are visible in profile, and vertical Y depth is minimal."
+  },
+  "notes": "Use orthographic camera so similar-triangle proportions remain visually accurate. Render the ray as a solid line from P through the origin and on to the projection plane."
+}
+=== END EXAMPLE 1 ===
+
+=== EXAMPLE 2: Gaussian function plot ===
+{
+  "elements": [
+    "x-axis with tick marks spanning -4 to +4",
+    "y-axis with tick marks from 0 to 1",
+    "smooth continuous Gaussian bell curve",
+    "vertical stem markers at each integer sample position",
+    "sigma annotation bracket from 0 to sigma on the x-axis",
+    "3*sigma cutoff boundary markers (dashed vertical lines)",
+    "baseline y=0"
+  ],
+  "camera_suggestion": "Front-facing 2D orthographic view centered on the origin, x-axis spanning -4 to +4, y-axis from 0 to 1.1",
+  "view_reasoning": "(1) The curve and axes lie flat in a single plane facing the reader directly, with no visible depth axis. (2) A plot facing the viewer head-on means azimuth near 90 deg so the view is perpendicular to the plot plane, not along it. (3) No tilt or perspective cues, implying elevation 0.",
+  "camera_view": {
+    "projection": "orthographic",
+    "azimuth_deg": 90,
+    "elevation_deg": 0,
+    "roll_deg": 0,
+    "zoom": 1.0,
+    "target": [0, 0, 0],
+    "height_fraction": 0.72,
+    "view_notes": "Source is a front-facing plot — camera should be perpendicular to the plot plane with no 3D tilt."
+  },
+  "notes": "Render the Gaussian curve as a smooth THREE.Line sampled at 200 points. For discrete stems use LineSegments from each integer sample down to y=0."
+}
+=== END EXAMPLE 2 ===` : ''}`;
+}
+
+/**
+ * Lightweight geometry-only planner. Runs before Phase 1 to provide elements
+ * and camera_view without the full interaction/demo_steps overhead.
+ *
+ * @param {string} figureStem
+ * @param {string|null} chapterName
+ * @param {{ base64, mediaType }} imageData
+ * @param {string} plannerModel
+ * @param {boolean} useFewShot
+ * @returns {{ figureStem, chapterName, contextChunk: null, interactionPlan }}
+ */
+async function planGeometry(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL, useFewShot = true) {
+  const userContent = [];
+
+  if (imageData?.base64 && imageData?.mediaType) {
+    userContent.push({
+      type: 'image_url',
+      image_url: { url: `data:${imageData.mediaType};base64,${imageData.base64}` },
+    });
+  }
+
+  userContent.push({
+    type: 'text',
+    text: `Figure: ${figureStem}\n\nAnalyse the source image and output the geometry reconstruction plan.`,
+  });
+
+  let content = await generateWithModel(plannerModel || PLANNER_MODEL, {
+    systemPrompt: buildGeometryPlannerPrompt(useFewShot),
+    userContent,
+    maxTokens: 4096,
+  });
+
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) content = fenced[1].trim();
+
+  let interactionPlan;
+  try {
+    interactionPlan = JSON.parse(content);
+  } catch {
+    interactionPlan = { elements: [], notes: content.slice(0, 500) };
+  }
+
+  return {
+    figureStem,
+    chapterName: chapterName || null,
+    contextChunk: null,
+    interactionPlan,
+  };
+}
+
 module.exports = {
   planForFigure,
   planChapter,
   refinePlan,
+  planGeometry,
   PLANNER_MODEL,
 };

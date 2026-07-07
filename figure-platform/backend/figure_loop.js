@@ -11,7 +11,7 @@
  * Tracks all iterations for audit trail and debugging.
  */
 
-const { planForFigure, refinePlan } = require('./planner');
+const { planForFigure, refinePlan, planGeometry } = require('./planner');
 const { generateCode, generateGeometryHtml, generateRefinedGeometryHtml, generateContentLayerHtml, generateRefinedContentLayerHtml } = require('./generation');
 const { evaluateHtmlWithCritic, GEOMETRY_PHASE_RUBRICS, CONTENT_PHASE_RUBRICS } = require('./critic');
 const { decideFigureRefinement } = require('./orchestrator');
@@ -392,6 +392,7 @@ async function runTwoPhaseLoop(opts) {
         figureStem,
         chapterName: chapterName || null,
         status: 'phase1_geometry',
+        geometryPlan: null,
         currentPlan: null,
         currentHtml: null,
         currentEvaluation: null,
@@ -408,6 +409,22 @@ async function runTwoPhaseLoop(opts) {
     loopState.generationStartedAt = new Date(_generationStart).toISOString();
 
     try {
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // GEOMETRY PLANNING: lightweight elements + camera plan before Phase 1
+        // ─────────────────────────────────────────────────────────────────────────
+        if (!resumeFrom?.approvedGeometryHtml) {
+            loopState.status = 'geometry_planning';
+            try {
+                loopState.geometryPlan = await withRetry(`geo-plan:${figureStem}`, () =>
+                    planGeometry(figureStem, chapterName, imageData, plannerModel, fewShot.planner !== false)
+                );
+                console.log(`[TwoPhase] Geometry plan created`, { elements: loopState.geometryPlan.interactionPlan?.elements?.length || 0 });
+            } catch (e) {
+                console.warn(`[TwoPhase] Geometry planning failed, proceeding without plan: ${e.message}`);
+                loopState.geometryPlan = null;
+            }
+        }
 
         // ─────────────────────────────────────────────────────────────────────────
         // PHASE 1: GEOMETRY LOOP (skipped if resumeFrom supplies approved geometry)
@@ -444,6 +461,7 @@ async function runTwoPhaseLoop(opts) {
                     if (geoAttempt === 1 || !lastGeometryHtml || !lastGeometryEval) {
                         currentHtml = await withRetry(`geo-generate:${figureStem}:${geoAttempt}`, () => generateGeometryHtml({
                             scaffold,
+                            plan: loopState.geometryPlan,
                             modelId: generatorModel,
                             mediaType: imageData.mediaType,
                             base64: imageData.base64,
@@ -451,12 +469,12 @@ async function runTwoPhaseLoop(opts) {
                     } else {
                         currentHtml = await withRetry(`geo-refine:${figureStem}:${geoAttempt}`, () => generateRefinedGeometryHtml({
                             scaffold,
+                            plan: loopState.geometryPlan,
                             prevHtml: lastGeometryHtml,
                             evaluation: lastGeometryEval,
                             modelId: generatorModel,
                             mediaType: imageData.mediaType,
                             base64: imageData.base64,
-                            userText: "PHASE 1 — Fix the geometry issues listed above. Do not add interactive controls. Focus on geometry, camera, and labels.",
                         }));
                     }
                     attempt.html = currentHtml;

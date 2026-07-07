@@ -636,20 +636,20 @@ async function generateCode(opts) {
 // These thin wrappers adapt the existing generators for the two-phase pipeline.
 // Phase 1 focuses on static geometry only; Phase 2 layers interactivity on top.
 
-async function generateGeometryHtml(opts) {
+async function generateGeometryHtml({ plan, ...opts }) {
     return generateFigureHtml({
         ...opts,
-        plan: null,
+        plan: plan || null,
         phase: 'geometry',
-        userText: opts.userText || buildGenerationUserText(null, 'geometry'),
+        userText: opts.userText || buildGenerationUserText(plan || null, 'geometry'),
     });
 }
 
-async function generateRefinedGeometryHtml(opts) {
+async function generateRefinedGeometryHtml({ plan, ...opts }) {
     return generateRefinedFigureHtml({
         ...opts,
         phase: 'geometry',
-        userText: opts.userText || buildGenerationUserText(null, 'geometry'),
+        userText: opts.userText || buildGenerationUserText(plan || null, 'geometry'),
     });
 }
 
