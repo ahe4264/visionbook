@@ -613,6 +613,13 @@ ${useFewShot ? `Here are two examples:
  * @returns {{ figureStem, chapterName, contextChunk: null, interactionPlan }}
  */
 async function planGeometry(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL, useFewShot = true) {
+  const resolvedChapter = chapterName || inferChapterFromFilename(figureStem);
+  const qmdContent = resolvedChapter ? loadChapterText(resolvedChapter) : null;
+  let contextChunk = '';
+  if (qmdContent) {
+    contextChunk = extractFigureContext(qmdContent, figureStem);
+  }
+
   const userContent = [];
 
   if (imageData?.base64 && imageData?.mediaType) {
@@ -624,7 +631,7 @@ async function planGeometry(figureStem, chapterName, imageData, plannerModel = P
 
   userContent.push({
     type: 'text',
-    text: `Figure: ${figureStem}\n\nAnalyse the source image and output the geometry reconstruction plan.`,
+    text: `Figure: ${figureStem}${contextChunk ? `\n\nTextbook context:\n${contextChunk.slice(0, 3000)}` : ''}\n\nAnalyse the source image and output the geometry reconstruction plan.`,
   });
 
   let content = await generateWithModel(plannerModel || PLANNER_MODEL, {
@@ -645,8 +652,8 @@ async function planGeometry(figureStem, chapterName, imageData, plannerModel = P
 
   return {
     figureStem,
-    chapterName: chapterName || null,
-    contextChunk: null,
+    chapterName: resolvedChapter || null,
+    contextChunk: contextChunk || null,
     interactionPlan,
   };
 }

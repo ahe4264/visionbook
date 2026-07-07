@@ -4429,6 +4429,10 @@ function PairwiseTab({ availableModels }) {
   const [rankingsDim, setRankingsDim] = useState('overall');
   const [rankingsSrc, setRankingsSrc] = useState('machine');
   const [rankingsLoading, setRankingsLoading] = useState(false);
+  const [rankingsAvailableSetups, setRankingsAvailableSetups] = useState([]);
+  const [rankingsSelectedSetups, setRankingsSelectedSetups] = useState(() => {
+    try { const s = localStorage.getItem('rankingsSelectedSetups'); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const [humanPanelFig, setHumanPanelFig] = useState(null); // { name, chapter, ...result }
   const [humanWinner, setHumanWinner] = useState(null);
   const [humanNotes, setHumanNotes] = useState('');
@@ -4672,10 +4676,17 @@ function PairwiseTab({ availableModels }) {
     }
   }, [setupA, setupB]);
 
-  const loadRankings = useCallback(async () => {
+  const loadRankings = useCallback(async (selection) => {
     setRankingsLoading(true);
     try {
-      const data = await fetch('/api/pairwise/rankings').then(r => r.json());
+      const qs = selection !== null
+        ? '?setups=' + selection.map(encodeURIComponent).join(',')
+        : '';
+      const data = await fetch('/api/pairwise/rankings' + qs).then(r => r.json());
+      if (data.availableSetups) {
+        setRankingsAvailableSetups(data.availableSetups);
+        setRankingsSelectedSetups(prev => prev === null ? data.availableSetups : prev);
+      }
       setRankings(data);
     } catch (err) {
       alert('Failed to load rankings: ' + err.message);
@@ -4683,6 +4694,12 @@ function PairwiseTab({ availableModels }) {
       setRankingsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (rankingsSelectedSetups !== null) {
+      try { localStorage.setItem('rankingsSelectedSetups', JSON.stringify(rankingsSelectedSetups)); } catch {}
+    }
+  }, [rankingsSelectedSetups]);
 
   const progressPct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
@@ -4732,16 +4749,49 @@ function PairwiseTab({ availableModels }) {
             onClick={() => {
               const next = !rankingsOpen;
               setRankingsOpen(next);
-              if (next && !rankings) loadRankings();
+              if (next && !rankings) loadRankings(rankingsSelectedSetups);
             }}>
             <span>{rankingsOpen ? '▾' : '▸'} Rankings (Bradley-Terry)</span>
             {rankingsOpen && (
               <button style={{ fontSize: 11, color: '#4f46e5', background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px' }}
-                onClick={e => { e.stopPropagation(); loadRankings(); }}>↻ Refresh</button>
+                onClick={e => { e.stopPropagation(); loadRankings(rankingsSelectedSetups); }}>↻ Refresh</button>
             )}
           </div>
           {rankingsOpen && (
             <div>
+              {rankingsAvailableSetups.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>Setups</span>
+                    <button style={{ fontSize: 10, color: '#4f46e5', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      onClick={() => {
+                        const allSelected = rankingsSelectedSetups?.length === rankingsAvailableSetups.length;
+                        const next = allSelected ? [] : [...rankingsAvailableSetups];
+                        setRankingsSelectedSetups(next);
+                        loadRankings(next);
+                      }}>
+                      {rankingsSelectedSetups?.length === rankingsAvailableSetups.length ? 'Deselect all' : 'Select all'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                    {rankingsAvailableSetups.map(s => {
+                      const checked = rankingsSelectedSetups?.includes(s) ?? true;
+                      return (
+                        <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#374151', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={checked} onChange={() => {
+                            const next = checked
+                              ? (rankingsSelectedSetups ?? rankingsAvailableSetups).filter(x => x !== s)
+                              : [...(rankingsSelectedSetups ?? rankingsAvailableSetups), s];
+                            setRankingsSelectedSetups(next);
+                            loadRankings(next);
+                          }} />
+                          {s}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                 <div style={styles.pwToggleGroup}>
                   {['machine', 'human'].map(src => (

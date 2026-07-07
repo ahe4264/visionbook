@@ -1560,6 +1560,11 @@ app.post('/api/experiments/evaluate', async (req, res) => {
 // Pairwise evaluation routes
 // ══════════════════════════════════════════════════════════════════════════════
 
+const PAIRWISE_HIDDEN_SETUPS = new Set([
+  'few_shot_benchmark_gpt4.1/gpt-5.5',
+  'few_shot_benchmark_gemini3.5flash/gpt-5.5',
+]);
+
 // ── GET /api/pairwise/setups ──────────────────────────────────────────────────
 // Returns all <experiment>/<model> setups from both prompt_experiments/ and
 // backend/results/ (agent runs), filtered to those containing "benchmark".
@@ -1588,11 +1593,13 @@ app.get('/api/pairwise/setups', (req, res) => {
       setups.push(s);
     }
 
+    const visibleSetups = setups.filter(s => !PAIRWISE_HIDDEN_SETUPS.has(s.id));
+
     const { setupA, setupB } = req.query;
     let matchingFigures = null;
     if (setupA && setupB) {
-      const sa = setups.find(s => s.id === setupA);
-      const sb = setups.find(s => s.id === setupB);
+      const sa = visibleSetups.find(s => s.id === setupA);
+      const sb = visibleSetups.find(s => s.id === setupB);
       if (sa && sb) {
         // Build lookup key: if a figure has a chapter, use chapter__name; otherwise name only.
         // When one side lacks chapter, fall back to name-only matching.
@@ -1619,7 +1626,7 @@ app.get('/api/pairwise/setups', (req, res) => {
       }
     }
 
-    return res.json({ setups, matchingFigures });
+    return res.json({ setups: visibleSetups, matchingFigures });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1834,11 +1841,18 @@ function computeBradleyTerry(matchups) {
 
 app.get('/api/pairwise/rankings', (req, res) => {
   try {
-    const allResults = loadAllPairsForRanking();
+    const allResults = loadAllPairsForRanking().filter(r => !PAIRWISE_HIDDEN_SETUPS.has(r.setupA) && !PAIRWISE_HIDDEN_SETUPS.has(r.setupB));
+    const availableSetups = [...new Set(allResults.flatMap(r => [r.setupA, r.setupB]).filter(Boolean))].sort();
+
+    const allowedSetups = req.query.setups !== undefined ? new Set(req.query.setups.split(',').filter(Boolean)) : null;
+    const filtered = allowedSetups
+      ? allResults.filter(r => allowedSetups.has(r.setupA) && allowedSetups.has(r.setupB))
+      : allResults;
+
     const DIMS = ['geometry', 'interactivity', 'faithfulness', 'labels', 'concept'];
 
     function buildMachineMatchups(getWinner) {
-      return allResults.flatMap(r => {
+      return filtered.flatMap(r => {
         const w = getWinner(r);
         if (!w || !r.setupA || !r.setupB) return [];
         if (w !== r.setupA && w !== r.setupB && w !== 'tie') return [];
@@ -1853,7 +1867,7 @@ app.get('/api/pairwise/rankings', (req, res) => {
       machine[d] = computeBradleyTerry(buildMachineMatchups(r => r.machineEval?.dimensions?.[d]?.winner));
     }
 
-    const humanMatchups = allResults.flatMap(r =>
+    const humanMatchups = filtered.flatMap(r =>
       (r.humanEvals || []).flatMap(h => {
         if (!h.winner || !r.setupA || !r.setupB) return [];
         if (h.winner !== r.setupA && h.winner !== r.setupB && h.winner !== 'tie') return [];
@@ -1864,7 +1878,8 @@ app.get('/api/pairwise/rankings', (req, res) => {
     return res.json({
       machine,
       human: { overall: computeBradleyTerry(humanMatchups) },
-      totalFigures: allResults.length,
+      totalFigures: filtered.length,
+      availableSetups,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });

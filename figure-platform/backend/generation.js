@@ -70,39 +70,31 @@ ${CODE_BEGIN_MARKER}
 ${CODE_END_MARKER}`;
 
 const GEOMETRY_TASK_GUIDE = `PHASE 1 - GEOMETRY ONLY
-Goal: reconstruct the source figure as faithful static Three.js geometry.
+Goal: reconstruct the source figure as genuine 3D geometry. The scene will be orbited with OrbitControls — rotating the camera 45° must reveal real depth, surface orientations, and spatial relationships that are invisible in the default view. Matching the source from the front is necessary but not sufficient; a flat XY layout is not a valid output.
 
-CRITICAL — NO 2D CANVAS ALLOWED:
-You MUST build a real 3D scene. Do NOT use canvas 2D drawing, CanvasTexture, or a flat PlaneGeometry with a drawn or pasted image.
-Every visible element — shapes, lines, arrows, labels, axes — must be a Three.js 3D primitive (BoxGeometry, SphereGeometry, CylinderGeometry, Line, Points, ArrowHelper, etc.).
-Putting the source image on a plane as a texture is always wrong.
+CRITICAL — BUILD THE REAL 3D SCENE:
+The source image is a 2D projection of a 3D scene. Recover and build that scene in Three.js, then find the camera angle that makes it look like the source. Do NOT trace the 2D layout into the XY plane and add Z offsets — that is a 2D drawing disguised as Three.js.
+- Tiny Z offsets (0.1, 0.2) on a flat XY layout are NOT depth. Rebuild with real spatial separation.
+- Planar surfaces (image planes, screens, mirrors) must be TILTED with correct 3D normals, not all lying flat in XY at different constant Z values.
+- Depth arises from correct 3D placement, not render-order tricks.
+- UI marker block must be empty in Phase 1.
 
-Use the original generation instructions that affect visual reconstruction:
-- You may change camera.zoom, camera position, controls.target, object scale, and projection parameters only to match the source figure's first-frame crop and perspective. If you change camera.zoom or camera bounds, call camera.updateProjectionMatrix().
-- Do NOT put bulky controls, toolbars, step buttons, legends, title cards, or description panels in the UI marker block.
-- UI marker block should be empty in Phase 1.
-
-CAMERA / VIEW MATCHING REQUIREMENTS:
+CAMERA / VIEW MATCHING:
 - The first rendered frame must be a drop-in visual replacement for the source image.
-- Match the original figure's camera angle, crop, zoom, object scale, and apparent perspective.
-- Before calling setCameraView, sanity-check the provided azimuth/elevation against the actual world-space coordinates you placed objects at: identify the dominant baseline/axis/edge in YOUR geometry and the direction it runs in world space (e.g. along X, along Z, diagonal), then check whether the provided azimuth would view that baseline the same way it appears in the source image (roughly broadside vs. roughly along it). If your own layout doesn't match what the provided azimuth assumes, override it with the value that actually does — you built the geometry, so you are in the best position to know which number is consistent with it. Do not blindly pass the plan's numbers through if they contradict the geometry you just built.
-- Call setCameraView(...) AFTER adding all geometry and labels, using the (possibly corrected) values.
-- Estimate the source view from visible cues: parallel lines imply orthographic or weak perspective; converging lines imply perspective; apparent ellipse/face shapes imply camera elevation and azimuth.
-- Align key visual anchors (main object center, axes, vanishing directions, horizon/ground plane, labels, arrow endpoints, and panel boundaries) to the same relative positions in the iframe.
-- Frame the scene so it matches the original figure crop. Do not force-fill if the original has whitespace; preserve the source figure's margins, aspect, and label density.
+- Build geometry first; set the camera last to match the source viewpoint.
+- Before calling setCameraView, sanity-check the plan's azimuth/elevation against the geometry you actually built. If they contradict, override with values consistent with your layout — you built the geometry, so you know which numbers are right.
+- Call setCameraView(...) after all geometry and labels are placed. Preserve source margins, crop, label density, and whitespace.
 
 Your task:
-1) Before writing any code, decide the Three.js primitive for every visible element.
-     Ask: is this a line, a mesh, a point, an arrow? What geometry class? What approximate size and color?
-     Express this as brief inline comments at the top of your JS block, one line per element, e.g.:
-         // pinhole → SphereGeometry(0.07)  black
-         // ray     → Line  dashed  grey
-         // plane   → PlaneGeometry(4,3)  blue opacity 0.3
-     Then build exactly those primitives — do not deviate from your own spec.
-2) Remember that you are converting a 2D image into a 3D figure. First infer the camera location and angle, then reason about how that viewpoint changes the shapes you should draw: where the viewer is, how high the eye point is, and whether the view is tilted, rotated, or centered.
-3) Build the static geometry first. Count the visible primitives and line segments, preserve relative scale and spacing, and take note of depth ordering and occlusion. Use projection logic to decide which edges should converge, which faces should be foreshortened, and which dimensions should compress in depth.
-4) Set camera view/zoom/crop to match the source view. Tune azimuth, elevation, distance, target, and object scale until the first frame overlays the source image's shape and composition. Use setCameraView(...) instead of manually positioning camera whenever camera_view is present in the plan.
-5) Add ALL visible text labels using addLabel(htmlString, THREE.Vector3, options?). Missing or incorrect labels are a critical failure. Make sure to match the font size with the original image. Treat labels and annotations as spatial cues so their placement reinforces the geometry and depth.`;
+1) Spec every element before coding. Write one comment per element at the top of the JS block, including its 3D position and orientation:
+       // pinhole        → SphereGeometry(0.07)  black  at (0,0,0)
+       // ray            → Line  dashed  grey  from (-3,0,-2) to (1,2,1)
+       // image plane 1  → PlaneGeometry(2,1.5)  tilted ~30° to face camera  at (-1.5,0,-0.5)
+   Then build exactly those primitives — do not deviate from your own spec.
+2) Reconstruct the 3D scene. Ask "what does this scene look like as a real 3D object or space?" Place every object at its correct 3D position with the correct orientation. Choose the camera angle last, to match the source viewpoint.
+3) Build static geometry. Match relative scale, spacing, depth ordering, and occlusion from the source.
+4) Set camera view with setCameraView(...). Match azimuth, elevation, zoom, target, and crop to the source.
+5) Add ALL visible text labels with addLabel(htmlString, THREE.Vector3). Missing labels are a critical failure.`;
 
 const CONTENT_TASK_GUIDE = `PHASE 2 - CONTENT AND INTERACTIVITY ONLY
 Goal: preserve the approved geometry exactly, then layer useful interactions and explanations on top.
@@ -252,7 +244,7 @@ function buildPlanInjection(plan, phase = 'full') {
     if (!plan) return '';
     const resolvedPhase = normalizeGenerationPhase(phase);
     const parts = [];
-    if (plan.contextChunk && resolvedPhase !== 'geometry') {
+    if (plan.contextChunk && resolvedPhase !== 'content') {
         parts.push(`CONTEXT FROM TEXTBOOK:\n${plan.contextChunk.slice(0, 3000)}`);
     }
     if (plan.interactionPlan) {

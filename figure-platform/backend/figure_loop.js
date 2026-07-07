@@ -487,6 +487,8 @@ async function runTwoPhaseLoop(opts) {
                         html: currentHtml,
                         evalImage: sourceBase64,
                         evalMediaType: sourceMediaType,
+                        plan: loopState.geometryPlan,
+                        chapterName: loopState.chapterName,
                         model: criticModel,
                         rubrics: GEOMETRY_PHASE_RUBRICS,
                         useFewShot: fewShot.critic !== false,
