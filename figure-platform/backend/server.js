@@ -90,6 +90,16 @@ const RESULTS_DIR = process.env.RESULTS_DIR
   ? path.resolve(process.env.RESULTS_DIR)
   : path.join(__dirname, 'results');
 const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
+const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || [
+  'agent_batch_out',
+  'agent_batch_limited_refined_out',
+  'agent_3d_demo_out',
+  'agent_3d_demo_refined_out',
+].join(','))
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+  .map(s => path.resolve(__dirname, s));
 if (!fs.existsSync(RESULTS_DIR)) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
 }
@@ -1439,6 +1449,49 @@ function scanAgentResults() {
   return setups;
 }
 
+// Scan batch output folders produced by batch_benchmark.js / batch_3d_demo_experiment.js.
+// Those outputs are intentionally git-ignored, but if a collaborator generates or copies
+// them locally, the pairwise evaluator can treat each manifest as a benchmark setup.
+function scanAgentBatchOutputs() {
+  const setups = [];
+  for (const outDir of AGENT_BATCH_OUTPUT_DIRS) {
+    const manifestPath = path.join(outDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) continue;
+
+    let manifest;
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')); }
+    catch { continue; }
+
+    const figures = [];
+    for (const rec of Object.values(manifest.figures || {})) {
+      if (!rec?.htmlFile) continue;
+      const htmlPath = path.join(outDir, rec.htmlFile);
+      if (!fs.existsSync(htmlPath)) continue;
+      figures.push({
+        name: rec.name,
+        chapter: rec.chapter || inferChapter(rec.name),
+        htmlPath,
+        imagePath: rec.imagePath || null,
+      });
+    }
+
+    if (!figures.length) continue;
+    const dirName = path.basename(outDir);
+    const label = manifest.params?.profileLabel || manifest.params?.generatorMode || dirName;
+    const model = manifest.params?.agentModel || manifest.params?.model || 'agent';
+    setups.push({
+      id: `${dirName}/${model}`,
+      experiment: `${dirName}_benchmark`,
+      model,
+      label,
+      figures,
+      source: 'agent_batch_out',
+      outputDir: outDir,
+    });
+  }
+  return setups;
+}
+
 // Walk prompt_experiments/ and return structured index:
 // [ { experiment, prompt, models: [ { model, figures: [ { name, htmlPath, imagePath } ] } ] } ]
 function scanExperiments() {
@@ -1605,8 +1658,8 @@ app.post('/api/experiments/evaluate', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── GET /api/pairwise/setups ──────────────────────────────────────────────────
-// Returns all <experiment>/<model> setups from both prompt_experiments/ and
-// backend/results/ (agent runs), filtered to those containing "benchmark".
+// Returns all <experiment>/<model> setups from prompt_experiments/, backend/results/
+// agent records, and local agent_batch_out-style manifests, filtered to "benchmark".
 // With ?setupA=&setupB= query params, also returns matchingFigures.
 app.get('/api/pairwise/setups', (req, res) => {
   try {
@@ -1628,6 +1681,12 @@ app.get('/api/pairwise/setups', (req, res) => {
 
     // Agent result setups
     for (const s of scanAgentResults()) {
+      if (!s.experiment.toLowerCase().includes('benchmark')) continue;
+      setups.push(s);
+    }
+
+    // Local generated batch output setups
+    for (const s of scanAgentBatchOutputs()) {
       if (!s.experiment.toLowerCase().includes('benchmark')) continue;
       setups.push(s);
     }
@@ -1699,7 +1758,11 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
       if (!fs.existsSync(abs)) return null;
       const html = fs.readFileSync(abs, 'utf-8');
       const thumbPath = abs.replace(/\.html$/, '.thumb.b64');
-      const thumb = fs.existsSync(thumbPath) ? fs.readFileSync(thumbPath, 'utf-8') : null;
+      const finalShotPath = abs.replace(/\.html$/, '.final.jpg');
+      let thumb = fs.existsSync(thumbPath) ? fs.readFileSync(thumbPath, 'utf-8') : null;
+      if (!thumb && fs.existsSync(finalShotPath)) {
+        thumb = fs.readFileSync(finalShotPath).toString('base64');
+      }
       let sourceImg = null;
       if (imagePath) {
         const absImg = path.resolve(imagePath);
@@ -1736,7 +1799,7 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
       const thumbB = assetsB.thumb;
       const sourceImage = assetsA.sourceImg || assetsB.sourceImg;
 
-      const evalResult = await pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel });
+      const evalResult = await pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel, chapterName: chapter });
 
       // Load existing record (to preserve humanEvals) or start fresh
       const existing = loadPairwiseResult(setupA, setupB, chapter, name) || { setupA, setupB, chapter, figure: name, humanEvals: [] };

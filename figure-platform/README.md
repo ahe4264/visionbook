@@ -98,6 +98,36 @@ http://127.0.0.1:8976/gallery.html
 Do not open generated HTML with `file://`; Chrome can block those files. Use the local
 server URL.
 
+## Run Benchmark Evaluation
+
+The generated files are not stored in git. A collaborator has two options:
+
+1. Regenerate locally with `node batch_benchmark.js`.
+2. Copy an existing generated output folder into `figure-platform/backend/agent_batch_out/`.
+
+After `agent_batch_out/manifest.json` exists, start the backend:
+
+```bash
+cd figure-platform/backend
+node server.js
+```
+
+The pairwise evaluator scans local `agent_batch_out`-style folders as benchmark setups.
+Use the existing pairwise UI/API to compare the agentic setup against benchmark results
+from `prompt_experiments/` or other generated folders. The scanner also checks:
+
+```text
+backend/agent_batch_limited_refined_out/
+backend/agent_3d_demo_out/
+backend/agent_3d_demo_refined_out/
+```
+
+Override the scanned folders if needed:
+
+```bash
+AGENT_BATCH_OUTPUT_DIRS="agent_batch_out,/path/to/other/output" node server.js
+```
+
 ## Run 2D Demo Batch
 
 ```bash

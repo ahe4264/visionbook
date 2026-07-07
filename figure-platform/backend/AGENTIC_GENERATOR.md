@@ -184,6 +184,43 @@ cd figure-platform/backend/agent_3d_demo_refined_out && python3 -m http.server 8
 cd figure-platform/backend/agent_batch_limited_refined_out && python3 -m http.server 8980
 ```
 
+## Benchmarking / Pairwise Evaluation
+
+This branch includes the existing evaluator files:
+
+```text
+backend/evaluator.js
+backend/pairwise_evaluator.js
+```
+
+Generated batch results are not committed. To benchmark the agentic generator, first make
+one of these folders exist locally by generating results or copying a shared output bundle:
+
+```text
+backend/agent_batch_out/
+backend/agent_batch_limited_refined_out/
+backend/agent_3d_demo_out/
+backend/agent_3d_demo_refined_out/
+```
+
+Each folder should contain a `manifest.json` plus the generated `.html` and `.final.jpg`
+files from the batch runner. Then start the backend:
+
+```bash
+cd figure-platform/backend
+node server.js
+```
+
+The `/api/pairwise/setups` route scans those local folders and exposes them as benchmark
+setups alongside `prompt_experiments/` and `backend/results/`. The pairwise evaluator uses
+the generated `.html`, `.final.jpg` screenshot, and source image path from the manifest.
+
+To scan custom output locations:
+
+```bash
+AGENT_BATCH_OUTPUT_DIRS="agent_batch_out,/absolute/path/to/output" node server.js
+```
+
 ## Notes
 
 - The agent is bounded by max turns, wall-clock timeout, concurrency, and budget settings.
