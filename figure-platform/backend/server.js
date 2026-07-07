@@ -90,12 +90,7 @@ const RESULTS_DIR = process.env.RESULTS_DIR
   ? path.resolve(process.env.RESULTS_DIR)
   : path.join(__dirname, 'results');
 const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
-const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || [
-  'agent_batch_out',
-  'agent_batch_limited_refined_out',
-  'agent_3d_demo_out',
-  'agent_3d_demo_refined_out',
-].join(','))
+const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || 'agent_batch_out')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
@@ -1449,7 +1444,7 @@ function scanAgentResults() {
   return setups;
 }
 
-// Scan batch output folders produced by batch_benchmark.js / batch_3d_demo_experiment.js.
+// Scan batch output folders produced by batch_benchmark.js.
 // Those outputs are intentionally git-ignored, but if a collaborator generates or copies
 // them locally, the pairwise evaluator can treat each manifest as a benchmark setup.
 function scanAgentBatchOutputs() {

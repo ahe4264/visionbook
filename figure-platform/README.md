@@ -24,12 +24,16 @@ For the full branch notes, see `backend/AGENTIC_GENERATOR.md`.
 - Claude Code agent generator for 2D standalone demos: `backend/generation-2d-agent.js`
 - Rendered verification gates before critic calls: `backend/verify.js`, `backend/verify-2d.js`
 - Timing logs for plan, generation, verification, critic, orchestrator, and agent render turns
-- Batch runners for 3D benchmark, 3D standalone demos, and 2D demos
-- Local HTML galleries for inspecting generated outputs
+- Batch runners for the 3D benchmark and 2D demos
+- Two local HTML galleries for inspecting generated outputs
 
 Generated batch outputs and galleries are intentionally not committed to git. They are
-created locally under folders like `backend/agent_batch_out/`,
-`backend/agent_2d_batch_out/`, and `backend/agent_3d_demo_out/`.
+created locally under:
+
+```text
+backend/agent_batch_out/      # 3D benchmark gallery
+backend/agent_2d_batch_out/   # 2D demo gallery
+```
 
 ## Quick Start
 
@@ -112,15 +116,9 @@ cd figure-platform/backend
 node server.js
 ```
 
-The pairwise evaluator scans local `agent_batch_out`-style folders as benchmark setups.
+The pairwise evaluator scans local `agent_batch_out` as a benchmark setup.
 Use the existing pairwise UI/API to compare the agentic setup against benchmark results
-from `prompt_experiments/` or other generated folders. The scanner also checks:
-
-```text
-backend/agent_batch_limited_refined_out/
-backend/agent_3d_demo_out/
-backend/agent_3d_demo_refined_out/
-```
+from `prompt_experiments/` or another output folder you explicitly provide.
 
 Override the scanned folders if needed:
 
