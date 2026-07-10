@@ -18,6 +18,26 @@ function normalizeEvaluationMaps(record) {
     return next;
 }
 
+function normalizeAttemptFeedbackActions(attempt) {
+    const next = isPlainObject(attempt) ? { ...attempt } : {};
+    const existingFeedback = isPlainObject(next.feedback) ? { ...next.feedback } : {};
+    const actionItems = Array.isArray(existingFeedback.action_items) ? existingFeedback.action_items
+        : Array.isArray(existingFeedback.actionItems) ? existingFeedback.actionItems
+            : Array.isArray(next.evaluation?.action_items) ? next.evaluation.action_items
+                : Array.isArray(next.evaluation?.actionItems) ? next.evaluation.actionItems
+                    : null;
+
+    if (actionItems) {
+        next.feedback = {
+            ...existingFeedback,
+            action_items: actionItems,
+            actionItems,
+        };
+    }
+
+    return next;
+}
+
 function toMillis(iso) {
     if (!iso) return 0;
     const t = new Date(iso).getTime();
@@ -26,6 +46,10 @@ function toMillis(iso) {
 
 function materializeEvaluationViews(record) {
     const normalized = normalizeEvaluationMaps(record);
+
+    if (Array.isArray(normalized.attempts)) {
+        normalized.attempts = normalized.attempts.map(normalizeAttemptFeedbackActions);
+    }
 
     const mergedResults = {};
     const mergedMeta = {};
@@ -108,9 +132,7 @@ function normalizeAttempts(record) {
         next.attempts = [];
     } else {
         // Validate each attempt has required fields
-        next.attempts = next.attempts.map(a =>
-            isPlainObject(a) ? a : {}
-        );
+        next.attempts = next.attempts.map(normalizeAttemptFeedbackActions);
     }
     return next;
 }
