@@ -156,8 +156,6 @@ const GOLD_EVAL_AGGREGATOR = [
 ];
 
 const SCORE_KEYS = ['geometry_accuracy', 'interactivity_usability', 'faithfulness', 'label_quality', 'concept_accuracy'];
-const GEOMETRY_PHASE_RUBRICS = ['geometry_accuracy', 'faithfulness', 'label_quality'];
-const CONTENT_PHASE_RUBRICS = ['interactivity_usability', 'concept_accuracy'];
 
 // ── Per-dimension system prompts ───────────────────────────────────────────────
 // All prompts receive the same userContent (source image + screenshot + code).
@@ -176,8 +174,7 @@ const CRITIC_PROMPT_GEOMETRY_ACCURACY = `${CRITIC_SHARED_PREAMBLE}
 
 DIMENSION: Geometric accuracy — how well the generated figure reconstructs the 3D geometry of the original.
 Evaluate: whether the major geometric layout is preserved; whether the HTML builds real 3D primitives (not flat cards, images, or canvases); which geometric objects are present (planes, rays, arrows, axes, surfaces, cameras, etc.) and whether any are missing; whether relative positions, scale, depth, and connections make spatial sense; whether the default camera view makes the geometry readable without hiding key spatial relationships.
-Watch for: wrong shapes for elements (e.g. cone instead of box for a camera), proportions noticeably off.
-SCORE OVERRIDE — FAKE 3D: If the HTML uses canvas.getContext('2d'), CanvasTexture, a flat PlaneGeometry with a drawn/pasted image as a texture, or any approach that renders a 2D drawing as a substitute for real geometry — score MUST be 1. This overrides all other scoring rules regardless of visual recognizability.
+Watch for: wrong shapes for elements (e.g. cone instead of box for a camera), proportions noticeably off. 2D canvases in 3D space automatically score 1.
 INLINE REPLACEMENT STANDARD: The rendered first frame must be a drop-in replacement for the source image — same apparent crop, zoom, camera angle, perspective/orthographic feel, object scale, and whitespace. Penalize over-zooming, under-zooming, stretched aspect ratio, shifted object position, changed perspective, or missing whitespace. If the default viewpoint differs meaningfully from the source (e.g. a top face visible in the source is hidden in the render, foreground/background order is reversed), cap score at 3.
 You will receive the original source figure image, a rendered screenshot, and the generated HTML/JavaScript code.
 
@@ -282,33 +279,14 @@ Output this exact JSON:
   "concept_accuracy_improvement": "one concrete fix for the most impactful concept issue, or null if score is 5"
 }`;
 
-const CRITIC_AGGREGATOR_BASE = `You receive per-dimension scores and analyses for a generated interactive Three.js 3D figure.
-Synthesize a summary and prioritized action list for the next iteration. Up-weight the lowest-scoring active dimensions only.
-Be specific — action items must name the actual elements, labels, controls, claims, or interactions to fix, not generic advice.
-Base your output solely on the dimension scores and analyses provided — do not infer issues from any other source.
-Respond ONLY with valid JSON — no explanation, no markdown, no fences.`;
+const CRITIC_PROMPT_AGGREGATOR = `You receive per-dimension scores and analyses for a generated interactive Three.js 3D figure.
+Synthesize a holistic summary and prioritized action list for the next iteration. Up-weight the lowest-scoring dimensions.
+Be specific — action items must name the actual elements or interactions to fix, not generic advice.
+Respond ONLY with valid JSON — no explanation, no markdown, no fences.
+You will receive the original source figure image, the generated HTML/JavaScript code, a rendered screenshot, and the dimension scores and analyses.
 
-const CRITIC_AGGREGATOR_FAILURE_MODES_GEOMETRY = `
-FAILURE MODES — list any that apply based on the analyses (use empty array [] if none):
-"Depth-Wrong"              — 3D depth/perspective interpretation is incorrect
-"Missing-Labels"           — important text annotations are absent
-"Wrong-Primitives"         — incorrect geometric shapes used for the concept
-"Camera-Wrong"             — initial viewpoint differs from the source figure
-"Scale-Wrong"              — element proportions are noticeably off
-"Color-Wrong"              — colors don't match the original figure
-"Hallucination"            — elements present that do not appear in the original`;
-
-const CRITIC_AGGREGATOR_FAILURE_MODES_CONTENT = `
-FAILURE MODES — list any that apply based on the analyses (use empty array [] if none):
-"Interaction-Broken"       — interactive controls are present but non-functional
-"Interaction-Missing"      — no meaningful interactions beyond basic OrbitControls rotation
-"Concept-Misunderstood"    — the core concept being illustrated is misrepresented
-"Hallucination"            — elements present that do not appear in the original`;
-
-const CRITIC_AGGREGATOR_OUTPUT = `
 Output this exact JSON:
 {
-  "failure_modes": ["Mode1", "Mode2"],
   "notes": "2-4 sentence holistic summary of overall quality and main issues",
   "action_items": ["Fix X", "Adjust Y"]
 }`;
@@ -325,17 +303,12 @@ function buildCriticSystemPrompt(basePrompt, goldEvalExamples, useFewShot) {
     examples;
 }
 
-function buildAggregatorSystemPrompt(useFewShot, activeRubrics = SCORE_KEYS) {
-  const isGeometry = GEOMETRY_PHASE_RUBRICS.some(k => activeRubrics.includes(k));
-  const failureModes = isGeometry
-    ? CRITIC_AGGREGATOR_FAILURE_MODES_GEOMETRY
-    : CRITIC_AGGREGATOR_FAILURE_MODES_CONTENT;
-  const prompt = CRITIC_AGGREGATOR_BASE + failureModes + CRITIC_AGGREGATOR_OUTPUT;
-  if (!useFewShot) return prompt;
+function buildAggregatorSystemPrompt(useFewShot) {
+  if (!useFewShot) return CRITIC_PROMPT_AGGREGATOR;
   const examples = GOLD_EVAL_AGGREGATOR
     .map((ex, i) => `Example ${i + 1}:\n${JSON.stringify(ex, null, 2)}`)
     .join('\n\n');
-  return prompt + '\n\n' +
+  return CRITIC_PROMPT_AGGREGATOR + '\n\n' +
     'Example outputs for calibration — use these to understand the expected format and specificity. Do not copy these values:\n' +
     examples;
 }
@@ -352,17 +325,15 @@ function getCriticContext() {
 }
 
 // ── Finalise raw evaluator output: clamp, derive visual_aesthetics + overall ──
-function finaliseEval(evaluation, activeRubrics = SCORE_KEYS) {
-  for (const key of activeRubrics) {
+function finaliseEval(evaluation) {
+  for (const key of SCORE_KEYS) {
     evaluation[key] = Math.min(5, Math.max(1, Math.round(Number(evaluation[key]) || 3)));
   }
-  if (GEOMETRY_PHASE_RUBRICS.every(k => activeRubrics.includes(k))) {
-    evaluation.visual_aesthetics = Math.round(
-      ((evaluation.geometry_accuracy + evaluation.faithfulness + evaluation.label_quality) / 3) * 10
-    ) / 10;
-  }
+  evaluation.visual_aesthetics = Math.round(
+    ((evaluation.geometry_accuracy + evaluation.faithfulness + evaluation.label_quality) / 3) * 10
+  ) / 10;
   evaluation.overall_average = Math.round(
-    (activeRubrics.reduce((s, k) => s + evaluation[k], 0) / activeRubrics.length) * 10
+    (SCORE_KEYS.reduce((s, k) => s + evaluation[k], 0) / SCORE_KEYS.length) * 10
   ) / 10;
   return evaluation;
 }
@@ -397,10 +368,7 @@ async function evaluateHtmlWithCritic(opts) {
     model = CRITIC_DEFAULT_MODEL,
     maxTokens = CRITIC_MAX_TOKENS_PER_CALL,
     useFewShot = true,
-    rubrics,
   } = opts || {};
-
-  const activeRubrics = Array.isArray(rubrics) && rubrics.length ? rubrics : SCORE_KEYS;
 
   if (!html) throw new Error('No HTML found for evaluation.');
 
@@ -442,45 +410,53 @@ async function evaluateHtmlWithCritic(opts) {
   const labelsContent = [...sourceImageParts, ...screenshotParts, outputInstruction];
   const conceptContent = [...qmdParts, ...planParts, htmlPart, outputInstruction];
 
-  // Run only the requested rubric calls in parallel.
+  // Run all 5 dimension calls in parallel.
   // Each call owns strictly disjoint output keys — Object.assign merge is safe.
-  const rubricRegistry = {
-    geometry_accuracy: () => generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_GEOMETRY_ACCURACY, GOLD_EVAL_GEOMETRY, useFewShot), userContent: geometryContent, maxTokens }),
-    interactivity_usability: () => generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_INTERACTIVITY_USABILITY, GOLD_EVAL_INTERACTIVITY, useFewShot), userContent: interactivityContent, maxTokens }),
-    faithfulness: () => generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_FAITHFULNESS, GOLD_EVAL_FAITHFULNESS, useFewShot), userContent: faithfulnessContent, maxTokens }),
-    label_quality: () => generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_LABEL_QUALITY, GOLD_EVAL_LABEL_QUALITY, useFewShot), userContent: labelsContent, maxTokens }),
-    concept_accuracy: () => generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_CONCEPT_ACCURACY, GOLD_EVAL_CONCEPT_ACCURACY, useFewShot), userContent: conceptContent, maxTokens }),
-  };
+  const [
+    geometryRaw,
+    interactivityRaw,
+    faithfulnessRaw,
+    labelRaw,
+    conceptRaw,
+  ] = await Promise.all([
+    generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_GEOMETRY_ACCURACY, GOLD_EVAL_GEOMETRY, useFewShot), userContent: geometryContent, maxTokens }),
+    generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_INTERACTIVITY_USABILITY, GOLD_EVAL_INTERACTIVITY, useFewShot), userContent: interactivityContent, maxTokens }),
+    generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_FAITHFULNESS, GOLD_EVAL_FAITHFULNESS, useFewShot), userContent: faithfulnessContent, maxTokens }),
+    generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_LABEL_QUALITY, GOLD_EVAL_LABEL_QUALITY, useFewShot), userContent: labelsContent, maxTokens }),
+    generateWithModel(model, { systemPrompt: buildCriticSystemPrompt(CRITIC_PROMPT_CONCEPT_ACCURACY, GOLD_EVAL_CONCEPT_ACCURACY, useFewShot), userContent: conceptContent, maxTokens }),
+  ]);
 
-  const activeResults = await Promise.all(activeRubrics.map(k => rubricRegistry[k]()));
-  const evaluation = Object.assign({}, ...activeRubrics.map((k, i) => parseJsonResponse(activeResults[i])));
+  const evaluation = Object.assign(
+    {},
+    parseJsonResponse(geometryRaw),
+    parseJsonResponse(interactivityRaw),
+    parseJsonResponse(faithfulnessRaw),
+    parseJsonResponse(labelRaw),
+    parseJsonResponse(conceptRaw),
+  );
 
-  // 6th sequential call: aggregator sees scores + per-dimension analysis and improvement text.
-  const dimensionSummaries = Object.fromEntries(activeRubrics.map(k => [k, {
-    score: evaluation[k],
-    analysis: evaluation[`${k}_analysis`] ?? null,
-    improvement: evaluation[`${k}_improvement`] ?? null,
-  }]));
+  // 6th sequential call: aggregator sees source image + screenshot + HTML + all dimension scores.
   const aggregatorUserContent = [
+    ...sourceImageParts,
+    ...screenshotParts,
+    htmlPart,
     {
       type: 'text',
-      text: `Dimension scores and analyses:\n${JSON.stringify(dimensionSummaries, null, 2)}\n\nOutput the JSON with "notes" and "action_items".`,
+      text: `Dimension scores and analyses from the parallel evaluation calls:\n${JSON.stringify(evaluation, null, 2)}\n\nBased on the above scores and the figure itself, output the JSON with "notes" and "action_items".`,
     },
   ];
   const aggregatorRaw = await generateWithModel(model, {
-    systemPrompt: buildAggregatorSystemPrompt(useFewShot, activeRubrics),
+    systemPrompt: buildAggregatorSystemPrompt(useFewShot),
     userContent: aggregatorUserContent,
     maxTokens,
   });
   Object.assign(evaluation, parseJsonResponse(aggregatorRaw));
 
-  return finaliseEval(evaluation, activeRubrics);
+  return finaliseEval(evaluation);
 }
 
 module.exports = {
   CRITIC_EXPERIMENT_BASE,
-  GEOMETRY_PHASE_RUBRICS,
-  CONTENT_PHASE_RUBRICS,
   getCriticContext,
   evaluateHtmlWithCritic,
 };

@@ -38,7 +38,7 @@ ${scaffoldSection}`;
 }
 
 // === Code Divider =============================================================
-const SHARED_SCAFFOLD_GUIDE = `SCAFFOLD MARKERS (fill these only):
+const GENERATION_TASK_GUIDE = `SCAFFOLD MARKERS (fill these only):
 - UI HTML: between ${UI_BEGIN_MARKER} and ${UI_END_MARKER}
 - Module JS: between ${CODE_BEGIN_MARKER} and ${CODE_END_MARKER}
 
@@ -54,12 +54,64 @@ What the scaffold already provides (do NOT re-declare):
 Hard constraints:
 - Do not redeclare: addLabel, _labels, _syncLabels, animate, renderer, scene, camera, controls, d, aspect, setCameraView, setStandardView, showPopup, hidePopup, showTooltip, hideTooltip, registerInteractive
 - Do not add any import statements or importmaps.
+- You may change camera.zoom, camera position, controls.target, object scale, and projection parameters only to match the source figure's first-frame crop and perspective. If you change camera.zoom or camera bounds, call camera.updateProjectionMatrix().
 - Keep background white (#ffffff).
 - Do NOT reproduce the figure as a texture, canvas drawing, or flat PlaneGeometry with a drawn image.
-    Every visible element must be constructed as Three.js geometry (meshes, lines, points, sprites).
-    Pasting the original image onto a plane is not a valid solution.
+  Every visible element must be constructed as Three.js geometry (meshes, lines, points, sprites).
+  Pasting the original image onto a plane is not a valid solution.
 - INLINE AUGMENTATION MODE: default output must look like a same-size replacement for the original PDF figure.
+- Do NOT put bulky controls, toolbars, step buttons, legends, title cards, or description panels in the UI marker block.
+- UI marker block should usually be empty. If controls are genuinely needed, add at most 2 compact sliders/toggles with very short labels; no buttons except hidden/internal triggers. Controls must be visible near an edge, with no filled box over the figure.
 - Do not rely on the PDF reader to fix composition after generation. The generated HTML itself must have the right default camera, framing, label scale, and minimal UI.
+- CAMERA / VIEW MATCHING REQUIREMENTS:
+  - The first rendered frame must be a drop-in visual replacement for the source image.
+  - Match the original figure's camera angle, crop, zoom, object scale, and apparent perspective.
+  - If CAMERA VIEW PARAMETERS are provided below, call setCameraView(...) with those values AFTER adding all geometry and labels. Tune only if the source image clearly demands it.
+    Convert keys exactly:
+      azimuth_deg -> azimuthDeg
+      elevation_deg -> elevationDeg
+      roll_deg -> rollDeg
+      height_fraction -> heightFraction
+  - Before calling setCameraView, sanity-check the provided azimuth/elevation against the actual world-space coordinates you placed objects at: identify the dominant baseline/axis/edge in YOUR geometry and the direction it runs in world space (e.g. along X, along Z, diagonal), then check whether the provided azimuth would view that baseline the same way it appears in the source image (roughly broadside vs. roughly along it). If your own layout doesn't match what the provided azimuth assumes, override it with the value that actually does — you built the geometry, so you are in the best position to know which number is consistent with it. Do not blindly pass the plan's numbers through if they contradict the geometry you just built.
+  - Call setCameraView(...) AFTER adding all geometry and labels, using the (possibly corrected) values.
+  - Estimate the source view from visible cues: parallel lines imply orthographic or weak perspective; converging lines imply perspective; apparent ellipse/face shapes imply camera elevation and azimuth.
+  - Align key visual anchors (main object center, axes, vanishing directions, horizon/ground plane, labels, arrow endpoints, and panel boundaries) to the same relative positions in the iframe.
+  - Frame the scene so it matches the original figure crop. Do not force-fill if the original has whitespace; preserve the source figure's margins, aspect, and label density.
+- Explanations must use the scaffold helpers: registerInteractive(object, { title, body, tooltip }) for meaningful objects, or showPopup(title, body) for custom click flows. Do not create visible explanation panels inside the figure.
+- Interactions should be intuitive direct manipulation: OrbitControls drag/rotate, click a meaningful part, hover a label/vector/surface. No decorative animations.
+
+Your task:
+1) Consider the given plan and what the figure is conceptually intended to illustrate.
+2) Before writing any code, decide the Three.js primitive for every element in the plan.
+   Ask: is this a line, a mesh, a point, an arrow? What geometry class? What approximate size and color?
+   Express this as brief inline comments at the top of your JS block, one line per element, e.g.:
+     // pinhole → SphereGeometry(0.07)  black
+     // ray     → Line  dashed  grey
+     // plane   → PlaneGeometry(4,3)  blue opacity 0.3
+   Then build exactly those primitives — do not deviate from your own spec.
+3) Remember that you are converting a 2D image into a 3D, interactive figure. First infer the camera location and angle, then reason about how that viewpoint changes the shapes you should draw: where the viewer is, how high the eye point is, and whether the view is tilted, rotated, or centered.
+4) Build the static geometry first. Count the visible primitives and line segments, preserve relative scale and spacing, and take note of depth ordering and occlusion. Use projection logic to decide which edges should converge, which faces should be foreshortened, and which dimensions should compress in depth.
+5) Set camera view/zoom/crop to match the source view before adding interactions. Tune azimuth, elevation, distance, target, and object scale until the first frame overlays the source image's shape and composition. Use setCameraView(...) instead of manually positioning camera whenever camera_view is present in the plan. Example:
+   setCameraView({
+     projection: 'orthographic',
+     azimuthDeg: 35,
+     elevationDeg: 18,
+     rollDeg: 0,
+     zoom: 1.05,
+     target: [0, 0, 0],
+     heightFraction: 0.62
+   });
+6) Add ALL visible text labels using addLabel(htmlString, THREE.Vector3, options?).
+    Missing or incorrect labels are a critical failure.  Make sure to match the font size with the original image. Treat labels and annotations as spatial cues so their placement reinforces the geometry and depth.
+7) Render a source-matching first frame. Only after that, add interactivity:
+   - Use direct manipulation first: OrbitControls, hover highlight, click-to-explain.
+   - Every direct manipulation interaction must explain the concept on hover/click without adding a visible explainer panel.
+   - Register every major explanatory mesh/line/group with registerInteractive(object, { title, body, tooltip }).
+   - At least one meaningful object MUST produce a click popup with 2-3 sentences explaining the concept.
+   - Use showPopup(title, body) only for custom click flows; otherwise prefer registerInteractive.
+   - Add compact sliders/toggles only for real figure parameters (e.g. wavelength, angle, sharpness); place them near an edge without a filled panel so they do not cover geometry, labels, or equations.
+   - Keep one state object + updateScene() if hidden states are needed.
+   - If demo_steps are provided, make them callable from clicks on meaningful scene elements, not visible toolbar buttons.
 
 Output format (return ONLY this, nothing else):
 ${UI_BEGIN_MARKER}
@@ -69,89 +121,8 @@ ${CODE_BEGIN_MARKER}
 ...JavaScript...
 ${CODE_END_MARKER}`;
 
-const GEOMETRY_TASK_GUIDE = `PHASE 1 - GEOMETRY ONLY
-Goal: reconstruct the source figure as genuine 3D geometry. The scene will be orbited with OrbitControls — rotating the camera 45° must reveal real depth, surface orientations, and spatial relationships that are invisible in the default view. Matching the source from the front is necessary but not sufficient; a flat XY layout is not a valid output.
-
-CRITICAL — BUILD THE REAL 3D SCENE:
-The source image is a 2D projection of a 3D scene. Recover and build that scene in Three.js, then find the camera angle that makes it look like the source. Do NOT trace the 2D layout into the XY plane and add Z offsets — that is a 2D drawing disguised as Three.js.
-- Tiny Z offsets (0.1, 0.2) on a flat XY layout are NOT depth. Rebuild with real spatial separation.
-- Planar surfaces (image planes, screens, mirrors) must be TILTED with correct 3D normals, not all lying flat in XY at different constant Z values.
-- Depth arises from correct 3D placement, not render-order tricks.
-- UI marker block must be empty in Phase 1.
-
-CAMERA / VIEW MATCHING:
-- The first rendered frame must be a drop-in visual replacement for the source image.
-- Build geometry first; set the camera last to match the source viewpoint.
-- Before calling setCameraView, sanity-check the plan's azimuth/elevation against the geometry you actually built. If they contradict, override with values consistent with your layout — you built the geometry, so you know which numbers are right.
-- Call setCameraView(...) after all geometry and labels are placed. Preserve source margins, crop, label density, and whitespace.
-
-Your task:
-1) Spec every element before coding. Write one comment per element at the top of the JS block, including its 3D position and orientation:
-       // pinhole        → SphereGeometry(0.07)  black  at (0,0,0)
-       // ray            → Line  dashed  grey  from (-3,0,-2) to (1,2,1)
-       // image plane 1  → PlaneGeometry(2,1.5)  tilted ~30° to face camera  at (-1.5,0,-0.5)
-   Then build exactly those primitives — do not deviate from your own spec.
-2) Reconstruct the 3D scene. Ask "what does this scene look like as a real 3D object or space?" Place every object at its correct 3D position with the correct orientation. Choose the camera angle last, to match the source viewpoint.
-3) Build static geometry. Match relative scale, spacing, depth ordering, and occlusion from the source.
-4) Set camera view with setCameraView(...). Match azimuth, elevation, zoom, target, and crop to the source.
-5) Add ALL visible text labels with addLabel(htmlString, THREE.Vector3). Missing labels are a critical failure.`;
-
-const CONTENT_TASK_GUIDE = `PHASE 2 - CONTENT AND INTERACTIVITY ONLY
-Goal: preserve the approved geometry exactly, then layer useful interactions and explanations on top.
-
-Planner output usage:
-- Treat the planner output as the content contract for Phase 2: implement its interactions, demo_steps, notes, and textbook context as faithfully as possible.
-- Use plan elements only as anchors for selecting existing approved geometry to make interactive or explanatory. Do not rebuild those elements.
-- If a planned interaction refers to geometry that exists in the approved payload, wire the interaction to that existing object or group.
-- If the plan asks for an impossible or geometry-changing interaction, implement the closest content-only version and explain the concept with hover/click/popup text instead of altering locked geometry.
-
-Use the original generation instructions that affect interactivity and teaching:
-- Do NOT put bulky controls, toolbars, step buttons, legends, title cards, or description panels in the UI marker block.
-- UI marker block should usually be empty. If controls are genuinely needed, add at most 2 compact sliders/toggles with very short labels; no buttons except hidden/internal triggers. Controls must be visible near an edge, with no filled box over the figure.
-- Explanations must use the scaffold helpers: registerInteractive(object, { title, body, tooltip }) for meaningful objects, or showPopup(title, body) for custom click flows. Do not create visible explanation panels inside the figure.
-- Interactions should be intuitive direct manipulation: OrbitControls drag/rotate, click a meaningful part, hover a label/vector/surface. No decorative animations.
-
-Your task:
-1) Treat the previous payload as locked geometry. Copy existing Three.js objects, setCameraView calls, labels, colors, positions, and scale exactly.
-2) Only add or repair the interaction layer: event handlers, registerInteractive calls, compact controls, state/update functions, hover/click behavior, tooltip text, and popup text. Do not change geometry, camera, labels, colors, positions, scale, or source-matched framing to address content feedback.
-3) Add interactivity after preserving the source-matching first frame:
-    - Use direct manipulation first: OrbitControls, hover highlight, click-to-explain.
-    - Every direct manipulation interaction must explain the concept on hover/click without adding a visible explainer panel.
-    - Register every major explanatory mesh/line/group with registerInteractive(object, { title, body, tooltip }).
-    - At least one meaningful object MUST produce a click popup with 2-3 sentences explaining the concept.
-    - Use showPopup(title, body) only for custom click flows; otherwise prefer registerInteractive.
-    - Add compact sliders/toggles only for real figure parameters (e.g. wavelength, angle, sharpness); place them near an edge without a filled panel so they do not cover geometry, labels, or equations.
-    - Keep one state object + updateScene() if hidden states are needed.
-    - If demo_steps are provided, make them callable from clicks on meaningful scene elements, not visible toolbar buttons.
-
-Exclusions:
-- Do not rebuild, rename, rescale, recolor, or reposition approved Phase 1 geometry.
-- Do not change the default camera/crop unless the content itself makes the figure unreadable.
-- Do not add visible explanation panels inside the figure.`;
-
-const FULL_TASK_GUIDE = `FULL GENERATION MODE
-When no two-phase split is being used, do both tasks in order:
-1) First follow the Phase 1 geometry-only guidance until the first rendered frame matches the source.
-2) Then follow the Phase 2 content guidance to add compact, pedagogically useful interactions.
-Never let interaction chrome or narration compromise source-matched geometry.`;
-
-function normalizeGenerationPhase(phase) {
-    return ['geometry', 'content', 'full'].includes(phase) ? phase : 'full';
-}
-
-function buildGenerationTaskGuide(phase = 'full') {
-    const resolvedPhase = normalizeGenerationPhase(phase);
-    const phaseGuide = resolvedPhase === 'geometry'
-        ? GEOMETRY_TASK_GUIDE
-        : resolvedPhase === 'content'
-            ? CONTENT_TASK_GUIDE
-            : `${GEOMETRY_TASK_GUIDE}\n\n${CONTENT_TASK_GUIDE}\n\n${FULL_TASK_GUIDE}`;
-
-    return `${SHARED_SCAFFOLD_GUIDE}\n\n${phaseGuide}`;
-}
-
 // === Code Divider =============================================================
-function buildGenerationSystemPrompt(scaffold, phase = 'full') {
+function buildGenerationSystemPrompt(scaffold) {
     if (!scaffold) throw new Error('scaffold is required.');
 
     const header = buildPromptHeader({
@@ -172,41 +143,23 @@ SCAFFOLD USAGE RULES:
     Do NOT add another <script type="importmap"> or any import statements.
 - Do NOT re-declare scaffold globals; only add objects to scene and wire UI to state.
 
-${buildGenerationTaskGuide(phase)}`;
+${GENERATION_TASK_GUIDE}`;
 }
 // === Code Divider =============================================================
-function getPhaseScoreKeys(phase = 'full') {
-    const resolvedPhase = normalizeGenerationPhase(phase);
-    if (resolvedPhase === 'geometry') return ['geometry_accuracy', 'faithfulness', 'label_quality'];
-    if (resolvedPhase === 'content') return ['interactivity_usability', 'concept_accuracy'];
-    return ['geometry_accuracy', 'interactivity_usability', 'faithfulness', 'label_quality', 'concept_accuracy'];
-}
-
-function formatEvaluationFeedback(evaluation, phase = 'full') {
-    const scoreKeys = getPhaseScoreKeys(phase);
-    const lines = [];
-
-    for (const mode of evaluation.failure_modes || []) {
-        lines.push(`- failure: ${mode}`);
-    }
-    for (const key of scoreKeys) {
-        if (evaluation[key] === undefined || evaluation[key] === null) continue;
-        lines.push(`- ${key}: ${evaluation[key]}/5`);
-        const improvement = evaluation[`${key}_improvement`];
-        if (improvement) lines.push(`  improvement: ${improvement}`);
-    }
-    if (evaluation.notes) lines.push(`- notes: ${evaluation.notes}`);
-    for (const item of evaluation.action_items || []) {
-        lines.push(`- action: ${item}`);
-    }
-
-    return lines.length ? lines.join('\n') : '- No structured critic feedback was provided.';
-}
-
-function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, anchorNote = '', phase = 'full') {
+function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation) {
     if (!scaffold) throw new Error('scaffold is required.');
     if (!prevHtml) throw new Error('prevHtml is required.');
     if (!evaluation) throw new Error('evaluation is required.');
+
+    const issues = [
+        ...(evaluation.failure_modes || []).map(m => `- ${m}`),
+        `- geometry_accuracy: ${evaluation.geometry_accuracy}/5`,
+        `- interactivity_usability: ${evaluation.interactivity_usability}/5`,
+        `- faithfulness: ${evaluation.faithfulness}/5`,
+        `- label_quality: ${evaluation.label_quality}/5`,
+        `- concept_accuracy: ${evaluation.concept_accuracy}/5`,
+        `- notes: ${evaluation.notes || ''}`,
+    ].join('\n');
 
     const prevPayload = extractPayloadFromHtml(prevHtml);
     const prevPayloadText = prevPayload
@@ -225,75 +178,57 @@ Only output an improved payload for these markers:
 
     return `${header}
 
-${buildGenerationTaskGuide(phase)}
+${GENERATION_TASK_GUIDE}
 
-${anchorNote ? `ANCHOR NOTE: ${anchorNote}\n\n` : ''}CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
-${formatEvaluationFeedback(evaluation, phase)}
+CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
+${issues}
 
 PREVIOUS GENERATED PAYLOAD (edit this; do NOT output full HTML):
 ${prevPayloadText}
 
-Fix all identified failure modes and improve every phase-relevant score. Maintain or improve what already works well.
-${normalizeGenerationPhase(phase) === 'content'
-            ? 'Keep the approved geometry locked while fixing content and interaction issues.'
-            : 'This includes re-checking the CAMERA / VIEW MATCHING REQUIREMENTS above even if no camera-specific failure mode was listed — a passing score on other metrics does not mean the camera/view is correct.'}
+Fix all identified failure modes and improve every score. Maintain or improve what already works well.
+This includes re-checking the CAMERA / VIEW MATCHING REQUIREMENTS above even if no camera-specific failure mode was listed — a passing score on other metrics does not mean the camera/view is correct.
 Return ONLY the updated marker-wrapped payload.`;
 }
 
-function buildPlanInjection(plan, phase = 'full') {
+function buildPlanInjection(plan) {
     if (!plan) return '';
-    const resolvedPhase = normalizeGenerationPhase(phase);
     const parts = [];
-    if (plan.contextChunk && resolvedPhase !== 'content') {
+    if (plan.contextChunk) {
         parts.push(`CONTEXT FROM TEXTBOOK:\n${plan.contextChunk.slice(0, 3000)}`);
     }
     if (plan.interactionPlan) {
         const ip = plan.interactionPlan;
+        // Spell out each section explicitly so the generator doesn't conflate them
         const sections = [];
-        if (ip.elements?.length && resolvedPhase !== 'content') {
+        if (ip.elements?.length) {
             sections.push(`ELEMENTS TO RECREATE IN 3D:\n${ip.elements.map(e => `  - ${e}`).join('\n')}`);
         }
-        if (ip.elements?.length && resolvedPhase === 'content') {
-            sections.push(`APPROVED GEOMETRY ANCHORS FROM PLAN (use only to identify existing objects for interactions; do not rebuild):\n${ip.elements.map(e => `  - ${e}`).join('\n')}`);
-        }
-        if (ip.interactions?.length && resolvedPhase !== 'geometry') {
+        if (ip.interactions?.length) {
             sections.push(`DISCRETE CONTROLS (implement every one of these in #ui, each must work independently):\n${JSON.stringify(ip.interactions, null, 2)}`);
         }
-        if (ip.demo_steps?.length && resolvedPhase !== 'geometry') {
+        if (ip.demo_steps?.length) {
             sections.push(`DEMO STEPS (tween through these using goToStep(); each step drives the controls above):\n${JSON.stringify(ip.demo_steps, null, 2)}`);
         }
-        if (ip.camera_view && resolvedPhase !== 'content') {
+        if (ip.camera_view) {
             sections.push(`CAMERA VIEW PARAMETERS (source-image estimate; call setCameraView with these after building geometry):\n${JSON.stringify(ip.camera_view, null, 2)}`);
         }
-        if (ip.camera_suggestion && resolvedPhase !== 'content') {
+        if (ip.camera_suggestion) {
             sections.push(`CAMERA: ${ip.camera_suggestion}`);
         }
         if (ip.notes) {
             sections.push(`NOTES: ${ip.notes}`);
         }
-        if (sections.length) parts.push(sections.join('\n\n'));
+        parts.push(sections.join('\n\n'));
     }
     return parts.join('\n\n');
 }
 
-function buildGenerationUserText(plan, phase = 'full') {
-    const resolvedPhase = normalizeGenerationPhase(phase);
-    const payloadRule = 'Output ONLY the scaffold fill-in payload using the required markers. No explanation, no markdown, no fences.';
-
-    if (resolvedPhase === 'geometry') {
-        const injection = buildPlanInjection(plan, 'geometry');
-        return `${injection ? `${injection}\n\n` : ''}Analyse the source figure carefully. Build only the static 3D geometry, camera, crop, colors, and labels needed for a source-matching first frame. Leave UI empty and add no interactivity. ${payloadRule}`;
-    }
-
-    if (resolvedPhase === 'content') {
-        const injection = buildPlanInjection(plan, 'content');
-        return `${injection ? `${injection}\n\n` : ''}Read the planner output above before editing the payload. Preserve the approved geometry from the previous payload exactly, then implement the plan's interactions, demo steps, compact controls, hover/click explanations, and concept content on top of existing objects. ${payloadRule}`;
-    }
-
+function buildGenerationUserText(plan) {
     if (!plan) {
-        return `Analyse this figure carefully. First build source-matching static geometry, then add compact useful interactivity. ${payloadRule}`;
+        return 'Analyse this figure carefully. Then output ONLY the scaffold fill-in payload using the required markers. No explanation, no markdown, no fences.';
     }
-    return `${buildPlanInjection(plan, 'full')}\n\nFollow the plan above: first match the source geometry and camera, then add only compact planned interactions. ${payloadRule}`;
+    return `${buildPlanInjection(plan)}\n\nFollow the interaction plan above. Output ONLY the scaffold fill-in payload using the required markers. No explanation, no markdown, no fences.`;
 }
 // Strip accidental markdown fences and return raw content.
 function stripFences(text) {
@@ -471,15 +406,13 @@ async function generateFigureHtml({
     base64,
     plan,
     userText,
-    phase = 'full',
     maxTokens = 16384,
     applyFixes = true,
 }) {
     if (!modelId) throw new Error('modelId is required.');
     if (!scaffold) throw new Error('scaffold is required.');
     if (!mediaType || !base64) throw new Error('mediaType and base64 are required.');
-    const resolvedPhase = normalizeGenerationPhase(phase);
-    const resolvedUserText = userText || buildGenerationUserText(plan, resolvedPhase);
+    const resolvedUserText = userText || buildGenerationUserText(plan);
 
     if (!resolvedUserText) throw new Error('Could not resolve userText for generation.');
 
@@ -489,7 +422,7 @@ async function generateFigureHtml({
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationSystemPrompt(scaffold, resolvedPhase),
+        systemPrompt: buildGenerationSystemPrompt(scaffold),
         userContent,
         maxTokens,
     });
@@ -517,8 +450,6 @@ async function generateRefinedFigureHtml({
     mediaType,
     base64,
     userText,
-    anchorNote = '',
-    phase = 'full',
     maxTokens = 16384,
     applyFixes = true,
 }) {
@@ -535,7 +466,7 @@ async function generateRefinedFigureHtml({
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, anchorNote, phase),
+        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation),
         userContent,
         maxTokens,
     });
@@ -567,7 +498,6 @@ async function generateRefinedFigureHtml({
  *   mediaType?: string,
  *   base64?: string,
  *   userText?: string,
- *   phase?: 'geometry' | 'content' | 'full',
  *   maxTokens?: number,
  *   applyFixes?: boolean,
  * }} opts
@@ -583,7 +513,6 @@ async function generateCode(opts) {
         mediaType,
         base64,
         userText,
-        phase = 'full',
         maxTokens = 16384,
         applyFixes = true,
     } = opts;
@@ -594,7 +523,7 @@ async function generateCode(opts) {
 
     // REFINEMENT MODE: previous generation + evaluation feedback
     if (prevHtml && evaluation) {
-        const refinementUserText = userText || buildGenerationUserText(plan, phase);
+        const refinementUserText = userText || buildGenerationUserText(plan);
         return generateRefinedFigureHtml({
             modelId,
             scaffold,
@@ -603,14 +532,13 @@ async function generateCode(opts) {
             mediaType,
             base64,
             userText: refinementUserText,
-            phase,
             maxTokens,
             applyFixes,
         });
     }
 
     // FRESH GENERATION MODE
-    const generationUserText = userText || buildGenerationUserText(plan, phase);
+    const generationUserText = userText || buildGenerationUserText(plan);
     return generateFigureHtml({
         modelId,
         scaffold,
@@ -618,55 +546,8 @@ async function generateCode(opts) {
         base64,
         plan,
         userText: generationUserText,
-        phase,
         maxTokens,
         applyFixes,
-    });
-}
-
-// ── Phase-specific wrappers ───────────────────────────────────────────────────
-// These thin wrappers adapt the existing generators for the two-phase pipeline.
-// Phase 1 focuses on static geometry only; Phase 2 layers interactivity on top.
-
-async function generateGeometryHtml({ plan, ...opts }) {
-    return generateFigureHtml({
-        ...opts,
-        plan: plan || null,
-        phase: 'geometry',
-        userText: opts.userText || buildGenerationUserText(plan || null, 'geometry'),
-    });
-}
-
-async function generateRefinedGeometryHtml({ plan, ...opts }) {
-    return generateRefinedFigureHtml({
-        ...opts,
-        phase: 'geometry',
-        userText: opts.userText || buildGenerationUserText(plan || null, 'geometry'),
-    });
-}
-
-async function generateContentLayerHtml({ approvedGeometryHtml, plan, geoEvaluation, ...opts }) {
-    return generateRefinedFigureHtml({
-        ...opts,
-        prevHtml: approvedGeometryHtml,
-        evaluation: {
-            failure_modes: ['No interactive controls have been added yet — geometry only'],
-            notes: `Geometry approved${geoEvaluation?.overall_average ? ` with Phase 1 average ${geoEvaluation.overall_average}/5` : ''}. Add all planned interactive controls and concept explanations.`,
-        },
-        userText: buildGenerationUserText(plan, 'content'),
-        anchorNote: 'The geometry in PREVIOUS GENERATED PAYLOAD is approved and locked. Copy it exactly. Only add planned interactions, compact controls, event handlers, tooltip text, and popup text after it. Do not modify existing Three.js objects, setCameraView calls, addLabel calls, colors, positions, scale, or framing.',
-        phase: 'content',
-    });
-}
-
-async function generateRefinedContentLayerHtml({ approvedGeometryHtml, plan, prevHtml, evaluation, ...opts }) {
-    return generateRefinedFigureHtml({
-        ...opts,
-        prevHtml,
-        evaluation,
-        userText: buildGenerationUserText(plan, 'content'),
-        anchorNote: 'Geometry from Phase 1 is locked. For this refine_generation pass, do not modify existing Three.js geometry, camera/setCameraView, addLabel calls, colors, positions, scale, or framing. Fix only the interaction layer: registerInteractive calls, event handlers, compact controls, hover/click behavior, tooltip text, and popup text.',
-        phase: 'content',
     });
 }
 
@@ -676,10 +557,6 @@ module.exports = {
     generateFigureHtml,
     generateRefinedFigureHtml,
     generateCode,
-    generateGeometryHtml,
-    generateRefinedGeometryHtml,
-    generateContentLayerHtml,
-    generateRefinedContentLayerHtml,
     extractPayloadFromHtml,
     formatPayload,
 };
