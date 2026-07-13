@@ -195,7 +195,7 @@ async function runGenerationLoop(payload, { pollMs = 2000, maxPolls = 600 } = {}
   throw new Error('Loop generation timed out while waiting for completion.');
 }
 
-const VALID_TABS = ['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise'];
+const VALID_TABS = ['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline'];
 const tabFromHash = () => {
   const h = window.location.hash.slice(1);
   return VALID_TABS.includes(h) ? h : 'generator';
@@ -568,13 +568,13 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.logo}>3D Figure Generator</span>
         <nav style={styles.nav}>
-          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise'].map((t) => (
+          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline'].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{ ...styles.navBtn, ...(tab === t ? styles.navBtnActive : {}) }}
             >
-              {({ 'preview': 'Chapter Preview', 'pairwise': 'Pairwise' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
+              {({ 'preview': 'Chapter Preview', 'pairwise': 'Pairwise', 'chapter-pipeline': 'Chapter Pipeline' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
             </button>
           ))}
         </nav>
@@ -647,6 +647,9 @@ export default function App() {
         )}
         {tab === 'pairwise' && (
           <PairwiseTab availableModels={models} />
+        )}
+        {tab === 'chapter-pipeline' && (
+          <ChapterPipelineTab availableModels={models} />
         )}
       </main>
     </div>
@@ -3869,6 +3872,459 @@ function ChapterPreviewTab() {
             style={{ flex: 1, border: 'none', width: '100%' }}
             title="Chapter Preview"
           />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Chapter Pipeline Tab ──────────────────────────────────────────────────────
+function ChapterPipelineTab({ availableModels }) {
+  const [qmds, setQmds] = React.useState([]);
+  const [selectedQmd, setSelectedQmd] = React.useState(null);
+  const [pipelineStatus, setPipelineStatus] = React.useState('idle'); // idle|classifying|generating|done|error
+  const [classifyProgress, setClassifyProgress] = React.useState({ done: 0, total: 0 });
+  const [finalCounts, setFinalCounts] = React.useState(null); // { completed, errors } from 'done' event
+  const [figures, setFigures] = React.useState([]);
+  const [runId, setRunId] = React.useState(null);
+  const [errorMsg, setErrorMsg] = React.useState(null);
+  const [model, setModel] = React.useState(() => window.localStorage.getItem('figure-platform:selectedModel') || '');
+  const [plannerModel, setPlannerModel] = React.useState(() => window.localStorage.getItem('figure-platform:selectedPlannerModel') || '');
+  const [criticModel, setCriticModel] = React.useState(() => window.localStorage.getItem('figure-platform:selectedCriticModel') || '');
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [runs, setRuns] = React.useState([]);
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [editingRunId, setEditingRunId] = React.useState(null);
+  const [editingName, setEditingName] = React.useState('');
+  const [pipelinePreviewHtml, setPipelinePreviewHtml] = React.useState('');
+  const [pipelinePreviewLoading, setPipelinePreviewLoading] = React.useState(false);
+  const [pipelinePreviewError, setPipelinePreviewError] = React.useState(null);
+
+  function formatRunDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+      d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function fetchRuns() {
+    apiFetch('/api/chapter-pipeline/runs').then(r => r.json()).then(setRuns).catch(() => { });
+  }
+
+  React.useEffect(() => {
+    apiFetch('/api/chapter-pipeline/chapters')
+      .then(r => r.json())
+      .then(data => {
+        setQmds(data);
+        if (data.length > 0) setSelectedQmd(data[0]);
+      })
+      .catch(() => { });
+    fetchRuns();
+  }, []);
+
+  React.useEffect(() => {
+    if (pipelineStatus !== 'done' || !runId) {
+      setPipelinePreviewHtml('');
+      setPipelinePreviewLoading(false);
+      setPipelinePreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setPipelinePreviewLoading(true);
+    setPipelinePreviewError(null);
+    apiFetch(`/api/chapter-pipeline/preview/${encodeURIComponent(runId)}`)
+      .then(async r => {
+        const text = await r.text();
+        if (!r.ok) {
+          try {
+            const parsed = JSON.parse(text);
+            throw new Error(parsed.error || text || 'Preview failed');
+          } catch (err) {
+            throw new Error(err.message || text || 'Preview failed');
+          }
+        }
+        return text;
+      })
+      .then(html => { if (!cancelled) setPipelinePreviewHtml(html); })
+      .catch(err => { if (!cancelled) setPipelinePreviewError(err.message || 'Preview failed'); })
+      .finally(() => { if (!cancelled) setPipelinePreviewLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [pipelineStatus, runId]);
+
+  const isRunning = pipelineStatus === 'classifying' || pipelineStatus === 'generating';
+  const doneFigs = figures.filter(f => f.status === 'done').length;
+  const totalActiveFigs = figures.filter(f => f.status !== 'skipped').length;
+
+  async function handleRun() {
+    if (!selectedQmd) return;
+    setPipelineStatus('classifying');
+    setClassifyProgress({ done: 0, total: 0 });
+    setFinalCounts(null);
+    setFigures([]);
+    setErrorMsg(null);
+    setRunId(null);
+    setPipelinePreviewHtml('');
+    setPipelinePreviewError(null);
+
+    let resp;
+    try {
+      resp = await apiFetch('/api/chapter-pipeline/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chapter: selectedQmd.stem,
+          model: model || undefined,
+          plannerModel: plannerModel || undefined,
+          criticModel: criticModel || undefined,
+        }),
+      });
+    } catch (e) {
+      setPipelineStatus('error');
+      setErrorMsg(e.message);
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            handleEvent(JSON.parse(line));
+          } catch { /* malformed line */ }
+        }
+      }
+    } catch (e) {
+      setPipelineStatus('error');
+      setErrorMsg('Stream error: ' + e.message);
+    }
+  }
+
+  function handleEvent(event) {
+    switch (event.type) {
+      case 'started':
+        setRunId(event.runId);
+        break;
+      case 'classifying':
+        setPipelineStatus('classifying');
+        break;
+      case 'classify_progress':
+        setClassifyProgress({ done: event.done, total: event.total });
+        break;
+      case 'classified':
+        setFigures(event.figures || []);
+        break;
+      case 'generating':
+        setPipelineStatus('generating');
+        break;
+      case 'figure_start':
+        setFigures(prev => prev.map(f => f.stem === event.stem ? { ...f, status: 'running' } : f));
+        break;
+      case 'figure_done':
+        setFigures(prev => prev.map(f => f.stem === event.stem ? { ...f, status: 'done', resultId: event.resultId } : f));
+        break;
+      case 'figure_error':
+        setFigures(prev => prev.map(f => f.stem === event.stem ? { ...f, status: 'error', errorMsg: event.error } : f));
+        break;
+      case 'done':
+        setFinalCounts({ completed: event.completedCount ?? 0, errors: event.errorCount ?? 0 });
+        setPipelineStatus('done');
+        if (event.runId) { setRunId(event.runId); fetchRuns(); }
+        break;
+      case 'error':
+        setPipelineStatus('error');
+        setErrorMsg(event.error || 'Pipeline failed');
+        break;
+      default:
+        break;
+    }
+  }
+
+  function loadRun(run) {
+    setRunId(run.runId);
+    setFigures(run.figures || []);
+    setPipelineStatus('done');
+    setErrorMsg(null);
+  }
+
+  async function saveRunName(rid, name) {
+    try {
+      await apiFetch(`/api/chapter-pipeline/run/${rid}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      setRuns(prev => prev.map(r => r.runId === rid ? { ...r, name } : r));
+    } catch { /* ignore */ }
+    setEditingRunId(null);
+  }
+
+  const categoryColor = { '3d_projection': '#2a5a94', '2d_diagram': '#2e7d32', 'other': '#888' };
+  const categoryLabel = { '3d_projection': '3D', '2d_diagram': '2D', 'other': 'Other' };
+  const statusIcon = { pending: '○', running: '⟳', done: '✓', error: '✗', skipped: '—' };
+  const statusColor = { pending: '#aaa', running: '#f59e0b', done: '#22c55e', error: '#ef4444', skipped: '#ccc' };
+
+  return (
+    <div style={{ display: 'flex', height: 'calc(100vh - 60px)', overflow: 'hidden' }}>
+
+      {/* Left sidebar: chapter selector + controls */}
+      <div style={{ width: 270, minWidth: 270, borderRight: '1px solid #e7e7e7', overflowY: 'auto', background: '#fff', padding: '18px 16px 40px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#222', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Chapter Pipeline</div>
+
+        {/* Chapter selector */}
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 5 }}>Chapter</label>
+          <select
+            value={selectedQmd?.stem || ''}
+            onChange={e => setSelectedQmd(qmds.find(q => q.stem === e.target.value) || null)}
+            disabled={isRunning}
+            style={{ width: '100%', fontSize: 12, border: '1px solid #ddd', borderRadius: 6, padding: '7px 10px', background: '#fff', color: '#333', cursor: isRunning ? 'not-allowed' : 'pointer' }}
+          >
+            {qmds.map(q => (
+              <option key={q.stem} value={q.stem}>{q.title || humanTitle(q.stem)}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Settings toggle */}
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          style={{ fontSize: 11, padding: '5px 10px', borderRadius: 6, border: '1px solid #ddd', background: '#fafafa', color: '#555', cursor: 'pointer', textAlign: 'left' }}
+        >
+          {showSettings ? '▲ Hide settings' : '▼ Model settings'}
+        </button>
+
+        {showSettings && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>Generator model</label>
+              <select
+                value={model}
+                onChange={e => { setModel(e.target.value); window.localStorage.setItem('figure-platform:selectedModel', e.target.value); }}
+                disabled={isRunning}
+                style={{ width: '100%', fontSize: 12, border: '1px solid #ddd', borderRadius: 6, padding: '6px 8px', background: '#fff', color: '#333' }}
+              >
+                <option value="">Server default</option>
+                {availableModels.map(m => <option key={m.id} value={m.id}>{m.label || m.id}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>Planner model</label>
+              <select
+                value={plannerModel}
+                onChange={e => { setPlannerModel(e.target.value); window.localStorage.setItem('figure-platform:selectedPlannerModel', e.target.value); }}
+                disabled={isRunning}
+                style={{ width: '100%', fontSize: 12, border: '1px solid #ddd', borderRadius: 6, padding: '6px 8px', background: '#fff', color: '#333' }}
+              >
+                <option value="">Server default</option>
+                {availableModels.map(m => <option key={m.id} value={m.id}>{m.label || m.id}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>Critic model</label>
+              <select
+                value={criticModel}
+                onChange={e => { setCriticModel(e.target.value); window.localStorage.setItem('figure-platform:selectedCriticModel', e.target.value); }}
+                disabled={isRunning}
+                style={{ width: '100%', fontSize: 12, border: '1px solid #ddd', borderRadius: 6, padding: '6px 8px', background: '#fff', color: '#333' }}
+              >
+                <option value="">Server default</option>
+                {availableModels.map(m => <option key={m.id} value={m.id}>{m.label || m.id}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Run button */}
+        <button
+          onClick={handleRun}
+          disabled={isRunning || !selectedQmd}
+          style={{
+            padding: '10px 0', fontSize: 13, fontWeight: 700, borderRadius: 8,
+            border: 'none', background: isRunning ? '#e0e0e0' : '#111',
+            color: isRunning ? '#888' : '#fff', cursor: isRunning ? 'not-allowed' : 'pointer',
+            width: '100%',
+          }}
+        >
+          {pipelineStatus === 'classifying'
+            ? (classifyProgress.total > 0 ? `Classifying… (${classifyProgress.done}/${classifyProgress.total})` : 'Classifying…')
+            : pipelineStatus === 'generating' ? `Generating… (${doneFigs}/${totalActiveFigs})`
+              : 'Run Pipeline'}
+        </button>
+
+        {/* Status / error */}
+        {pipelineStatus === 'done' && (
+          <div style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>
+            Done — {finalCounts ? finalCounts.completed : figures.filter(f => f.status === 'done').length} generated
+            {(finalCounts ? finalCounts.errors : figures.filter(f => f.status === 'error').length) > 0 && `, ${finalCounts ? finalCounts.errors : figures.filter(f => f.status === 'error').length} errors`}
+          </div>
+        )}
+        {errorMsg && (
+          <div style={{ fontSize: 11, color: '#ef4444', background: '#fff5f5', border: '1px solid #fca5a5', borderRadius: 6, padding: '8px 10px', wordBreak: 'break-word' }}>
+            {errorMsg}
+          </div>
+        )}
+
+        {/* Figure list */}
+        {figures.length > 0 && (() => {
+          // Standalone figures first, then panel groups — avoids visual ambiguity
+          const rows = [];
+          for (const fig of figures) {
+            if (!fig.isPanel) rows.push({ type: 'figure', fig });
+          }
+          const seenParents = new Set();
+          for (const fig of figures) {
+            if (fig.isPanel) {
+              if (!seenParents.has(fig.parentStem)) {
+                seenParents.add(fig.parentStem);
+                rows.push({ type: 'parent_header', parentStem: fig.parentStem });
+              }
+              rows.push({ type: 'panel', fig });
+            }
+          }
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Figures</div>
+              {rows.map((row, i) => {
+                if (row.type === 'parent_header') {
+                  return (
+                    <div key={`ph-${row.parentStem}`} style={{ fontSize: 10, fontWeight: 700, color: '#555', padding: '5px 6px 2px', marginTop: 2 }}>
+                      {row.parentStem} <span style={{ fontWeight: 400, color: '#aaa' }}>(panels)</span>
+                    </div>
+                  );
+                }
+                const fig = row.fig;
+                const isPanel = row.type === 'panel';
+                const label = isPanel ? fig.stem.replace(new RegExp(`^${fig.parentStem}_?`), '') || fig.stem : fig.stem;
+                return (
+                  <div key={fig.stem} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', paddingLeft: isPanel ? 16 : 6, borderRadius: 5, background: fig.status === 'running' ? '#fffbeb' : '#fafafa', border: '1px solid #f0f0f0' }}>
+                    {isPanel && <span style={{ color: '#ddd', fontSize: 10, flexShrink: 0 }}>└</span>}
+                    <span style={{ fontSize: 13, color: statusColor[fig.status] || '#aaa', lineHeight: 1, width: 14, textAlign: 'center', flexShrink: 0 }}>{statusIcon[fig.status] || '?'}</span>
+                    <span style={{ fontSize: 10, color: '#333', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fig.stem}>{label}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: '#f0f4ff', color: categoryColor[fig.category] || '#888', flexShrink: 0 }}>
+                      {categoryLabel[fig.category] || fig.category}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+        {/* Past Runs */}
+        <div style={{ marginTop: 8 }}>
+          <button
+            onClick={() => setShowHistory(s => !s)}
+            style={{ fontSize: 11, padding: '5px 10px', borderRadius: 6, border: '1px solid #ddd', background: '#fafafa', color: '#555', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+          >
+            {showHistory ? '▲ Hide history' : `▼ Past runs${runs.length > 0 ? ` (${runs.length})` : ''}`}
+          </button>
+          {showHistory && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+              {runs.length === 0 && <div style={{ fontSize: 11, color: '#aaa', padding: '4px 2px' }}>No runs yet</div>}
+              {runs.map(run => {
+                const doneFigCount = (run.figures || []).filter(f => f.status === 'done').length;
+                const totalFigCount = (run.figures || []).length;
+                const isActive = run.runId === runId;
+                const defaultLabel = `${humanTitle(run.chapter)} · ${formatRunDate(run.timestamp)}`;
+                return (
+                  <div
+                    key={run.runId}
+                    onClick={() => !editingRunId && loadRun(run)}
+                    style={{ padding: '8px 10px', borderRadius: 6, border: `1px solid ${isActive ? '#111' : '#e0e0e0'}`, background: isActive ? '#f5f5f5' : '#fafafa', cursor: editingRunId === run.runId ? 'default' : 'pointer', display: 'flex', flexDirection: 'column', gap: 4 }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {editingRunId === run.runId ? (
+                        <input
+                          autoFocus
+                          value={editingName}
+                          onChange={e => setEditingName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveRunName(run.runId, editingName);
+                            if (e.key === 'Escape') setEditingRunId(null);
+                            e.stopPropagation();
+                          }}
+                          onBlur={() => saveRunName(run.runId, editingName)}
+                          onClick={e => e.stopPropagation()}
+                          placeholder={defaultLabel}
+                          style={{ flex: 1, fontSize: 11, border: '1px solid #aaa', borderRadius: 4, padding: '2px 5px', outline: 'none' }}
+                        />
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: '#333', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={run.name || defaultLabel}>
+                            {run.name || defaultLabel}
+                          </span>
+                          <button
+                            onClick={e => { e.stopPropagation(); setEditingRunId(run.runId); setEditingName(run.name || ''); }}
+                            title="Rename"
+                            style={{ fontSize: 10, padding: '1px 4px', border: '1px solid #ddd', borderRadius: 3, background: 'transparent', color: '#aaa', cursor: 'pointer', flexShrink: 0, lineHeight: 1.4 }}
+                          >✏</button>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#aaa' }}>
+                      <span style={{ color: run.status === 'done' ? '#22c55e' : run.status === 'running' ? '#f59e0b' : '#888', fontWeight: 600 }}>
+                        {run.status === 'done' ? '✓' : run.status === 'running' ? '⟳' : '✗'}
+                      </span>
+                      <span>{doneFigCount}/{totalFigCount} figs</span>
+                      {run.model && <><span>·</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 80 }}>{run.model}</span></>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Right: preview area */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {pipelineStatus === 'idle' && (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', fontSize: 14, flexDirection: 'column', gap: 10 }}>
+            <div>Select a chapter and click Run Pipeline</div>
+            <div style={{ fontSize: 12, color: '#ccc' }}>Figures will be classified, then generated with the 2D/3D pipeline</div>
+          </div>
+        )}
+        {(pipelineStatus === 'classifying' || pipelineStatus === 'generating') && (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', fontSize: 13, flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 20, color: '#bbb' }}>⟳</div>
+            <div>{pipelineStatus === 'classifying'
+              ? (classifyProgress.total > 0 ? `Classifying figures… (${classifyProgress.done} / ${classifyProgress.total})` : 'Classifying figures…')
+              : `Generating figures (${doneFigs} / ${totalActiveFigs})…`}</div>
+          </div>
+        )}
+        {pipelineStatus === 'done' && runId && (
+          pipelinePreviewLoading ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', fontSize: 13 }}>
+              Loading chapter preview…
+            </div>
+          ) : pipelinePreviewError ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', fontSize: 13, padding: 24, textAlign: 'center' }}>
+              {pipelinePreviewError}
+            </div>
+          ) : (
+            <iframe
+              key={runId}
+              srcDoc={pipelinePreviewHtml}
+              style={{ flex: 1, border: 'none', width: '100%' }}
+              title="Chapter Pipeline Preview"
+              sandbox="allow-scripts allow-same-origin"
+            />
+          )
+        )}
+        {pipelineStatus === 'error' && (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', fontSize: 14 }}>
+            Pipeline error — check the sidebar for details
+          </div>
         )}
       </div>
     </div>
