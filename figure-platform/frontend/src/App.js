@@ -368,7 +368,7 @@ export default function App() {
       // For 3D (non-2d) generations use the iterative loop endpoint to preserve attempts
       const jobFn = is2d ? runGenerationJob2d : runGenerationLoop;
       const payload = is2d
-        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined }
+        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, experiment: selectedExperiment || undefined }
         : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: 'benchmark', criticPasses: 1, experiment: selectedExperiment || undefined, fewShot };
       const data = await jobFn(payload);
       const generatedEvaluationResults = data.evaluationResults || {};

@@ -1,118 +1,139 @@
 /**
- * planner-2d.js — deep vision analysis for 2D interactive figure reconstruction
+ * planner-2d.js — educational demo planner for 2D interactive figures
  *
- * The planner reads the figure image and produces a detailed blueprint that the
- * generator uses to RECREATE the figure from scratch as an interactive web page.
- * No image embedding — the output is entirely SVG / HTML / CSS / JS.
+ * Reads the figure image and textbook context, produces a pedagogical blueprint
+ * focused on guided demo steps and meaningful interactions. Geometry and layout
+ * details are intentionally minimal — the generator handles those from the image.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { generateWithModel } = require('./models');
+const { findQmdFile } = require('./qmd_utils');
 
 const PLANNER_2D_MODEL = 'gemini-3.5-flash';
 const PLANNER_2D_MAX_TOKENS = 4096;
 
-const PLAN_2D_SYSTEM_PROMPT = `You are a precision visual analyst preparing a reconstruction blueprint for an interactive web figure.
+const PLAN_2D_SYSTEM_PROMPT = `You are an educational designer planning an interactive guided demo for a textbook figure.
 
-Your job: look at the figure VERY carefully and extract every piece of information a developer needs to recreate it exactly — data values, axis ranges, colors, layout, labels — without ever seeing the original image.
-
-Output this exact JSON structure:
+Output ONLY this JSON:
 {
-  "concept": "One sentence: what concept does this figure teach?",
-  "figureType": "One of: network_diagram | matrix | flow_chart | multi_panel | scatter_plot | line_plot | contour_plot | 3d_surface | equation_visual | architecture | other",
-  "layout": "Describe the spatial arrangement precisely (e.g. '2×2 grid of panels labeled a-d', 'single 3D surface', 'left-right flow')",
-  "aspectRatio": 2.4,
-  "elementSizes": {
-    "nodeRadiusFraction": 0.045,
-    "strokeWidth": 1.5,
-    "fontSize": 11,
-    "arrowheadSize": 6
-  },
-  "panels": [
+  "concept": "One sentence: the core concept this figure teaches.",
+  "figureType": "line_plot | scatter_plot | bar_chart | flow_chart | network_diagram | diagram | other",
+  "learningObjectives": [
+    "After engaging with this figure, the student will understand X",
+    "The student will be able to explain Y"
+  ],
+  "keyInsight": "The single most important 'aha moment' — the thing that makes this concept click.",
+  "interactions": [
     {
-      "id": "a",
-      "label": "a)",
-      "type": "scatter_plot | line_plot | contour_plot | 3d_surface | bar_chart | diagram | other",
-      "renderingMode": "2d | 3d",
-      "position": "top-left | top-right | bottom-left | bottom-right | full",
-      "axes": {
-        "x": { "label": "exact axis label text", "min": 0, "max": 2, "ticks": [0, 0.5, 1.0, 1.5, 2.0] },
-        "y": { "label": "exact axis label text", "min": 0, "max": 2, "ticks": [0, 0.5, 1.0, 1.5, 2.0] },
-        "z": { "label": "for 3D only", "min": 0, "max": 70 }
-      },
-      "series": [
-        {
-          "type": "scatter | line | contour | surface | path | network_edges | network_nodes",
-          "color": "#hex — read the exact color from the image, e.g. '#999999'",
-          "opacity": 1.0,
-          "label": "series label if any",
-          "points": [[x1,y1],[x2,y2]],
-          "note": "describe if too many points to list — give distribution pattern"
-        }
-      ],
-      "edgeStyle": {
-        "directed": true,
-        "arrowhead": "triangle | open | none",
-        "arrowColor": "#999",
-        "strokeColor": "#999",
-        "strokeWidth": 1
-      },
-      "nodeDecorations": "describe any symbols inside nodes (e.g. 'teal squiggle activation symbol', 'gray fill for dropped nodes', 'white fill with black border for active')",
-      "annotations": ["list any text annotations, arrows, numbered labels visible in this panel"],
-      "cameraAnalysis": "For 3D panels only: axis directions, elevation ~Xdeg, azimuth ~Ydeg, camera.position.set(x,y,z)"
+      "id": "camelCaseId",
+      "type": "slider | toggle | button",
+      "label": "Short label (≤20 chars)",
+      "range": [min, max, step],
+      "default": value,
+      "effect": "Concrete description of what visually changes when this control is adjusted.",
+      "teaches": "The specific concept or causal relationship this control demonstrates."
     }
   ],
-  "colorScheme": "Describe the full palette: background, axis color, data series colors with hex codes if possible",
-  "renderingMode": "2d | mixed | 3d — 'mixed' if some panels are 3D and others 2D",
-  "reconstructionNotes": "Critical notes: exact data values to reproduce, tricky layout details, which panels MUST use Three.js vs SVG"
+  "demo_steps": [
+    {
+      "title": "Short step title (3–6 words)",
+      "narration": "2–3 sentences as a tutor: tell the student (1) what to look at RIGHT NOW, (2) what to do or notice, (3) what to conclude and why it matters for understanding the concept.",
+      "control_values": { "camelCaseId": value },
+      "focus": "The specific visual element, relationship, or pattern to attend to in this step."
+    }
+  ],
+  "reconstructionNotes": "High-level visual description for the generator: approximate layout, colors, key labels, data patterns, important annotations. No pixel measurements — describe what matters visually."
 }
 
-MEASUREMENT RULES — required for geometry faithfulness:
-- aspectRatio: measure the figure's width divided by its height as a decimal (e.g. a landscape figure ~2× wider than tall = 2.0). This is mandatory.
-- elementSizes.nodeRadiusFraction: for diagrams with circular nodes, measure node radius as a fraction of total figure width (e.g. if node diameter is ~9% of figure width, nodeRadiusFraction = 0.045). If no circular nodes, omit.
-- elementSizes.strokeWidth: the edge/border stroke width in pixels as it appears at ~600px figure width.
-- elementSizes.fontSize: the dominant label font size in pixels as it appears at ~600px figure width.
-- elementSizes.arrowheadSize: the arrowhead length in pixels as it appears at ~600px figure width.
-These measurements let the generator set the correct viewBox and element scale without guessing.
+RULES:
+- figureType: pick the closest match; used only to select the rendering library.
+- learningObjectives: 2–4 items. Be specific — not 'understand the graph' but 'understand why X increases as Y decreases'.
+- keyInsight: one sentence. This is the thing you most want the student to walk away remembering.
+- interactions: at most 3. Only include controls that genuinely reveal something about the concept — not decorative toggles. slider for continuous parameters, toggle for show/hide, button for replay/reset. Return [] if no interaction meaningfully deepens understanding.
+- demo_steps: 3–5 steps forming a pedagogical arc. Step 1 orients (what is this?). Middle steps build understanding through exploration. Final step synthesizes. Each step MUST set control_values to a concrete state. Return [] only if the figure is completely static with no pedagogical progression.
+- reconstructionNotes: describe what matters for faithful recreation — axis labels, approximate data shape, color coding, key annotations — but do NOT try to enumerate exact data coordinates.
+- Output ONLY valid JSON — no markdown fences, no explanation.`;
 
-EXTRACTION RULES:
-- For each scatter plot: list every visible data point's approximate (x, y) by reading coordinates against the axes
-- For gradient descent paths: list each numbered node's (φ₀, φ₁) position AND the loss value if readable
-- For contour plots: describe the shape (elliptical/circular), spacing, and orientation of contours
-- For 3D surfaces: describe the surface equation if inferrable (e.g. paraboloid), the viewing angle
-- For line plots: give the equation or start/end points for each line
-- panels array: include ALL panels — even if only one panel has 3D, mark it renderingMode:'3d'
-- renderingMode '3d' should be used for ANY figure containing genuine 3D geometry: grids of spheres/neurons in 3D space, volumetric cubes, 3D coordinate frames, loss surfaces, point clouds, 3D architectural diagrams with depth. "Looks 3D" = IS 3D for this purpose.
-- renderingMode '2d' is ONLY for flat diagrams with no depth: flow charts, matrices, flat network graphs, 2D plots
-- Output ONLY valid JSON — no markdown, no explanation`;
+// ── QMD context extraction ────────────────────────────────────────────────────
+
+/**
+ * Load ±15 lines of QMD context around the first occurrence of figureStem.
+ * Returns null if the chapter or QMD file cannot be found.
+ */
+function extractFigureContext(figureStem, chapterName) {
+  if (!chapterName) return null;
+  const qmdPath = findQmdFile(chapterName);
+  if (!qmdPath) return null;
+
+  let content;
+  try {
+    content = fs.readFileSync(qmdPath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const lines = content.split('\n');
+  const stemLower = figureStem.toLowerCase().replace(/\.[^.]+$/, ''); // strip extension
+  const RADIUS = 15;
+
+  let matchLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    if (
+      line.includes(stemLower) ||
+      line.includes('/' + stemLower + '.') ||
+      line.includes('/' + stemLower + ')')
+    ) {
+      matchLine = i;
+      break;
+    }
+  }
+
+  if (matchLine === -1) {
+    // Fallback: return first 40 lines (chapter intro context)
+    return lines.slice(0, 40).join('\n');
+  }
+
+  const start = Math.max(0, matchLine - RADIUS);
+  const end = Math.min(lines.length - 1, matchLine + RADIUS);
+  return lines.slice(start, end + 1).join('\n');
+}
+
+// ── Main planner ──────────────────────────────────────────────────────────────
 
 /**
  * Analyze a 2D figure and produce a reconstruction blueprint.
  *
  * @param {string} figureStem   - filename without extension
- * @param {string} chapterName  - chapter hint (optional)
+ * @param {string} chapterName  - chapter hint (used to locate .qmd for context)
  * @param {string} base64       - base64-encoded image
  * @param {string} mediaType    - e.g. 'image/png'
  * @returns {Promise<object>}   - parsed plan JSON
  */
-async function plan2dFigure(figureStem, chapterName, base64, mediaType) {
+async function plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModel = PLANNER_2D_MODEL) {
+  const contextChunk = extractFigureContext(figureStem, chapterName);
+
   const userContent = [
     { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
     {
       type: 'text',
-      text: `Figure: "${figureStem}"${chapterName ? ` (chapter: ${chapterName})` : ''}
+      text: `Figure: "${figureStem}"${chapterName ? ` (chapter: ${chapterName})` : ''}` +
+        (contextChunk ? `\n\nContext from textbook:\n${contextChunk}` : '') +
+        `\n\nDesign an educational guided demo for this figure. Think through:
+1. What is the core concept a student should understand from this figure?
+2. What is the single most important insight — the "aha moment"?
+3. What sequence of observations would build understanding from scratch?
+4. What controls (if any) would let a student explore the concept hands-on?
+5. How should each demo step direct the student's attention and explain what they see?
 
-Analyze this figure carefully. Pay special attention to:
-1. Whether it has multiple panels (a, b, c, d) and what type each panel is
-2. The EXACT data point coordinates — read each scatter/path point against the axis scale
-3. Which panels contain true 3D content (loss surfaces, coordinate frames) vs 2D plots
-4. The viewing angle of any 3D panel (elevation, azimuth, camera position)
-5. Axis ranges, tick values, and labels for every panel
-
-Return the full reconstruction blueprint as JSON. The developer cannot see this image — your coordinates and descriptions are the only guide they have.`,
+Do NOT describe pixel positions, exact coordinates, or rendering geometry. Focus entirely on the learning experience.
+Return the pedagogical blueprint as JSON.`,
     },
   ];
 
-  let content = await generateWithModel(PLANNER_2D_MODEL, {
+  let content = await generateWithModel(plannerModel, {
     systemPrompt: PLAN_2D_SYSTEM_PROMPT,
     userContent,
     maxTokens: PLANNER_2D_MAX_TOKENS,
@@ -127,15 +148,14 @@ Return the full reconstruction blueprint as JSON. The developer cannot see this 
     return {
       concept: figureStem.replace(/_/g, ' '),
       figureType: 'other',
-      layout: 'Unknown layout',
-      elements: [],
+      learningObjectives: [],
+      keyInsight: '',
       interactions: [],
-      steps: [{ label: 'Overview', description: 'Explore this figure interactively.', highlight: 'all' }],
-      colorScheme: 'neutral',
+      demo_steps: [],
       reconstructionNotes: '',
       raw: content.slice(0, 500),
     };
   }
 }
 
-module.exports = { plan2dFigure };
+module.exports = { plan2dFigure, PLANNER_2D_MODEL };
