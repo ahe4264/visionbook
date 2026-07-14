@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const yaml = require('js-yaml');
+const sharp = require('sharp');
 const { materializeEvaluationViews } = require('./result_schema');
 
 const QMD_DIR = path.join(__dirname, '..', '..');
@@ -353,7 +354,7 @@ async function analyzeChapterFigure(qmdPath, figStem, { resultId, question, mode
   return { analysis, figStem, model: usedModel, resultId: entry.resultId };
 }
 
-function buildChapterHtml(qmdPath, figSelections) {
+async function buildChapterHtml(qmdPath, figSelections) {
   const figIndex = buildFigureIndex();
   const qmdStem = path.basename(qmdPath, '.qmd');
   const substituted = [];
@@ -377,6 +378,27 @@ function buildChapterHtml(qmdPath, figSelections) {
     throw new Error('Pandoc failed (' + command + '): ' + (stderr || err.message || String(err)));
   }
 
+  // Pre-read source image dimensions so each iframe matches the original's aspect ratio.
+  const imgDimsMap = {}; // stem -> paddingPct (image_height / image_width * 100)
+  const figStems = [...bodyHtml.matchAll(/<img[^>]*src="(?:\.\/)?figures\/[^/]+\/([^"]+)"[^>]*\/>/g)]
+    .map(m => path.basename(m[1], path.extname(m[1])));
+  await Promise.all(figStems.map(async (stem) => {
+    if (imgDimsMap[stem] !== undefined) return;
+    const entries = figIndex[stem] || [];
+    if (!entries.length) return;
+    // Find the source image path from the pandoc-generated img src attribute
+    const srcMatch = bodyHtml.match(new RegExp(`src="(?:\\.\\/)?(figures/[^/]+/${stem}\\.[^"]+)"`));
+    if (!srcMatch) return;
+    const imgPath = path.join(QMD_DIR, srcMatch[1]);
+    if (!fs.existsSync(imgPath)) return;
+    try {
+      const imgMeta = await sharp(imgPath).metadata();
+      if (imgMeta.width && imgMeta.height) {
+        imgDimsMap[stem] = (imgMeta.height / imgMeta.width) * 100;
+      }
+    } catch { /* skip unreadable */ }
+  }));
+
   bodyHtml = bodyHtml.replace(
     /<img(\s[^>]*)src="(?:\.\/)?(figures\/[^/]+\/([^"]+))"([^>]*)\/>/g,
     (match, pre, fullPath, filename, post) => {
@@ -390,10 +412,6 @@ function buildChapterHtml(qmdPath, figSelections) {
 
       const htmlContent = loadOverride(qmdStem, stem) || entry.html || (entry.htmlPath ? fs.readFileSync(entry.htmlPath, 'utf-8') : '');
       if (!htmlContent) return match;
-      const allAttrs = pre + post;
-      const wMatch = allAttrs.match(/width:\s*([\d.]+)%/);
-      const wPct = wMatch ? parseFloat(wMatch[1]) : 65;
-      const height = wPct >= 80 ? '560px' : wPct >= 50 ? '500px' : '460px';
 
       substituted.push({
         stem,
@@ -405,14 +423,26 @@ function buildChapterHtml(qmdPath, figSelections) {
         score: entry.score,
       });
       const src = 'data:text/html;charset=utf-8;base64,' + Buffer.from(htmlContent).toString('base64');
-      return '<iframe class="fig-iframe" src="' + src + '" style="width:100%;height:' + height + ';border:none;display:block;margin:0 auto;" scrolling="no" allowfullscreen loading="lazy"></iframe>';
+      const paddingPct = imgDimsMap[stem];
+      // Extract QMD-specified display width from pandoc's injected style/width attribute.
+      // padding-top % is always relative to the containing block's width, so we scale it
+      // by wPct/100 to keep the iframe's aspect ratio correct at a narrower width.
+      const attrs = pre + post;
+      const styleWM = attrs.match(/style="[^"]*width\s*:\s*([\d.]+)%/);
+      const widthAttrM = !styleWM && attrs.match(/\bwidth="([\d.]+)%"/);
+      const qmdWidthPct = styleWM ? parseFloat(styleWM[1]) : (widthAttrM ? parseFloat(widthAttrM[1]) : null);
+      const wPct = qmdWidthPct != null ? qmdWidthPct : 100;
+      if (paddingPct != null) {
+        const adjPadding = (paddingPct * wPct / 100).toFixed(2);
+        const marginStr = wPct < 100 ? ';margin:0 auto' : '';
+        return `<div style="position:relative;width:${wPct.toFixed(1)}%;padding-top:${adjPadding}%${marginStr};"><iframe src="${src}" style="position:absolute;inset:0;width:100%;height:100%;border:none;" scrolling="no" allowfullscreen loading="lazy"></iframe></div>`;
+      }
+      return `<iframe class="fig-iframe" src="${src}" style="width:${wPct.toFixed(1)}%;height:500px;border:none;display:block;margin:0 auto;" scrolling="no" allowfullscreen loading="lazy"></iframe>`;
     }
   );
 
-  // Unwrap <p><iframe…></iframe></p> left by the substitution above.
-  // The regex replaces <img/> but leaves the surrounding <p> intact, which
-  // breaks flex layout (block <p> overrides the flex-cell sizing).
-  bodyHtml = bodyHtml.replace(/<p>\s*(<iframe[^>]*>.*?<\/iframe>)\s*<\/p>/gs, '$1');
+  // Unwrap <p><iframe/div…></p> left by the substitution above.
+  bodyHtml = bodyHtml.replace(/<p>\s*(<(?:iframe|div)[^>]*>[\s\S]*?<\/(?:iframe|div)>)\s*<\/p>/g, '$1');
 
   // Strip raw Quarto cross-reference labels that pandoc doesn't process
   // (e.g. {#eq-directedjoint}, {#fig-foo}, {#sec-bar})
@@ -474,7 +504,7 @@ MathJax = {
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 <style>
 *,*::before,*::after{box-sizing:border-box}
-body{font-family:"Source Serif 4","Georgia",serif;font-size:16px;line-height:1.65;color:#1a1a1a;background:#fff;max-width:860px;margin:0 auto;padding:2em 250px 5em 2.5em}
+body{font-family:"Source Serif 4","Georgia",serif;font-size:16px;line-height:1.65;color:#1a1a1a;background:#fff;max-width:860px;margin:0 auto;padding:2em 250px 5em 2.5em;overflow-x:hidden}
 h1{font-size:2.1em;font-weight:700;margin:0 0 .15em;line-height:1.2}
 h2{font-size:1.35em;font-weight:700;margin:2em 0 .4em;padding-bottom:.25em;border-bottom:1px solid #e8e8e8}
 h3{font-size:1.1em;font-weight:700;margin:1.6em 0 .3em}
@@ -506,8 +536,8 @@ th{background:#f8f8f8;font-weight:600}
 .column-margin figcaption{font-size:.92em;color:#666;text-align:left;margin-top:.3em}
 .column-margin p{margin:0 0 .7em}
 .column-margin > :last-child{margin-bottom:0}
-@media (max-width: 720px){
-  body{max-width:860px;padding:2em 2.5em 5em}
+@media (max-width: 1100px){
+  body{max-width:860px;padding:2em 2.5em 5em;overflow-x:hidden}
   .column-margin{float:none;width:auto;max-width:none;margin:1em 0;padding:0;font-size:.9em;color:#555}
 }
 </style>
@@ -599,6 +629,8 @@ module.exports = {
   getSubstitutionMap,
   saveOverride,
   analyzeChapterFigure,
+  wrapPage,
+  resolvePandocInvocation,
   QMD_DIR,
   RESULTS_DIR,
 };

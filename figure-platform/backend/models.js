@@ -177,6 +177,7 @@ async function getGemini() {
 const MODEL_REGISTRY = {
   // OpenAI
   'gpt-5.5': { provider: 'openai', apiModel: 'gpt-5.5', label: 'GPT-5.5' },
+  'gpt-5.6-sol': { provider: 'openai', apiModel: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
   'gpt-5.4': { provider: 'openai', apiModel: 'gpt-5.4', label: 'GPT-5.4' },
   'gpt-4.1': { provider: 'openai', apiModel: 'gpt-4.1', label: 'GPT-4.1' },
   'gpt-4o': { provider: 'openai', apiModel: 'gpt-4o', label: 'GPT-4o' },

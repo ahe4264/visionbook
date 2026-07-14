@@ -1690,6 +1690,11 @@ app.post('/api/experiments/evaluate', async (req, res) => {
 // Pairwise evaluation routes
 // ══════════════════════════════════════════════════════════════════════════════
 
+const PAIRWISE_HIDDEN_SETUPS = new Set([
+  'few_shot_benchmark_gpt4.1/gpt-5.5',
+  'few_shot_benchmark_gemini3.5flash/gpt-5.5',
+]);
+
 // ── GET /api/pairwise/setups ──────────────────────────────────────────────────
 // Returns all <experiment>/<model> setups from prompt_experiments/, backend/results/
 // agent records, and local agent_batch_out-style manifests, filtered to "benchmark".
@@ -1723,12 +1728,13 @@ app.get('/api/pairwise/setups', (req, res) => {
       if (!s.experiment.toLowerCase().includes('benchmark')) continue;
       setups.push(s);
     }
+    const visibleSetups = setups.filter(s => !PAIRWISE_HIDDEN_SETUPS.has(s.id));
 
     const { setupA, setupB } = req.query;
     let matchingFigures = null;
     if (setupA && setupB) {
-      const sa = setups.find(s => s.id === setupA);
-      const sb = setups.find(s => s.id === setupB);
+      const sa = visibleSetups.find(s => s.id === setupA);
+      const sb = visibleSetups.find(s => s.id === setupB);
       if (sa && sb) {
         // Build lookup key: if a figure has a chapter, use chapter__name; otherwise name only.
         // When one side lacks chapter, fall back to name-only matching.
@@ -1754,7 +1760,7 @@ app.get('/api/pairwise/setups', (req, res) => {
       }
     }
 
-    return res.json({ setups, matchingFigures });
+    return res.json({ setups: visibleSetups, matchingFigures });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1894,23 +1900,142 @@ app.delete('/api/pairwise/human-evaluate', (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Chapter Preview & Editor routes
-// ══════════════════════════════════════════════════════════════════════════════
-const {
-  listQmdFiles, listBookStructure, buildChapterHtml, getSubstitutionMap,
-  saveOverride, analyzeChapterFigure, QMD_DIR,
-} = require('./chapter_editor');
-const { generateWithModel: genModel } = require('./models');
-
-// ── GET /api/chapter-preview/qmds — list available qmd files ─────────────────
-app.get('/api/chapter-preview/qmds', (req, res) => {
+// ── DELETE /api/pairwise/machine-eval/:setupA/:setupB ────────────────────────
+// Clears machineEval from all figures for the pair.
+app.delete('/api/pairwise/machine-eval/:setupA/:setupB', (req, res) => {
   try {
-    return res.json(listQmdFiles());
+    clearAllMachineEvals(req.params.setupA, req.params.setupB);
+    return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// ── DELETE /api/pairwise/machine-eval/:setupA/:setupB/:chapter/:figure ───────
+// Clears machineEval from a single figure.
+app.delete('/api/pairwise/machine-eval/:setupA/:setupB/:chapter/:figure', (req, res) => {
+  const { setupA, setupB, chapter, figure } = req.params;
+  try {
+    clearMachineEval(setupA, setupB, chapter, figure);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/pairwise/rankings ────────────────────────────────────────────────
+
+function computeBradleyTerry(matchups) {
+  // matchups: [{a, b, aWins}] where aWins ∈ {0, 0.5, 1}
+  // Returns sorted [{id, score, wins, losses, ties, comparisons}]
+  const setupSet = new Set(matchups.flatMap(m => [m.a, m.b]));
+  const setups = [...setupSet];
+  if (setups.length === 0) return [];
+
+  const W = Object.fromEntries(setups.map(s => [s, 0]));
+  const rawWins = Object.fromEntries(setups.map(s => [s, 0]));
+  const rawLosses = Object.fromEntries(setups.map(s => [s, 0]));
+  const rawTies = Object.fromEntries(setups.map(s => [s, 0]));
+  const Nij = {};
+  for (const s of setups) Nij[s] = Object.fromEntries(setups.map(t => [t, 0]));
+
+  for (const { a, b, aWins } of matchups) {
+    W[a] += aWins;
+    W[b] += (1 - aWins);
+    Nij[a][b]++;
+    Nij[b][a]++;
+    if (aWins === 1) { rawWins[a]++; rawLosses[b]++; }
+    else if (aWins === 0) { rawLosses[a]++; rawWins[b]++; }
+    else { rawTies[a]++; rawTies[b]++; }
+  }
+
+  const p = Object.fromEntries(setups.map(s => [s, 1]));
+  for (let iter = 0; iter < 500; iter++) {
+    const newP = {};
+    for (const i of setups) {
+      let denom = 0;
+      for (const j of setups) {
+        if (j !== i) denom += Nij[i][j] / (p[i] + p[j]);
+      }
+      newP[i] = denom > 0 ? W[i] / denom : p[i];
+    }
+    const total = setups.reduce((acc, s) => acc + newP[s], 0);
+    let maxChange = 0;
+    for (const s of setups) {
+      const norm = total > 0 ? newP[s] / total : 1 / setups.length;
+      maxChange = Math.max(maxChange, Math.abs(norm - p[s]));
+      p[s] = norm;
+    }
+    if (maxChange < 1e-8) break;
+  }
+
+  return setups
+    .map(id => ({
+      id,
+      score: p[id],
+      wins: rawWins[id],
+      losses: rawLosses[id],
+      ties: rawTies[id],
+      comparisons: rawWins[id] + rawLosses[id] + rawTies[id],
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+app.get('/api/pairwise/rankings', (req, res) => {
+  try {
+    const allResults = loadAllPairsForRanking().filter(r => !PAIRWISE_HIDDEN_SETUPS.has(r.setupA) && !PAIRWISE_HIDDEN_SETUPS.has(r.setupB));
+    const availableSetups = [...new Set(allResults.flatMap(r => [r.setupA, r.setupB]).filter(Boolean))].sort();
+
+    const allowedSetups = req.query.setups !== undefined ? new Set(req.query.setups.split(',').filter(Boolean)) : null;
+    const filtered = allowedSetups
+      ? allResults.filter(r => allowedSetups.has(r.setupA) && allowedSetups.has(r.setupB))
+      : allResults;
+
+    const DIMS = ['geometry', 'interactivity', 'faithfulness', 'labels', 'concept'];
+
+    function buildMachineMatchups(getWinner) {
+      return filtered.flatMap(r => {
+        const w = getWinner(r);
+        if (!w || !r.setupA || !r.setupB) return [];
+        if (w !== r.setupA && w !== r.setupB && w !== 'tie') return [];
+        return [{ a: r.setupA, b: r.setupB, aWins: w === r.setupA ? 1 : w === 'tie' ? 0.5 : 0 }];
+      });
+    }
+
+    const machine = {
+      overall: computeBradleyTerry(buildMachineMatchups(r => r.machineEval?.aggregator?.winner)),
+    };
+    for (const d of DIMS) {
+      machine[d] = computeBradleyTerry(buildMachineMatchups(r => r.machineEval?.dimensions?.[d]?.winner));
+    }
+
+    const humanMatchups = filtered.flatMap(r =>
+      (r.humanEvals || []).flatMap(h => {
+        if (!h.winner || !r.setupA || !r.setupB) return [];
+        if (h.winner !== r.setupA && h.winner !== r.setupB && h.winner !== 'tie') return [];
+        return [{ a: r.setupA, b: r.setupB, aWins: h.winner === r.setupA ? 1 : h.winner === 'tie' ? 0.5 : 0 }];
+      })
+    );
+
+    return res.json({
+      machine,
+      human: { overall: computeBradleyTerry(humanMatchups) },
+      totalFigures: filtered.length,
+      availableSetups,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Chapter Preview & Editor routes
+// ══════════════════════════════════════════════════════════════════════════════
+const {
+  listBookStructure, buildChapterHtml, getSubstitutionMap,
+  saveOverride, analyzeChapterFigure, QMD_DIR,
+} = require('./chapter_editor');
+const { generateWithModel: genModel } = require('./models');
 
 // ── GET /api/chapter-preview/book-structure — full parts+chapters tree ─────────
 app.get('/api/chapter-preview/book-structure', (req, res) => {
@@ -1937,7 +2062,7 @@ app.get('/api/chapter-preview/substitutions', (req, res) => {
 
 // ── GET /api/chapter-preview/render — return augmented chapter HTML ───────────
 // Query: qmd=<filename>, selections=<JSON { figStem: { experiment, model } }>
-app.get('/api/chapter-preview/render', (req, res) => {
+app.get('/api/chapter-preview/render', async (req, res) => {
   const { qmd, selections } = req.query;
   if (!qmd) return res.status(400).json({ error: 'qmd param required' });
   const qmdPath = path.resolve(path.join(QMD_DIR, qmd));
@@ -1945,7 +2070,7 @@ app.get('/api/chapter-preview/render', (req, res) => {
     return res.status(404).json({ error: 'QMD file not found' });
   try {
     const figSelections = selections ? JSON.parse(selections) : {};
-    const { html, substituted } = buildChapterHtml(qmdPath, figSelections);
+    const { html, substituted } = await buildChapterHtml(qmdPath, figSelections);
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch (err) {
@@ -2065,6 +2190,87 @@ Please produce an improved wrapper that makes this figure look great in the chap
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
+});
+
+// ── Chapter Pipeline routes ───────────────────────────────────────────────────
+const chapterPipeline = require('./chapter_pipeline');
+
+// GET /api/chapter-pipeline/chapters — list chapters from qmd_chapter_map.json
+app.get('/api/chapter-pipeline/chapters', (req, res) => {
+  try {
+    const mapPath = path.join(FIGURES_DIR, 'qmd_chapter_map.json');
+    const map = JSON.parse(fs.readFileSync(mapPath, 'utf-8'));
+    const chapters = Object.keys(map)
+      .map(key => ({ stem: key.replace(/\.qmd$/, '') }))
+      .sort((a, b) => a.stem.localeCompare(b.stem));
+    res.json(chapters);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/chapter-pipeline/runs — list all pipeline runs
+app.get('/api/chapter-pipeline/runs', (req, res) => {
+  try {
+    res.json(chapterPipeline.listChapterPipelineRuns());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/chapter-pipeline/run/:runId — get a single run's metadata
+app.get('/api/chapter-pipeline/run/:runId', (req, res) => {
+  try {
+    res.json(chapterPipeline.getChapterPipelineRun(req.params.runId));
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/chapter-pipeline/run/:runId — update mutable fields (name)
+app.patch('/api/chapter-pipeline/run/:runId', (req, res) => {
+  try {
+    res.json(chapterPipeline.updateChapterPipelineRun(req.params.runId, req.body));
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// GET /api/chapter-pipeline/preview/:runId — render chapter HTML with pipeline results
+app.get('/api/chapter-pipeline/preview/:runId', async (req, res) => {
+  try {
+    const { html } = await chapterPipeline.buildPipelinePreviewHtml(req.params.runId);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// POST /api/chapter-pipeline/start — streams NDJSON progress events
+app.post('/api/chapter-pipeline/start', async (req, res) => {
+  const { chapter, model, plannerModel, criticModel, fewShot } = req.body;
+  if (!chapter) return res.status(400).json({ error: 'chapter is required' });
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  const runId = makeId();
+  const emit = (obj) => { try { res.write(JSON.stringify(obj) + '\n'); } catch { /* client disconnected */ } };
+
+  emit({ type: 'started', runId });
+
+  try {
+    await chapterPipeline.runChapterPipeline(
+      { runId, chapter, model: model || CURRENT_MODEL, plannerModel: plannerModel || PLANNER_MODEL, criticModel: criticModel || CURRENT_CRITIC_MODEL, fewShot },
+      emit
+    );
+  } catch (e) {
+    emit({ type: 'error', error: e.message });
+  }
+
+  res.end();
 });
 
 // ── Serve React build in production ───────────────────────────────────────────
