@@ -18,10 +18,11 @@ const {
   loadPairwiseResult,
   savePairwiseResult,
   loadAllPairwiseResults,
+  loadAllPairsForRanking,
   canonicalizePair,
 } = require('./pairwise_evaluator');
 const { planForFigure, planChapter, PLANNER_MODEL } = require('./planner');
-const { plan2dFigure } = require('./planner-2d');
+const { plan2dFigure, PLANNER_2D_MODEL } = require('./planner-2d');
 const { listChapters, list3dCandidates, list2dCandidates } = require('./chapter-discovery');
 const { getAvailableModels } = require('./models');
 const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage, upsertAttempts } = require('./result_schema');
@@ -180,13 +181,13 @@ app.post('/api/plan', async (req, res) => {
 
 // ── POST /api/plan-2d — image-first plan for inline ActiveReader overlays ────
 app.post('/api/plan-2d', async (req, res) => {
-  const { filename, chapterHint, base64, mediaType } = req.body;
+  const { filename, chapterHint, base64, mediaType, plannerModel } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required.' });
   if (!base64 || !mediaType) return res.status(400).json({ error: 'base64 and mediaType are required.' });
 
   const stem = filename.replace(/\.[^.]+$/, '');
   try {
-    const plan = await plan2dFigure(stem, chapterHint || null, base64, mediaType);
+    const plan = await plan2dFigure(stem, chapterHint || null, base64, mediaType, plannerModel || PLANNER_2D_MODEL);
     return res.json(plan);
   } catch (err) {
     console.error('Plan-2d error:', err?.message || err);
@@ -340,7 +341,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   };
 }
 
-async function generate2dFigure({ base64, mediaType, filename, plan, model: requestedModel, experiment: requestedExperiment }) {
+async function generate2dFigure({ base64, mediaType, filename, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel }) {
   if (!base64 || !mediaType || !filename) {
     const err = new Error('base64, mediaType, and filename are required.');
     err.statusCode = 400;
@@ -354,12 +355,32 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
 
   console.log(`[generate-2d] requested="${requestedModel}" experiment="${experimentName}" -> using="${modelId}" | file=${filename}`);
 
+  // Always run the 2D planner — plan is mandatory and stored in the result record
+  const figureStem = filename.replace(/\.[^.]+$/, '');
+  const chapterName = inferChapter(figureStem);
+  const plannerModelId = requestedPlannerModel || PLANNER_2D_MODEL;
+
+  // rawPlan is the 2D blueprint JSON that generation-2d.js expects
+  // storedPlan wraps it in the same envelope as the 3D planner so the UI plan panel works identically
+  let rawPlan = plan || null;
+  if (!rawPlan) {
+    try {
+      rawPlan = await plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModelId);
+      console.log(`[generate-2d] plan produced for "${figureStem}" via ${plannerModelId}`);
+    } catch (planErr) {
+      const err = new Error(`2D planning failed for "${figureStem}": ${planErr.message}`);
+      err.statusCode = 502;
+      throw err;
+    }
+  }
+  const storedPlan = { figureStem, chapterName: chapterName || null, contextChunk: null, interactionPlan: rawPlan };
+
   const _generationStart = Date.now();
   const html = await withRetry(() => generate2dFigureHtml({
     modelId,
     base64,
     mediaType,
-    plan,
+    plan: rawPlan,
     maxTokens: 16000,
   }));
   const generationDurationMs = Date.now() - _generationStart;
@@ -383,7 +404,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
     source: 'api',
     model: modelId,
     experiment: experimentName,
-    plan: plan || null,
+    plan: storedPlan,
     previewBase64: shot ? shot.data : null,
     previewMediaType: shot ? shot.mediaType : null,
     fallbackBase64: base64,
@@ -403,7 +424,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
     timestamp,
     model: modelId,
     experiment: experimentName,
-    plan: plan || null,
+    plan: storedPlan,
     evaluationResults: record.evaluationResults || {},
     evaluationMeta: record.evaluationMeta || {},
     evaluationVersions: record.evaluationVersions || {},
@@ -1617,16 +1638,16 @@ app.get('/api/experiments', (req, res) => {
         const evalData = loadExpEval(f.htmlPath);
         return {
           ...f,
-          evaluationResults:  evalData?.evaluationResults  || {},
-          evaluationMeta:     evalData?.evaluationMeta     || {},
+          evaluationResults: evalData?.evaluationResults || {},
+          evaluationMeta: evalData?.evaluationMeta || {},
           evaluationVersions: evalData?.evaluationVersions || {},
         };
       });
       tree.push({
         experiment: setup.experiment,
-        prompt:     setup.label || setup.model,
-        models:     [{ model: setup.model, figures }],
-        source:     'agent_batch_out',
+        prompt: setup.label || setup.model,
+        models: [{ model: setup.model, figures }],
+        source: 'agent_batch_out',
       });
     }
     return res.json(tree);
@@ -1742,13 +1763,20 @@ app.get('/api/pairwise/setups', (req, res) => {
         const bMapFull = new Map(sb.figures.map(f => [figKey(f), f]));
         const bMapName = new Map(sb.figures.map(f => [f.name, f]));
 
+        // If a pair record already exists for this figure (possibly under a different chapter
+        // alias), re-use its stored chapter so skipExisting checks in batch-evaluate find it.
+        const existingChapterByFig = {};
+        for (const rec of loadAllPairwiseResults(setupA, setupB)) {
+          if (rec.figure) existingChapterByFig[rec.figure] = rec.chapter;
+        }
+
         matchingFigures = [];
         for (const f of sa.figures) {
           const bFig = bMapFull.get(figKey(f)) || bMapName.get(f.name);
           if (!bFig) continue;
           matchingFigures.push({
             name: f.name,
-            chapter: f.chapter || bFig.chapter,
+            chapter: existingChapterByFig[f.name] || f.chapter || bFig.chapter,
             htmlPathA: f.htmlPath || null,
             resultIdA: f.resultId || null,
             imagePathA: f.imagePath || null,
@@ -1824,8 +1852,19 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
 
   const { skipExisting = true } = req.body;
 
+  // Pre-load existing chapter keys so we can normalize incoming chapter names.
+  // Prevents creating duplicate records when the same figure is stored under a
+  // different chapter alias (e.g. 'derivatives' vs 'spatial_filters').
+  const existingChapterByFig = {};
+  for (const rec of loadAllPairwiseResults(setupA, setupB)) {
+    if (rec.figure) existingChapterByFig[rec.figure] = rec.chapter;
+  }
+
   for (const fig of figures) {
-    const { name, chapter, htmlPathA, resultIdA, imagePathA, htmlPathB, resultIdB, imagePathB } = fig;
+    const { name, htmlPathA, resultIdA, imagePathA, htmlPathB, resultIdB, imagePathB } = fig;
+    // Use the chapter already stored for this figure if one exists; otherwise use the
+    // chapter supplied by the caller (which may differ by setup-query order).
+    const chapter = existingChapterByFig[name] || fig.chapter;
     try {
       if (skipExisting) {
         const existing = loadPairwiseResult(setupA, setupB, chapter, name);
