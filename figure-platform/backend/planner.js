@@ -18,11 +18,45 @@ const fs = require('fs');
 const path = require('path');
 const { generateWithModel } = require('./models');
 const { inferChapterFromFilename, list3dCandidates } = require('./chapter-discovery');
-const { findQmdFile } = require('./qmd_utils');
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
+const ROOT_DIR = path.join(__dirname, '..', '..');
+const QMD_DIR = ROOT_DIR;                                     // .qmd files live at repo root
+
 const PLANNER_MODEL = 'gemini-3.5-flash';
 const PLANNER_MAX_TOKENS = 10240;
+
+// ── Context extraction ─────────────────────────────────────────────────────────
+
+/**
+ * Find the .qmd file for a given chapter name.
+ * Chapter names may differ slightly from filenames, so we try several matches.
+ */
+function findQmdFile(chapterName) {
+  if (!chapterName) return null;
+
+  // Direct match
+  const direct = path.join(QMD_DIR, `${chapterName}.qmd`);
+  if (fs.existsSync(direct)) return direct;
+
+  // Try common variations: underscores → hyphens, etc.
+  const candidates = fs.readdirSync(QMD_DIR).filter(f => f.endsWith('.qmd'));
+  const normalised = chapterName.toLowerCase().replace(/[-_ ]/g, '');
+  for (const c of candidates) {
+    const stem = c.replace(/\.qmd$/, '').toLowerCase().replace(/[-_ ]/g, '');
+    if (stem === normalised) return path.join(QMD_DIR, c);
+  }
+
+  // Substring match (e.g. "blurring_2" matches "blurring_2.qmd")
+  for (const c of candidates) {
+    const stem = c.replace(/\.qmd$/, '').toLowerCase();
+    if (stem.includes(chapterName.toLowerCase()) || chapterName.toLowerCase().includes(stem)) {
+      return path.join(QMD_DIR, c);
+    }
+  }
+
+  return null;
+}
 
 /**
  * Extract a focused chunk of text around references to a specific figure.
@@ -83,6 +117,69 @@ function loadChapterText(chapterName) {
 // ── LLM interaction planner (fast, small-token call) ────────────────────────
 
 function buildPlannerPrompt(useFewShot = true) {
+  if (process.env.PLANNER_PROFILE === 'standalone-demo') {
+    return `You are an expert at planning interactive 3D visualizations for textbook figures.
+
+PRIMARY CONTEXT:
+The generated output will be opened as a standalone interactive learning artifact. It should still begin from a faithful reconstruction of the source figure, but it does not need to behave like a same-size inline PDF replacement. Decide which interactions, controls, annotations, and guided states best help a learner understand the concept.
+
+Plan the figure as one coherent teaching system:
+  1. DIRECT MANIPULATION — drag/rotate/orbit, hover, and click interactions on meaningful geometry.
+  2. CONTROLS — sliders/toggles/buttons are allowed when they clarify variables, states, comparisons, or sequences.
+  3. EXPLANATION — use concise narration, callouts, or guided steps when they help connect the 3D geometry to the textbook idea.
+
+Keep the experience focused and readable. Avoid decorative animation or generic narration. Let the figure's concept determine the amount and type of interactivity.
+
+Output ONLY valid JSON (no markdown, no explanation):
+{
+  "elements": ["exhaustive list of every geometric element visible in the figure that must be recreated in 3D"],
+  "interactions": [
+    {
+      "id": "unique_camelCase_id",
+      "type": "hover | click | drag | orbit | slider | toggle | button | state | animation",
+      "label": "short user-facing label if this is visible",
+      "range": [min, max, step],
+      "default": defaultValue,
+      "teaches": "one sentence: what manipulating this demonstrates"
+    }
+  ],
+  "demo_steps": [
+    {
+      "title": "short step title",
+      "narration": "2-3 specific sentences explaining what changes and why it matters",
+      "control_values": { "unique_camelCase_id": value },
+      "animate": true
+    }
+  ],
+  "camera_suggestion": "description of useful initial viewpoint and zoom level",
+  "view_reasoning": "Ground the initial view in source-image cues: visible axes, dominant edges/rays, foreshortening, and depth cues.",
+  "camera_view": {
+    "projection": "orthographic",
+    "azimuth_deg": number,
+    "elevation_deg": number,
+    "roll_deg": number,
+    "zoom": number,
+    "target": [0, 0, 0],
+    "height_fraction": number,
+    "view_notes": "specific visual cues from the source image that justify this camera"
+  },
+  "standalone_demo_notes": {
+    "layout": "suggest compact layout structure if useful",
+    "controls": "which controls should be visible and why",
+    "explanation": "what explanatory affordances should be available"
+  },
+  "notes": "any special Three.js or rendering considerations"
+}
+
+Rules:
+- Prefer interactions that expose relationships in the figure rather than generic controls.
+- Use guided steps only if there is a real sequence, comparison, or conceptual progression.
+- Preserve a recognizable first view of the source figure, but do not let source-matching prevent useful exploration.
+- camera_view is mandatory for 3D figures and should be justified by concrete source cues.
+- Narration must be specific to THIS figure.
+- demo_steps, if present, should tell a coherent pedagogical story.`;
+  }
+
   return `You are an expert at planning interactive 3D visualizations for textbook figures.
 
 PRIMARY CONTEXT:

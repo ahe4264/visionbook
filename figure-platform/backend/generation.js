@@ -122,6 +122,56 @@ ${CODE_BEGIN_MARKER}
 ${CODE_END_MARKER}`;
 
 // === Code Divider =============================================================
+function getGenerationTaskGuide() {
+    if (process.env.GENERATION_PROFILE !== 'standalone-demo') return GENERATION_TASK_GUIDE;
+
+    return `SCAFFOLD MARKERS (fill these only):
+- UI HTML: between ${UI_BEGIN_MARKER} and ${UI_END_MARKER}
+- Module JS: between ${CODE_BEGIN_MARKER} and ${CODE_END_MARKER}
+
+What the scaffold already provides (do NOT re-declare):
+- THREE + OrbitControls imports via importmap
+- renderer + <canvas id="c">, scene, orthographic camera (d, aspect), OrbitControls
+- animate() render loop and ResizeObserver
+- setCameraView({ projection, azimuthDeg, elevationDeg, rollDeg, zoom, target, heightFraction, distanceScale })
+- addLabel(...) + _syncLabels() floating label system
+- showPopup(title, body), hidePopup(), showTooltip(text, event), hideTooltip()
+- registerInteractive(object, { title, body, tooltip, onClick? }) with built-in raycast hover/click handling
+
+Hard technical constraints:
+- Do not redeclare scaffold globals: addLabel, _labels, _syncLabels, animate, renderer, scene, camera, controls, d, aspect, setCameraView, setStandardView, showPopup, hidePopup, showTooltip, hideTooltip, registerInteractive.
+- Do not add import statements or importmaps.
+- Keep visible figure elements as real Three.js geometry (meshes, lines, points, sprites). Do NOT paste the source image onto a plane/texture/canvas.
+- Keep the scene readable and mechanically robust: no controls covering important geometry, no off-screen panels, no horizontal page overflow, no decorative motion that distracts from the concept.
+
+Standalone demo profile:
+- This is a standalone interactive learning demo, not an inline PDF replacement.
+- The default view should still be recognizable as the source figure, but it does not need to preserve the exact same crop, whitespace, or minimal UI.
+- Use the UI marker block to create learner-facing demo affordances when they help: concise control strip, step controls, reset, parameter sliders/toggles, legend, or explanation panel.
+- Do not hide all teaching behind click popups. Include at least one visible explanatory affordance in the page UI, such as a short "What this shows" panel, active step narration, or compact concept readout.
+- If the figure has adjustable variables, include visible controls for the most important 1-3 variables. If it has a sequence/process, include visible step controls. If it is mostly spatial, include guided view/annotation controls.
+- Interactions should be chosen from the concept, not added generically. Every visible control must change geometry, labels, highlighted state, camera/view, or explanation in a way that teaches something.
+- Direct 3D manipulation still matters: keep OrbitControls, hover/click highlights, and object-specific explanations for meaningful meshes/lines/points.
+- It is acceptable for the UI to be more demo-like than figure-like: a compact title, explanation card, state readout, or guided-step bar is allowed.
+
+Your task:
+1) Consider the plan and the source figure's teaching goal.
+2) Decide the Three.js primitive for every major visual element.
+3) Build a recognizable static 3D reconstruction first.
+4) Add a compact standalone demo UI that helps a learner explore the concept. Prefer meaningful controls and guided states over passive screenshots.
+5) Register major explanatory objects with hover/click behavior and connect UI controls to updateScene().
+6) Make sure reset returns the demo to its default state when a reset control exists.
+
+Output format (return ONLY this, nothing else):
+${UI_BEGIN_MARKER}
+...UI HTML...
+${UI_END_MARKER}
+${CODE_BEGIN_MARKER}
+...JavaScript...
+${CODE_END_MARKER}`;
+}
+
+// === Code Divider =============================================================
 function buildGenerationSystemPrompt(scaffold) {
     if (!scaffold) throw new Error('scaffold is required.');
 
@@ -143,7 +193,7 @@ SCAFFOLD USAGE RULES:
     Do NOT add another <script type="importmap"> or any import statements.
 - Do NOT re-declare scaffold globals; only add objects to scene and wire UI to state.
 
-${GENERATION_TASK_GUIDE}`;
+${getGenerationTaskGuide()}`;
 }
 // === Code Divider =============================================================
 function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation) {
@@ -178,7 +228,7 @@ Only output an improved payload for these markers:
 
     return `${header}
 
-${GENERATION_TASK_GUIDE}
+${getGenerationTaskGuide()}
 
 CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
 ${issues}
@@ -515,48 +565,89 @@ async function generateCode(opts) {
         userText,
         maxTokens = 16384,
         applyFixes = true,
+        figureLabel,
     } = opts;
 
     if (!scaffold) throw new Error('scaffold is required');
     if (!modelId) throw new Error('modelId is required');
     if (!mediaType || !base64) throw new Error('mediaType and base64 are required');
 
-    // REFINEMENT MODE: previous generation + evaluation feedback
-    if (prevHtml && evaluation) {
-        const refinementUserText = userText || buildGenerationUserText(plan);
-        return generateRefinedFigureHtml({
-            modelId,
-            scaffold,
-            prevHtml,
-            evaluation,
-            mediaType,
-            base64,
-            userText: refinementUserText,
-            maxTokens,
-            applyFixes,
-        });
+    const generatorMode = (process.env.GENERATOR_MODE || 'single').toLowerCase();
+    const isRefinement = Boolean(prevHtml && evaluation);
+    const label = figureLabel || 'figure';
+
+    // ── AGENT MODE ────────────────────────────────────────────────────────────
+    // Run the bounded Claude Code agent first. It renders + self-corrects before
+    // returning. If it yields nothing usable (unavailable/timeout/error), we fall
+    // through to the existing single-shot generator — behavior is never worse.
+    if (generatorMode === 'agent') {
+        try {
+            const { generateCodeAgent, summarizeEvaluation } = require('./generation-agent');
+            const agentHtml = await generateCodeAgent({
+                scaffold, plan, base64, mediaType, label,
+                prevHtml: isRefinement ? prevHtml : undefined,
+                feedbackText: isRefinement ? summarizeEvaluation(evaluation) : undefined,
+            });
+            if (agentHtml) return agentHtml;
+            console.warn(`[generateCode] agent produced no output for ${label}; falling back to single-shot.`);
+        } catch (e) {
+            console.warn(`[generateCode] agent path threw for ${label} (${e.message}); falling back to single-shot.`);
+        }
     }
 
-    // FRESH GENERATION MODE
-    const generationUserText = userText || buildGenerationUserText(plan);
-    return generateFigureHtml({
-        modelId,
-        scaffold,
-        mediaType,
-        base64,
-        plan,
-        userText: generationUserText,
-        maxTokens,
-        applyFixes,
-    });
+    // ── SINGLE-SHOT (existing behavior) ─────────────────────────────────────────
+    const runSingleShot = () => {
+        if (isRefinement) {
+            return generateRefinedFigureHtml({
+                modelId, scaffold, prevHtml, evaluation, mediaType, base64,
+                userText: userText || buildGenerationUserText(plan), maxTokens, applyFixes,
+            });
+        }
+        return generateFigureHtml({
+            modelId, scaffold, mediaType, base64, plan,
+            userText: userText || buildGenerationUserText(plan), maxTokens, applyFixes,
+        });
+    };
+    const html = await runSingleShot();
+
+    // ── ESCALATE MODE ───────────────────────────────────────────────────────────
+    // Keep the fast single-shot path for the common (working) case; only pay the
+    // agent's cost when the single-shot output actually fails to render.
+    if (generatorMode === 'escalate') {
+        try {
+            const { verifyFigure } = require('./verify');
+            const report = await verifyFigure(html);
+            if (report.ok) return html;
+            const { generateCodeAgent } = require('./generation-agent');
+            const feedbackText = report.errors.map(e => `- ${e.id}: ${e.message}`).join('\n');
+            console.warn(`[generateCode] single-shot failed verification for ${label} (${report.errors.length} errors); escalating to agent.`);
+            const agentHtml = await generateCodeAgent({
+                scaffold, plan, base64, mediaType, label,
+                prevHtml: html,
+                feedbackText,
+            });
+            return agentHtml || html;
+        } catch (e) {
+            console.warn(`[generateCode] escalate path failed for ${label} (${e.message}); keeping single-shot.`);
+            return html;
+        }
+    }
+
+    return html;
 }
 
 module.exports = {
     buildGenerationSystemPrompt,
     buildGenerationUserText,
+    buildPlanInjection,
     generateFigureHtml,
     generateRefinedFigureHtml,
     generateCode,
     extractPayloadFromHtml,
+    extractPayloadFromText,
+    mergePayloadIntoScaffold,
+    fixGeneratedHtml,
     formatPayload,
+    // Marker constants so the agent can instruct the model precisely.
+    MARKERS: { UI_BEGIN_MARKER, UI_END_MARKER, CODE_BEGIN_MARKER, CODE_END_MARKER },
 };

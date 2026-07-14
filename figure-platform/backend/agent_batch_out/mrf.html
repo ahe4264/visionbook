@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Lightweight hover tooltip for generated 3D explainers ───────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body><div data-gallery-back-button><a href="http://127.0.0.1:8976/gallery.html" style="position:fixed;left:14px;top:14px;z-index:2147483647;background:rgba(15,23,42,.92);color:#fff;border:1px solid rgba(148,163,184,.55);border-radius:999px;padding:8px 12px;font:600 13px system-ui,-apple-system,Segoe UI,sans-serif;text-decoration:none;box-shadow:0 10px 30px rgba(0,0,0,.25)">&#8249; Back to gallery</a></div>
+  <canvas id="c"></canvas>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <!-- @FIGURE_UI_BEGIN -->
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    // Show error overlay if module scripts fail or take too long
+    let _rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    // Timeout fallback: if nothing renders in 12s, show overlay
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    let camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // HOME view will be computed from the scene bounds so different scenes
+    // (especially tall ones) get a consistent starting zoom/angle while
+    // still allowing interactive OrbitControls.
+    const HOME_POS = new THREE.Vector3();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    let HOME_ZOOM = 0.75;
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      camera.zoom = HOME_ZOOM;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+
+    // Framing parameters
+    const FRAME_HALF_HEIGHT = d; // base frustum half-height used when computing zoom
+    const FRAME_MARGIN = 0.08;   // fraction of extra space around content
+    const MIN_ZOOM = 0.2;
+    const MAX_ZOOM = 5;
+
+    function computeSceneBounds() {
+      const box = new THREE.Box3().setFromObject(scene);
+      if (box.isEmpty()) {
+        // fallback box so empty scenes get a sensible frame
+        box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(2 * d, 2 * d, 2 * d));
+      }
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return { box, center, size };
+    }
+
+    /**
+     * setCameraView(options)
+     * - azimuthDeg: horizontal angle around Y axis, in degrees.
+     * - elevationDeg: angle above the ground/XZ plane, in degrees.
+     * - zoom: optional orthographic zoom. If omitted, derived from content bounds.
+     * - target: optional [x,y,z] camera target. If omitted, uses scene bounds center.
+     * - heightFraction: fraction of the view the content's height should occupy.
+     * This is the preferred per-figure camera API for matching the source image.
+     */
+    function setCameraView({
+      projection = 'orthographic',
+      azimuthDeg = 45,
+      elevationDeg = 35,
+      rollDeg = 0,
+      zoom = null,
+      target = null,
+      heightFraction = 0.5,
+      distanceScale = 1.2
+    } = {}) {
+      const { center, size } = computeSceneBounds();
+      const viewTarget = Array.isArray(target)
+        ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
+        : center;
+
+      // Compute zoom so contentHeight occupies `heightFraction` of the view height
+      const contentHeight = Math.max(size.y, 1e-6);
+      const desiredViewHeight = contentHeight / Math.max(heightFraction, 0.01);
+      let resolvedZoom = Number.isFinite(zoom) ? zoom : (2 * FRAME_HALF_HEIGHT) / desiredViewHeight;
+      resolvedZoom = Math.min(Math.max(resolvedZoom, MIN_ZOOM), MAX_ZOOM);
+      camera.zoom = resolvedZoom;
+
+      // Place camera at a distance scaled to scene size so the viewing angle is meaningful.
+      const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
+      const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
+      const elevation = THREE.MathUtils.degToRad(elevationDeg);
+      const cosElev = Math.cos(elevation);
+      const x = viewTarget.x + radius * Math.cos(azimuth) * cosElev;
+      const y = viewTarget.y + radius * Math.sin(elevation);
+      const z = viewTarget.z + radius * Math.sin(azimuth) * cosElev;
+      camera.position.set(x, y, z);
+
+      controls.target.copy(viewTarget);
+      camera.up.set(0, 1, 0);
+      if (Number.isFinite(rollDeg) && rollDeg !== 0) {
+        const viewDir = new THREE.Vector3().subVectors(viewTarget, camera.position).normalize();
+        camera.up.applyAxisAngle(viewDir, THREE.MathUtils.degToRad(rollDeg));
+      }
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      HOME_POS.copy(camera.position);
+      HOME_TARGET.copy(controls.target);
+      HOME_ZOOM = camera.zoom;
+
+      window.__figureCameraView = {
+        projection,
+        azimuthDeg,
+        elevationDeg,
+        rollDeg,
+        zoom: camera.zoom,
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
+    }
+
+    /**
+     * setStandardView(options)
+     * Backwards-compatible wrapper. Prefer setCameraView({ azimuthDeg, elevationDeg, ... }).
+     */
+    function setStandardView({ azimuth = Math.PI / 4, polar = Math.PI / 4, heightFraction = 0.5 } = {}) {
+      const azimuthDeg = THREE.MathUtils.radToDeg(azimuth);
+      const elevationDeg = 90 - THREE.MathUtils.radToDeg(polar);
+      setCameraView({ azimuthDeg, elevationDeg, heightFraction });
+    }
+
+    // Apply a standard view once at startup so tall/narrow scenes get a similar framing.
+    // Call this again after adding or loading scene content that changes bounds.
+    setStandardView();
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+    const _v = new THREE.Vector3();
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color) div.style.color = options.color;
+      if (options.fontSize) div.style.fontSize = options.fontSize;
+      if (options.bold) div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background = options.background;
+        div.style.padding = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      document.body.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    const _referenceDistance = 8;
+
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+
+        // Hide labels that are behind the camera or outside the normalized device
+        // coordinate cube to avoid showing offscreen labels.
+        if (_v.z > 1 || _v.z < -1 || _v.x < -1 || _v.x > 1 || _v.y < -1 || _v.y > 1) {
+          div.style.display = 'none';
+          continue;
+        }
+        div.style.display = '';
+
+        const ox = offset && offset[0] ? offset[0] : 0;
+        const oy = offset && offset[1] ? offset[1] : 0;
+        const x = (_v.x * 0.5 + 0.5) * canvas.clientWidth + ox;
+        const y = (-_v.y * 0.5 + 0.5) * canvas.clientHeight + oy;
+
+        // Compute scale differently for orthographic vs perspective cameras.
+        let scale;
+        const distance = Math.max(camera.position.distanceTo(pos), 1e-4);
+        scale = (_referenceDistance / distance) * (camera.zoom || 1);
+
+        // Clamp scale to a reasonable range to avoid extremely small/large labels.
+        scale = Math.max(0.5, Math.min(scale, 6));
+
+        div.style.left = x + 'px';
+        div.style.top = y + 'px';
+        div.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      }
+    }
+
+    /* ── Interaction explainer helpers ───────────────────────────────────── */
+    const _tooltip = document.getElementById('figTooltip');
+    const _raycaster = new THREE.Raycaster();
+    const _pointer = new THREE.Vector2();
+    const _interactiveObjects = [];
+    let _hoveredInteractive = null;
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      const pad = 12;
+      const x = Math.min(event.clientX + pad, window.innerWidth - _tooltip.offsetWidth - pad);
+      const y = Math.max(pad, event.clientY - _tooltip.offsetHeight - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    function _setPointerFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      _pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      _pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function _firstInteractiveHit(event) {
+      if (!_interactiveObjects.length) return null;
+      _setPointerFromEvent(event);
+      _raycaster.setFromCamera(_pointer, camera);
+      const hits = _raycaster.intersectObjects(_interactiveObjects.map(entry => entry.object), true);
+      for (const hit of hits) {
+        let obj = hit.object;
+        while (obj) {
+          const entry = _interactiveObjects.find(item => item.object === obj);
+          if (entry) return { ...entry, hit };
+          obj = obj.parent;
+        }
+      }
+      return null;
+    }
+
+    function registerInteractive(object, info = {}) {
+      if (!object) return object;
+      object.userData = object.userData || {};
+      object.userData.interactive = true;
+      _interactiveObjects.push({ object, info });
+      return object;
+    }
+
+    canvas.addEventListener('pointermove', (event) => {
+      moveTooltip(event);
+      const entry = _firstInteractiveHit(event);
+      if (entry) {
+        _hoveredInteractive = entry;
+        canvas.style.cursor = 'pointer';
+        showTooltip(entry.info.tooltip || entry.info.title || 'Click to explain', event);
+      } else {
+        _hoveredInteractive = null;
+        canvas.style.cursor = controls.enabled ? 'grab' : 'default';
+        hideTooltip();
+      }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      _hoveredInteractive = null;
+      canvas.style.cursor = 'default';
+      hideTooltip();
+    });
+
+    canvas.addEventListener('click', (event) => {
+      const entry = _firstInteractiveHit(event) || _hoveredInteractive;
+      if (!entry) {
+        hidePopup();
+        return;
+      }
+      const title = entry.info.title || entry.info.tooltip || 'Figure element';
+      const body = entry.info.body || entry.info.description || 'This part is interactive.';
+      showPopup(title, body);
+      if (typeof entry.info.onClick === 'function') entry.info.onClick(entry.hit, entry.object);
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hidePopup();
+        hideTooltip();
+      }
+    });
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    let _firstFrame = true;
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+      // Frame counter used by the headless verifier to prove the render loop is
+      // actually alive (not frozen by an exception thrown after the first frame).
+      window.__figFrames = (window.__figFrames || 0) + 1;
+      if (_firstFrame) { _firstFrame = false; window.__markRendered?.(); }
+    }
+    animate();
+
+    /* ── Verification hook (invisible; read by the headless verifier) ──────── */
+    // Exposes the live objects so automated checks can confirm the GPU drew
+    // something, the scene has content, and no geometry has NaN coordinates.
+    window.__figverify = { renderer, scene, camera, controls };
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      aspect = w / h;
+      camera.left = -d * aspect;
+      camera.right = d * aspect;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }).observe(canvas);
+
+    // @FIGURE_CODE_BEGIN
+// white node -> SphereGeometry(0.16) white w/ black edge
+// grey node -> SphereGeometry(0.16) grey
+// row chain lines -> Line black, horizontal per row (with tails)
+// diagonal connectors between rows -> Line black
+// y stalks -> Line black, grey node above x-row
+// extra grey nodes -> Line black stalk, offset above rows 1&2
+
+const rowOffsetX = [0, 0.55, 1.1]; // stagger rows diagonally like source (row0=top/x-row, row2=bottom)
+const rowZ = [0, 1.3, 2.6];
+const spacingX = 1.7;
+
+const whiteMat0 = () => new THREE.MeshStandardMaterial({ color: 0xffffff });
+const greyMat0 = () => new THREE.MeshStandardMaterial({ color: 0x888888 });
+const lineMat0 = () => new THREE.LineBasicMaterial({ color: 0x000000 });
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.95));
+const dl = new THREE.DirectionalLight(0xffffff, 0.5);
+dl.position.set(3, 6, 4);
+scene.add(dl);
+
+const R = 0.17;
+function makeWhiteNode(x, z) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 24, 24), whiteMat0());
+  mesh.position.set(x, 0, z);
+  scene.add(mesh);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.SphereGeometry(R * 1.01, 10, 8)), edgeMat);
+  edges.position.copy(mesh.position);
+  scene.add(edges);
+  return mesh;
+}
+function makeGreyNode(x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 24, 24), greyMat0());
+  mesh.position.set(x, y, z);
+  scene.add(mesh);
+  return mesh;
+}
+function makeLine(p1, p2) {
+  const geo = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+  const line = new THREE.Line(geo, lineMat0());
+  scene.add(line);
+  return line;
+}
+
+const whiteNodes = [];
+for (let r = 0; r < 3; r++) {
+  const row = [];
+  for (let c = 0; c < 3; c++) {
+    const x = c * spacingX + rowOffsetX[r];
+    const z = rowZ[r];
+    const n = makeWhiteNode(x, z);
+    n.userData.row = r; n.userData.col = c;
+    row.push(n);
+  }
+  whiteNodes.push(row);
+}
+
+// horizontal row lines with tails extending beyond first/last node
+const rowLinks = [];
+for (let r = 0; r < 3; r++) {
+  for (let c = 0; c < 2; c++) {
+    const l = makeLine(whiteNodes[r][c].position, whiteNodes[r][c + 1].position);
+    rowLinks.push({ line: l, a: whiteNodes[r][c], b: whiteNodes[r][c + 1] });
+  }
+  const first = whiteNodes[r][0].position, last = whiteNodes[r][2].position;
+  makeLine(new THREE.Vector3(first.x - spacingX * 0.5, 0, first.z), first);
+  makeLine(last, new THREE.Vector3(last.x + spacingX * 0.5, 0, last.z));
+}
+
+// diagonal connectors between consecutive rows (same column index), straight diagonal line
+const diagLinks = [];
+for (let r = 0; r < 2; r++) {
+  for (let c = 0; c < 3; c++) {
+    const upper = whiteNodes[r][c];
+    const lower = whiteNodes[r + 1][c];
+    const l = makeLine(upper.position, lower.position);
+    diagLinks.push({ line: l, a: upper, b: lower });
+  }
+  // extra tail diagonal off the left edge (as seen in source going off-frame)
+  const lowerLeft = whiteNodes[r + 1][0];
+  const tail = new THREE.Vector3(lowerLeft.position.x - 0.9, 0, lowerLeft.position.z + 0.9);
+  makeLine(lowerLeft.position, tail);
+}
+// tail below the very bottom-left node too
+{
+  const bl = whiteNodes[2][0];
+  makeLine(bl.position, new THREE.Vector3(bl.position.x - 0.9, 0, bl.position.z + 0.9));
+}
+
+// y grey nodes above x-row (row 0), with black stalks
+const stalkHeight = 1.5;
+const greyY = [];
+for (let c = 0; c < 3; c++) {
+  const xNode = whiteNodes[0][c];
+  const g = makeGreyNode(xNode.position.x, stalkHeight, xNode.position.z);
+  makeLine(xNode.position, g.position);
+  greyY.push({ node: g, xNode });
+}
+
+// extra unlabeled grey nodes above rows 1 & 2 columns 0 and 1 (matching source's extra dots)
+const extraGreyPositions = [
+  [0, 1], [1, 1],
+  [0, 2], [1, 2]
+];
+for (const [c, r] of extraGreyPositions) {
+  const wn = whiteNodes[r][c];
+  const g = makeGreyNode(wn.position.x - 0.5, stalkHeight * 0.8, wn.position.z - 0.1);
+  makeLine(wn.position, g.position);
+}
+
+// labels
+for (let c = 0; c < 3; c++) {
+  const n = whiteNodes[0][c];
+  addLabel(`x<sub>${c + 1}</sub>`, new THREE.Vector3(n.position.x + 0.32, 0.02, n.position.z), { fontSize: '20px', bold: true });
+}
+for (let c = 0; c < 3; c++) {
+  const g = greyY[c].node;
+  addLabel(`y<sub>${c + 1}</sub>`, new THREE.Vector3(g.position.x, g.position.y + 0.38, g.position.z), { fontSize: '20px', bold: true });
+}
+
+// interactivity
+const allWhiteFlat = whiteNodes.flat();
+allWhiteFlat.forEach(n => {
+  registerInteractive(n, {
+    title: 'Latent node',
+    tooltip: 'Hover: highlight connections',
+    body: 'This node represents a hidden variable connected to its spatial neighbors and to its observed variable y via a compatibility function.'
+  });
+});
+
+function resetHighlights() {
+  allWhiteFlat.forEach(n => n.material.color.set(0xffffff));
+  rowLinks.forEach(({ line }) => line.material.color.set(0x000000));
+  diagLinks.forEach(({ line }) => line.material.color.set(0x000000));
+}
+
+const x2Node = whiteNodes[0][1];
+registerInteractive(x2Node, {
+  title: 'x2 mediates x1 and x3',
+  tooltip: 'Click: conditioning on x2',
+  body: 'Conditioning on x2 makes x1 and x3 conditionally independent: x2 is the mediator that blocks the only chain connecting them, the key Markov property of this graph.',
+  onClick: () => highlightX2Mediation()
+});
+
+function highlightX2Mediation() {
+  resetHighlights();
+  x2Node.material.color.set(0xffcc00);
+  whiteNodes[0][0].material.color.set(0x99ccff);
+  whiteNodes[0][2].material.color.set(0x99ccff);
+  rowLinks.forEach(({ line, a, b }) => {
+    if ((a === whiteNodes[0][0] && b === x2Node) || (a === x2Node && b === whiteNodes[0][2])) {
+      line.material.color.set(0xff6600);
+    }
+  });
+}
+
+canvas.addEventListener('pointermove', (event) => {
+  const rect = canvas.getBoundingClientRect();
+  const px = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const py = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  _raycaster.setFromCamera(new THREE.Vector2(px, py), camera);
+  const hits = _raycaster.intersectObjects(allWhiteFlat, false);
+  resetHighlights();
+  if (hits.length) {
+    const n = hits[0].object;
+    n.material.color.set(0xffe066);
+    rowLinks.forEach(({ line, a, b }) => { if (a === n || b === n) line.material.color.set(0xff9900); });
+    diagLinks.forEach(({ line, a, b }) => { if (a === n || b === n) line.material.color.set(0xff9900); });
+  }
+});
+
+setCameraView({
+  projection: 'orthographic',
+  azimuthDeg: 90,
+  elevationDeg: 22,
+  rollDeg: 0,
+  zoom: 0.85,
+  target: [2.0, 0.3, 1.3],
+  heightFraction: 0.8
+});
+// @FIGURE_CODE_END
+// @FIGURE_CODE_END
+
+  </script>
+</body>
+
+</html>

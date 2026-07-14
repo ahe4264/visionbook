@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Lightweight hover tooltip for generated 3D explainers ───────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body><div data-gallery-back-button><a href="http://127.0.0.1:8976/gallery.html" style="position:fixed;left:14px;top:14px;z-index:2147483647;background:rgba(15,23,42,.92);color:#fff;border:1px solid rgba(148,163,184,.55);border-radius:999px;padding:8px 12px;font:600 13px system-ui,-apple-system,Segoe UI,sans-serif;text-decoration:none;box-shadow:0 10px 30px rgba(0,0,0,.25)">&#8249; Back to gallery</a></div>
+  <canvas id="c"></canvas>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <!-- @FIGURE_UI_BEGIN -->
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    // Show error overlay if module scripts fail or take too long
+    let _rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    // Timeout fallback: if nothing renders in 12s, show overlay
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    let camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // HOME view will be computed from the scene bounds so different scenes
+    // (especially tall ones) get a consistent starting zoom/angle while
+    // still allowing interactive OrbitControls.
+    const HOME_POS = new THREE.Vector3();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    let HOME_ZOOM = 0.75;
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      camera.zoom = HOME_ZOOM;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+
+    // Framing parameters
+    const FRAME_HALF_HEIGHT = d; // base frustum half-height used when computing zoom
+    const FRAME_MARGIN = 0.08;   // fraction of extra space around content
+    const MIN_ZOOM = 0.2;
+    const MAX_ZOOM = 5;
+
+    function computeSceneBounds() {
+      const box = new THREE.Box3().setFromObject(scene);
+      if (box.isEmpty()) {
+        // fallback box so empty scenes get a sensible frame
+        box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(2 * d, 2 * d, 2 * d));
+      }
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return { box, center, size };
+    }
+
+    /**
+     * setCameraView(options)
+     * - azimuthDeg: horizontal angle around Y axis, in degrees.
+     * - elevationDeg: angle above the ground/XZ plane, in degrees.
+     * - zoom: optional orthographic zoom. If omitted, derived from content bounds.
+     * - target: optional [x,y,z] camera target. If omitted, uses scene bounds center.
+     * - heightFraction: fraction of the view the content's height should occupy.
+     * This is the preferred per-figure camera API for matching the source image.
+     */
+    function setCameraView({
+      projection = 'orthographic',
+      azimuthDeg = 45,
+      elevationDeg = 35,
+      rollDeg = 0,
+      zoom = null,
+      target = null,
+      heightFraction = 0.5,
+      distanceScale = 1.2
+    } = {}) {
+      const { center, size } = computeSceneBounds();
+      const viewTarget = Array.isArray(target)
+        ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
+        : center;
+
+      // Compute zoom so contentHeight occupies `heightFraction` of the view height
+      const contentHeight = Math.max(size.y, 1e-6);
+      const desiredViewHeight = contentHeight / Math.max(heightFraction, 0.01);
+      let resolvedZoom = Number.isFinite(zoom) ? zoom : (2 * FRAME_HALF_HEIGHT) / desiredViewHeight;
+      resolvedZoom = Math.min(Math.max(resolvedZoom, MIN_ZOOM), MAX_ZOOM);
+      camera.zoom = resolvedZoom;
+
+      // Place camera at a distance scaled to scene size so the viewing angle is meaningful.
+      const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
+      const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
+      const elevation = THREE.MathUtils.degToRad(elevationDeg);
+      const cosElev = Math.cos(elevation);
+      const x = viewTarget.x + radius * Math.cos(azimuth) * cosElev;
+      const y = viewTarget.y + radius * Math.sin(elevation);
+      const z = viewTarget.z + radius * Math.sin(azimuth) * cosElev;
+      camera.position.set(x, y, z);
+
+      controls.target.copy(viewTarget);
+      camera.up.set(0, 1, 0);
+      if (Number.isFinite(rollDeg) && rollDeg !== 0) {
+        const viewDir = new THREE.Vector3().subVectors(viewTarget, camera.position).normalize();
+        camera.up.applyAxisAngle(viewDir, THREE.MathUtils.degToRad(rollDeg));
+      }
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      HOME_POS.copy(camera.position);
+      HOME_TARGET.copy(controls.target);
+      HOME_ZOOM = camera.zoom;
+
+      window.__figureCameraView = {
+        projection,
+        azimuthDeg,
+        elevationDeg,
+        rollDeg,
+        zoom: camera.zoom,
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
+    }
+
+    /**
+     * setStandardView(options)
+     * Backwards-compatible wrapper. Prefer setCameraView({ azimuthDeg, elevationDeg, ... }).
+     */
+    function setStandardView({ azimuth = Math.PI / 4, polar = Math.PI / 4, heightFraction = 0.5 } = {}) {
+      const azimuthDeg = THREE.MathUtils.radToDeg(azimuth);
+      const elevationDeg = 90 - THREE.MathUtils.radToDeg(polar);
+      setCameraView({ azimuthDeg, elevationDeg, heightFraction });
+    }
+
+    // Apply a standard view once at startup so tall/narrow scenes get a similar framing.
+    // Call this again after adding or loading scene content that changes bounds.
+    setStandardView();
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+    const _v = new THREE.Vector3();
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color) div.style.color = options.color;
+      if (options.fontSize) div.style.fontSize = options.fontSize;
+      if (options.bold) div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background = options.background;
+        div.style.padding = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      document.body.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    const _referenceDistance = 8;
+
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+
+        // Hide labels that are behind the camera or outside the normalized device
+        // coordinate cube to avoid showing offscreen labels.
+        if (_v.z > 1 || _v.z < -1 || _v.x < -1 || _v.x > 1 || _v.y < -1 || _v.y > 1) {
+          div.style.display = 'none';
+          continue;
+        }
+        div.style.display = '';
+
+        const ox = offset && offset[0] ? offset[0] : 0;
+        const oy = offset && offset[1] ? offset[1] : 0;
+        const x = (_v.x * 0.5 + 0.5) * canvas.clientWidth + ox;
+        const y = (-_v.y * 0.5 + 0.5) * canvas.clientHeight + oy;
+
+        // Compute scale differently for orthographic vs perspective cameras.
+        let scale;
+        const distance = Math.max(camera.position.distanceTo(pos), 1e-4);
+        scale = (_referenceDistance / distance) * (camera.zoom || 1);
+
+        // Clamp scale to a reasonable range to avoid extremely small/large labels.
+        scale = Math.max(0.5, Math.min(scale, 6));
+
+        div.style.left = x + 'px';
+        div.style.top = y + 'px';
+        div.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      }
+    }
+
+    /* ── Interaction explainer helpers ───────────────────────────────────── */
+    const _tooltip = document.getElementById('figTooltip');
+    const _raycaster = new THREE.Raycaster();
+    const _pointer = new THREE.Vector2();
+    const _interactiveObjects = [];
+    let _hoveredInteractive = null;
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      const pad = 12;
+      const x = Math.min(event.clientX + pad, window.innerWidth - _tooltip.offsetWidth - pad);
+      const y = Math.max(pad, event.clientY - _tooltip.offsetHeight - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    function _setPointerFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      _pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      _pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function _firstInteractiveHit(event) {
+      if (!_interactiveObjects.length) return null;
+      _setPointerFromEvent(event);
+      _raycaster.setFromCamera(_pointer, camera);
+      const hits = _raycaster.intersectObjects(_interactiveObjects.map(entry => entry.object), true);
+      for (const hit of hits) {
+        let obj = hit.object;
+        while (obj) {
+          const entry = _interactiveObjects.find(item => item.object === obj);
+          if (entry) return { ...entry, hit };
+          obj = obj.parent;
+        }
+      }
+      return null;
+    }
+
+    function registerInteractive(object, info = {}) {
+      if (!object) return object;
+      object.userData = object.userData || {};
+      object.userData.interactive = true;
+      _interactiveObjects.push({ object, info });
+      return object;
+    }
+
+    canvas.addEventListener('pointermove', (event) => {
+      moveTooltip(event);
+      const entry = _firstInteractiveHit(event);
+      if (entry) {
+        _hoveredInteractive = entry;
+        canvas.style.cursor = 'pointer';
+        showTooltip(entry.info.tooltip || entry.info.title || 'Click to explain', event);
+      } else {
+        _hoveredInteractive = null;
+        canvas.style.cursor = controls.enabled ? 'grab' : 'default';
+        hideTooltip();
+      }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      _hoveredInteractive = null;
+      canvas.style.cursor = 'default';
+      hideTooltip();
+    });
+
+    canvas.addEventListener('click', (event) => {
+      const entry = _firstInteractiveHit(event) || _hoveredInteractive;
+      if (!entry) {
+        hidePopup();
+        return;
+      }
+      const title = entry.info.title || entry.info.tooltip || 'Figure element';
+      const body = entry.info.body || entry.info.description || 'This part is interactive.';
+      showPopup(title, body);
+      if (typeof entry.info.onClick === 'function') entry.info.onClick(entry.hit, entry.object);
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hidePopup();
+        hideTooltip();
+      }
+    });
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    let _firstFrame = true;
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+      // Frame counter used by the headless verifier to prove the render loop is
+      // actually alive (not frozen by an exception thrown after the first frame).
+      window.__figFrames = (window.__figFrames || 0) + 1;
+      if (_firstFrame) { _firstFrame = false; window.__markRendered?.(); }
+    }
+    animate();
+
+    /* ── Verification hook (invisible; read by the headless verifier) ──────── */
+    // Exposes the live objects so automated checks can confirm the GPU drew
+    // something, the scene has content, and no geometry has NaN coordinates.
+    window.__figverify = { renderer, scene, camera, controls };
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      aspect = w / h;
+      camera.left = -d * aspect;
+      camera.right = d * aspect;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }).observe(canvas);
+
+    // @FIGURE_CODE_BEGIN
+// world X -> three Z (depth), world Y -> three Y, world Z -> three X (left-right)
+// pinhole -> SphereGeometry(0.05) black
+// projection plane -> PlaneGeometry translucent grey, dashed border
+// virtual camera plane -> PlaneGeometry translucent grey
+// P, p, p2 -> SphereGeometry cyan
+// dashed rays -> Line dashed grey
+// f arrows -> ArrowHelper red
+// world/camera/image axes -> ArrowHelper / Line green,black,blue
+// image diagram group -> flat rectangle + axes offset to the right, further right & down to avoid overlap
+
+const group = new THREE.Group();
+scene.add(group);
+
+function mat(color, opacity=1) {
+  return new THREE.MeshBasicMaterial({ color, transparent: opacity<1, opacity, side: THREE.DoubleSide });
+}
+
+// ---- Pinhole at origin ----
+const pinhole = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 16), mat(0x111111));
+pinhole.position.set(0,0,0);
+group.add(pinhole);
+registerInteractive(pinhole, {
+  title: 'Pinhole',
+  tooltip: 'The pinhole (camera center)',
+  body: 'The pinhole is the origin of the world and camera coordinate systems. Light rays from a 3D point P pass through this single point before reaching the projection plane, forming an inverted image.'
+});
+
+// ---- World axes (X diagonal-depth, Y up, Z right) ----
+const axisLen = 1.6;
+const yAxis = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,0), axisLen, 0x000000, 0.12, 0.07);
+const zAxis = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), axisLen+1.2, 0x000000, 0.12, 0.07);
+const xAxis = new THREE.ArrowHelper(new THREE.Vector3(0,0.25,0.97).normalize(), new THREE.Vector3(0,0,0), axisLen*0.9, 0x000000, 0.12, 0.07);
+group.add(yAxis, zAxis, xAxis);
+addLabel('Y', new THREE.Vector3(0, axisLen+0.25, 0));
+addLabel('X', new THREE.Vector3(0, axisLen*0.9*0.25+0.2, axisLen*0.9*0.97+0.05));
+addLabel('Z', new THREE.Vector3(axisLen+1.4, -0.05, 0));
+addLabel('World coordinates', new THREE.Vector3(0.9, axisLen+0.4, -0.3), { fontSize: '14px' });
+addLabel('(0,0,0)', new THREE.Vector3(-0.15, -0.22, 0.05), { fontSize: '11px' });
+
+// ---- Projection plane (behind pinhole, negative Z-three i.e. left) ----
+const projPlaneX = -2.2;
+const planeW = 2.0, planeH = 1.6;
+const projPlane = new THREE.Mesh(new THREE.PlaneGeometry(planeH, planeW), mat(0x888888, 0.35));
+projPlane.rotation.y = Math.PI/2;
+projPlane.position.set(projPlaneX, 0, 0.3);
+group.add(projPlane);
+registerInteractive(projPlane, {
+  title: 'Projection plane',
+  tooltip: 'Projection plane (image is inverted here)',
+  body: 'The projection plane lies behind the pinhole, at distance f. The real optical image forms here, inverted, because light rays cross at the pinhole before reaching it.'
+});
+{
+  const pts = [
+    new THREE.Vector3(projPlaneX, planeW/2, 0.3-planeH/2),
+    new THREE.Vector3(projPlaneX, planeW/2, 0.3+planeH/2),
+    new THREE.Vector3(projPlaneX, -planeW/2, 0.3+planeH/2),
+    new THREE.Vector3(projPlaneX, -planeW/2, 0.3-planeH/2),
+    new THREE.Vector3(projPlaneX, planeW/2, 0.3-planeH/2),
+  ];
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.LineDashedMaterial({ color: 0x333333, dashSize: 0.08, gapSize: 0.05 });
+  const l = new THREE.Line(geo, line);
+  l.computeLineDistances();
+  group.add(l);
+}
+addLabel('Projection plane', new THREE.Vector3(projPlaneX, -planeW/2-0.35, 0.3), { fontSize: '13px' });
+
+// ---- Virtual camera plane (in front, positive Z-three, i.e. right) ----
+const virtPlaneX = 1.6;
+const vPlane = new THREE.Mesh(new THREE.PlaneGeometry(planeH, planeW), mat(0xcfe0e0, 0.4));
+vPlane.rotation.y = Math.PI/2;
+vPlane.position.set(virtPlaneX, 0, 0.3);
+group.add(vPlane);
+registerInteractive(vPlane, {
+  title: 'Virtual camera plane',
+  tooltip: 'Virtual (upright) camera plane',
+  body: 'The virtual camera plane is placed symmetrically in front of the pinhole at the same distance f. It produces an upright, non-inverted version of the same image — mathematically equivalent to the real projection plane.'
+});
+{
+  const pts = [
+    new THREE.Vector3(virtPlaneX, planeW/2, 0.3-planeH/2),
+    new THREE.Vector3(virtPlaneX, planeW/2, 0.3+planeH/2),
+    new THREE.Vector3(virtPlaneX, -planeW/2, 0.3+planeH/2),
+    new THREE.Vector3(virtPlaneX, -planeW/2, 0.3-planeH/2),
+    new THREE.Vector3(virtPlaneX, planeW/2, 0.3-planeH/2),
+  ];
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.LineBasicMaterial({ color: 0x333333 });
+  group.add(new THREE.Line(geo, line));
+}
+addLabel('Virtual camera plane', new THREE.Vector3(virtPlaneX, -planeW/2-0.35, 0.3), { fontSize: '13px' });
+
+// ---- f distance arrows ----
+function fArrow(x0,x1,y,z) {
+  const dir = new THREE.Vector3(Math.sign(x1-x0),0,0);
+  const len = Math.abs(x1-x0);
+  const a1 = new THREE.ArrowHelper(dir, new THREE.Vector3(x0,y,z), len, 0xcc0000, 0.1, 0.06);
+  const a2 = new THREE.ArrowHelper(dir.clone().negate(), new THREE.Vector3(x1,y,z), len, 0xcc0000, 0.1, 0.06);
+  group.add(a1,a2);
+}
+fArrow(projPlaneX, 0, 0, 0.3);
+fArrow(0, virtPlaneX, 0, 0.3);
+addLabel('f', new THREE.Vector3(projPlaneX/2, 0.18, 0.3));
+addLabel('f', new THREE.Vector3(virtPlaneX/2, 0.18, 0.3));
+
+// ---- camera x,y green axes on virtual plane ----
+const camAxisOrigin = new THREE.Vector3(virtPlaneX, -0.2, 0.15);
+const camY = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), camAxisOrigin, 0.9, 0x22aa22, 0.08, 0.05);
+const camX = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), camAxisOrigin, 0.7, 0x22aa22, 0.08, 0.05);
+group.add(camY, camX);
+addLabel('y', new THREE.Vector3(virtPlaneX, -0.2+1.05, 0.15));
+addLabel('x', new THREE.Vector3(virtPlaneX, -0.2, 0.15+0.85));
+
+// ---- projection plane x,y green axes (mirrored / inverted) ----
+const projAxisOrigin = new THREE.Vector3(projPlaneX, 0.35, 0.55);
+const pjY = new THREE.ArrowHelper(new THREE.Vector3(0,-1,0), projAxisOrigin, 0.85, 0x22aa22, 0.08, 0.05);
+const pjX = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), projAxisOrigin, 0.65, 0x22aa22, 0.08, 0.05);
+group.add(pjY, pjX);
+addLabel('y', new THREE.Vector3(projPlaneX, 0.35-0.95, 0.55));
+addLabel('x', new THREE.Vector3(projPlaneX-0.05, 0.35, 0.55-0.78));
+
+// ---- Point P (far, 3D) ----
+const P = new THREE.Vector3(4.6, 1.3, 0.9);
+const Psphere = new THREE.Mesh(new THREE.SphereGeometry(0.08,16,16), mat(0x55ccee));
+Psphere.position.copy(P);
+group.add(Psphere);
+registerInteractive(Psphere, {
+  title: 'Point P',
+  tooltip: 'A 3D point P in world coordinates',
+  body: 'P = (X, Y, Z) is a point in the 3D world. Its projected image location p is found by intersecting the ray from P through the pinhole with a projection plane: x = f·X/Z, y = f·Y/Z.'
+});
+addLabel('<b>P</b>', P.clone().add(new THREE.Vector3(0,0.25,0)), { fontSize: '18px' });
+{
+  const stalk = new THREE.Line(new THREE.BufferGeometry().setFromPoints([P, new THREE.Vector3(P.x,0,P.z), new THREE.Vector3(axisLen+1.0,0,0)]), new THREE.LineBasicMaterial({color:0x999999}));
+  group.add(stalk);
+}
+
+// ---- point p on virtual camera plane ----
+const t1 = virtPlaneX / P.x;
+const pVirt = new THREE.Vector3(virtPlaneX, P.y*t1, P.z*t1 + 0.3*(1-t1));
+const pVirtSphere = new THREE.Mesh(new THREE.SphereGeometry(0.06,16,16), mat(0x55ccee));
+pVirtSphere.position.copy(pVirt);
+group.add(pVirtSphere);
+registerInteractive(pVirtSphere, {
+  title: 'Point p (virtual plane)',
+  tooltip: 'Projected point p, upright image',
+  body: 'p is where the ray from P to the pinhole intersects the virtual camera plane, at distance f. Because this plane is in front of the pinhole, the image here is upright, unlike the real projection.'
+});
+addLabel('<b>p</b>', pVirt.clone().add(new THREE.Vector3(0,0.2,0)), { fontSize: '15px' });
+
+// ---- point p on projection plane (inverted) ----
+const t2 = projPlaneX / P.x;
+const pProj = new THREE.Vector3(projPlaneX, P.y*t2, P.z*t2 + 0.3*(1-t2));
+const pProjSphere = new THREE.Mesh(new THREE.SphereGeometry(0.06,16,16), mat(0x55ccee));
+pProjSphere.position.copy(pProj);
+group.add(pProjSphere);
+registerInteractive(pProjSphere, {
+  title: 'Point p (projection plane)',
+  tooltip: 'Projected point p, inverted image',
+  body: 'This p is the real optical projection of P onto the projection plane behind the pinhole. Note it is inverted relative to P — flipped through the pinhole, the hallmark of pinhole imaging.'
+});
+addLabel('<b>p</b>', pProj.clone().add(new THREE.Vector3(0,-0.22,0)), { fontSize: '15px' });
+
+// ---- dashed rays from P through pinhole to both planes ----
+function dashedLine(a,b,color=0xaaaaaa) {
+  const geo = new THREE.BufferGeometry().setFromPoints([a,b]);
+  const m = new THREE.LineDashedMaterial({ color, dashSize: 0.1, gapSize: 0.06 });
+  const l = new THREE.Line(geo, m);
+  l.computeLineDistances();
+  group.add(l);
+  return l;
+}
+dashedLine(P, new THREE.Vector3(0,0,0));
+dashedLine(new THREE.Vector3(0,0,0), pProj);
+dashedLine(new THREE.Vector3(0,0,0), pVirt);
+
+// ---- Image coordinate diagram (b), pushed further right & down to avoid overlap with (a) ----
+const imgGroupX = 9.4;
+const imgGroupY = -1.4;
+const rectW = 2.6, rectH = 1.9;
+const rectPts = [
+  new THREE.Vector3(imgGroupX, imgGroupY+rectH/2, -rectW/2),
+  new THREE.Vector3(imgGroupX, imgGroupY+rectH/2, rectW/2),
+  new THREE.Vector3(imgGroupX, imgGroupY-rectH/2, rectW/2),
+  new THREE.Vector3(imgGroupX, imgGroupY-rectH/2, -rectW/2),
+  new THREE.Vector3(imgGroupX, imgGroupY+rectH/2, -rectW/2),
+];
+const rectGeo = new THREE.BufferGeometry().setFromPoints(rectPts);
+group.add(new THREE.Line(rectGeo, new THREE.LineBasicMaterial({ color: 0x000000 })));
+addLabel('Virtual camera plane', new THREE.Vector3(imgGroupX, imgGroupY-rectH/2-0.3, 0), { fontSize: '13px' });
+
+const pDot2 = new THREE.Mesh(new THREE.SphereGeometry(0.06,16,16), mat(0x55ccee));
+pDot2.position.set(imgGroupX, imgGroupY+0.35, -0.55);
+group.add(pDot2);
+registerInteractive(pDot2, {
+  title: 'Point p (image space)',
+  tooltip: 'p seen in the camera coordinate frame',
+  body: 'The same point p, now shown purely within the 2D virtual camera plane using its local (x,y) camera coordinates, before conversion to pixel-based image coordinates (n,m).'
+});
+addLabel('<b>p</b>', new THREE.Vector3(imgGroupX, imgGroupY+0.5, -0.75), { fontSize: '15px' });
+
+const camOrigin2 = new THREE.Vector3(imgGroupX, imgGroupY, 0);
+const cy2 = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), camOrigin2, 0.55, 0x22aa22, 0.07, 0.045);
+const cx2 = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), camOrigin2, 0.55, 0x22aa22, 0.07, 0.045);
+group.add(cy2, cx2);
+addLabel('y', new THREE.Vector3(imgGroupX, imgGroupY+0.68, 0));
+addLabel('x', new THREE.Vector3(imgGroupX, imgGroupY, -0.68));
+addLabel('(0,0)', new THREE.Vector3(imgGroupX+0.05, imgGroupY-0.12, 0.1), { fontSize: '10px' });
+addLabel('Camera coordinates', new THREE.Vector3(imgGroupX+0.05, imgGroupY+0.55, -1.0), { fontSize: '13px' });
+
+const imgOrigin2 = new THREE.Vector3(imgGroupX, imgGroupY-rectH/2, -rectW/2);
+const nAxis = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), imgOrigin2, 0.55, 0x2244cc, 0.07, 0.045);
+const mAxis = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), imgOrigin2, 0.55, 0x2244cc, 0.07, 0.045);
+group.add(nAxis, mAxis);
+addLabel('m', new THREE.Vector3(imgGroupX, imgGroupY-rectH/2+0.68, -rectW/2));
+addLabel('n', new THREE.Vector3(imgGroupX, imgGroupY-rectH/2, -rectW/2+0.68));
+addLabel('(0,0)', new THREE.Vector3(imgGroupX+0.05, imgGroupY-rectH/2-0.13, -rectW/2+0.05), { fontSize: '10px' });
+addLabel('Image coordinates', new THREE.Vector3(imgGroupX+0.05, imgGroupY-rectH/2+0.25, -rectW/2-1.0), { fontSize: '13px' });
+
+addLabel('(a)', new THREE.Vector3(1.0, -1.9, 0), { fontSize: '18px' });
+addLabel('(b)', new THREE.Vector3(imgGroupX, imgGroupY-rectH/2-0.6, 0), { fontSize: '18px' });
+
+// ---- camera view: view mostly along X (plane normal) with slight azimuth/elevation for depth ----
+setCameraView({
+  projection: 'orthographic',
+  azimuthDeg: 12,
+  elevationDeg: 14,
+  rollDeg: 0,
+  zoom: 0.55,
+  target: [3.5, -0.3, 0],
+  heightFraction: 0.85
+});
+// @FIGURE_CODE_END
+
+  </script>
+</body>
+
+</html>

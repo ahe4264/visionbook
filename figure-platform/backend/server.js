@@ -18,9 +18,6 @@ const {
   loadPairwiseResult,
   savePairwiseResult,
   loadAllPairwiseResults,
-  loadAllPairsForRanking,
-  clearMachineEval,
-  clearAllMachineEvals,
   canonicalizePair,
 } = require('./pairwise_evaluator');
 const { planForFigure, planChapter, PLANNER_MODEL } = require('./planner');
@@ -93,6 +90,11 @@ const RESULTS_DIR = process.env.RESULTS_DIR
   ? path.resolve(process.env.RESULTS_DIR)
   : path.join(__dirname, 'results');
 const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
+const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || 'agent_batch_out')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+  .map(s => path.resolve(__dirname, s));
 if (!fs.existsSync(RESULTS_DIR)) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
 }
@@ -412,7 +414,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot }) {
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 1, fewShot: requestedFewShot }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -485,8 +487,6 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     timestamp,
     source: 'api',
     model: modelId,
-    plannerModel: plannerModelId,
-    criticModel: criticModelId,
     experiment: experimentName,
     plan: loopState.currentPlan || null,
     previewBase64: shot ? shot.data : null,
@@ -1122,7 +1122,7 @@ app.post('/api/evaluate-human', (req, res) => {
 // ── POST /api/evaluate ────────────────────────────────────────────────────────
 // User-triggered evaluation endpoint. Routes through evaluator.js (external source).
 app.post('/api/evaluate', async (req, res) => {
-  const { id, evalModel, criticVersion, chapterName } = req.body;
+  const { id, evalModel, criticVersion } = req.body;
   if (!id) return res.status(400).json({ error: 'id is required.' });
 
   const filePath = path.join(RESULTS_DIR, `${id}.json`);
@@ -1133,7 +1133,7 @@ app.post('/api/evaluate', async (req, res) => {
   catch { return res.status(500).json({ error: 'Failed to read result file.' }); }
 
   try {
-    const result = await evaluateFigure({ record, evalModel, criticVersion, chapterName: chapterName || null });
+    const result = await evaluateFigure({ record, evalModel, criticVersion });
     if (!result) {
       return res.json({ skipped: true });
     }
@@ -1214,6 +1214,122 @@ app.delete('/api/result/:id', (req, res) => {
   }
 });
 
+// ── DELETE /api/result/:id/evaluation ────────────────────────────────────────
+app.delete('/api/result/:id/evaluation', (req, res) => {
+  const filePath = path.join(RESULTS_DIR, `${req.params.id}.json`);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Result not found.' });
+  try {
+    const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    record.evaluationResults = {};
+    record.evaluationMeta = {};
+    record.evaluationVersions = {};
+    saveRecord(record, filePath);
+    refreshHistoryManifestSafe();
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/results/evaluations?experiment=X[&chapter=Y] ─────────────────
+app.delete('/api/results/evaluations', (req, res) => {
+  const { experiment, chapter } = req.query;
+  if (!experiment) return res.status(400).json({ error: 'experiment query param required.' });
+  try {
+    const files = fs.readdirSync(RESULTS_DIR).filter(f => f.endsWith('.json') && f !== 'manifest.json');
+    let cleared = 0;
+    for (const file of files) {
+      const filePath = path.join(RESULTS_DIR, file);
+      let record;
+      try { record = JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { continue; }
+      if (record.experiment !== experiment) continue;
+      if (chapter && (record.chapter || null) !== chapter) continue;
+      record.evaluationResults = {};
+      record.evaluationMeta = {};
+      record.evaluationVersions = {};
+      saveRecord(record, filePath);
+      cleared++;
+    }
+    refreshHistoryManifestSafe();
+    return res.json({ cleared });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/experiment-figure/evaluation ─────────────────────────────────
+app.delete('/api/experiment-figure/evaluation', (req, res) => {
+  const { htmlPath } = req.body;
+  if (!htmlPath) return res.status(400).json({ error: 'htmlPath required.' });
+  const evalPath = htmlPath.replace(/\.html$/, '.eval.json');
+  const resolved = path.resolve(evalPath);
+  if (!resolved.startsWith(path.resolve(EXPERIMENTS_DIR))) {
+    return res.status(403).json({ error: 'Path outside experiments directory.' });
+  }
+  try {
+    if (fs.existsSync(resolved)) fs.unlinkSync(resolved);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/experiment-chapter/evaluations ───────────────────────────────
+app.delete('/api/experiment-chapter/evaluations', (req, res) => {
+  const { experiment, model, chapter } = req.body;
+  if (!experiment || !model) return res.status(400).json({ error: 'experiment and model required.' });
+  const dir = chapter
+    ? path.join(EXPERIMENTS_DIR, experiment, model, chapter)
+    : path.join(EXPERIMENTS_DIR, experiment, model);
+  const resolved = path.resolve(dir);
+  if (!resolved.startsWith(path.resolve(EXPERIMENTS_DIR))) {
+    return res.status(403).json({ error: 'Path outside experiments directory.' });
+  }
+  try {
+    let cleared = 0;
+    if (fs.existsSync(resolved)) {
+      const walk = (d) => {
+        for (const f of fs.readdirSync(d)) {
+          const full = path.join(d, f);
+          if (fs.statSync(full).isDirectory()) walk(full);
+          else if (f.endsWith('.eval.json')) { fs.unlinkSync(full); cleared++; }
+        }
+      };
+      walk(resolved);
+    }
+    return res.json({ cleared });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/experiment-entry/evaluations ─────────────────────────────────
+app.delete('/api/experiment-entry/evaluations', (req, res) => {
+  const { experiment } = req.body;
+  if (!experiment) return res.status(400).json({ error: 'experiment required.' });
+  const dir = path.join(EXPERIMENTS_DIR, experiment);
+  const resolved = path.resolve(dir);
+  if (!resolved.startsWith(path.resolve(EXPERIMENTS_DIR))) {
+    return res.status(403).json({ error: 'Path outside experiments directory.' });
+  }
+  try {
+    let cleared = 0;
+    if (fs.existsSync(resolved)) {
+      const walk = (d) => {
+        for (const f of fs.readdirSync(d)) {
+          const full = path.join(d, f);
+          if (fs.statSync(full).isDirectory()) walk(full);
+          else if (f.endsWith('.eval.json')) { fs.unlinkSync(full); cleared++; }
+        }
+      };
+      walk(resolved);
+    }
+    return res.json({ cleared });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /api/base-scaffold ────────────────────────────────────────────────────
 app.get('/api/base-scaffold', (req, res) => {
   res.json({ content: BASE_SCAFFOLD });
@@ -1245,12 +1361,19 @@ app.get('/api/thumb/:id', async (req, res) => {
 // ── GET /api/experiments/thumb  — lazy screenshot of an experiment HTML (cached) ────
 app.get('/api/experiments/thumb', async (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(EXPERIMENTS_DIR) || !fs.existsSync(p))
+  const AGENT_BATCH_DIR = path.resolve(path.join(__dirname, 'agent_batch_out'));
+  if (!p.startsWith(EXPERIMENTS_DIR) && !p.startsWith(AGENT_BATCH_DIR) || !fs.existsSync(p))
     return res.status(404).json({ error: 'Not found' });
 
   const thumbPath = p.replace(/\.html$/, '.thumb.b64');
   if (fs.existsSync(thumbPath)) {
     return res.json({ data: fs.readFileSync(thumbPath, 'utf-8'), mediaType: 'image/jpeg' });
+  }
+
+  // agent_batch_out figures have .final.jpg pre-rendered screenshots
+  const finalShotPath = p.replace(/\.html$/, '.final.jpg');
+  if (fs.existsSync(finalShotPath)) {
+    return res.json({ data: fs.readFileSync(finalShotPath).toString('base64'), mediaType: 'image/jpeg' });
   }
 
   try {
@@ -1267,7 +1390,8 @@ app.get('/api/experiments/thumb', async (req, res) => {
 // ── GET /api/experiments/html  — serve raw HTML for an experiment figure ──────
 app.get('/api/experiments/html', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(EXPERIMENTS_DIR) || !fs.existsSync(p)) return res.status(404).send('Not found');
+  const AGENT_BATCH_DIR = path.resolve(path.join(__dirname, 'agent_batch_out'));
+  if (!p.startsWith(EXPERIMENTS_DIR) && !p.startsWith(AGENT_BATCH_DIR) || !fs.existsSync(p)) return res.status(404).send('Not found');
   res.setHeader('Content-Type', 'text/html');
   res.send(fs.readFileSync(p, 'utf-8'));
 });
@@ -1275,14 +1399,16 @@ app.get('/api/experiments/html', (req, res) => {
 // ── GET /api/experiments/image  — return base64 of source image ───────────────
 app.get('/api/experiments/image', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
+  const CHAPTER_FIGURES_DIR = path.resolve(path.join(__dirname, '..', 'chapter-figures'));
+  if (!p.startsWith(FIGURES_DIR) && !p.startsWith(CHAPTER_FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
   res.send(fs.readFileSync(p).toString('base64'));
 });
 
 // ── GET /api/experiments/imageurl  — serve source image directly ──────────────
 app.get('/api/experiments/imageurl', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
+  const CHAPTER_FIGURES_DIR = path.resolve(path.join(__dirname, '..', 'chapter-figures'));
+  if (!p.startsWith(FIGURES_DIR) && !p.startsWith(CHAPTER_FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
   res.sendFile(p);
 });
 
@@ -1328,22 +1454,57 @@ function scanAgentResults() {
   return setups;
 }
 
-// Find the source image for a figure by searching FIGURES_DIR by stem + chapter.
-function findSourceImage(figName, chapter) {
-  if (!fs.existsSync(FIGURES_DIR)) return null;
-  let chDirs;
-  try { chDirs = fs.readdirSync(FIGURES_DIR); } catch { return null; }
-  for (const ext of ['png', 'jpg', 'jpeg', 'PNG', 'JPG']) {
-    if (chapter) {
-      const candidate = path.join(FIGURES_DIR, chapter, `${figName}.${ext}`);
-      if (fs.existsSync(candidate)) return candidate;
+// Scan batch output folders produced by batch_benchmark.js.
+// Those outputs are intentionally git-ignored, but if a collaborator generates or copies
+// them locally, the pairwise evaluator can treat each manifest as a benchmark setup.
+function scanAgentBatchOutputs() {
+  const setups = [];
+  for (const outDir of AGENT_BATCH_OUTPUT_DIRS) {
+    const manifestPath = path.join(outDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) continue;
+
+    let manifest;
+    try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')); }
+    catch { continue; }
+
+    const figures = [];
+    for (const rec of Object.values(manifest.figures || {})) {
+      if (!rec?.htmlFile) continue;
+      const htmlPath = path.join(outDir, rec.htmlFile);
+      if (!fs.existsSync(htmlPath)) continue;
+      figures.push({
+        name: rec.name,
+        chapter: rec.chapter || inferChapter(rec.name),
+        htmlPath,
+        imagePath: (() => {
+          const raw = rec.imagePath;
+          if (!raw) return null;
+          const marker = 'chapter-figures/';
+          const idx = raw.replace(/\\/g, '/').indexOf(marker);
+          if (idx !== -1) {
+            const candidate = path.join(__dirname, '..', raw.slice(idx));
+            if (fs.existsSync(candidate)) return candidate;
+          }
+          return fs.existsSync(raw) ? raw : null;
+        })(),
+      });
     }
-    for (const chDir of chDirs) {
-      const candidate = path.join(FIGURES_DIR, chDir, `${figName}.${ext}`);
-      if (fs.existsSync(candidate)) return candidate;
-    }
+
+    if (!figures.length) continue;
+    const dirName = path.basename(outDir);
+    const label = manifest.params?.profileLabel || manifest.params?.generatorMode || dirName;
+    const model = manifest.params?.agentModel || manifest.params?.model || 'agent';
+    setups.push({
+      id: `${dirName}/${model}`,
+      experiment: `${dirName}_benchmark`,
+      model,
+      label,
+      figures,
+      source: 'agent_batch_out',
+      outputDir: outDir,
+    });
   }
-  return null;
+  return setups;
 }
 
 // Walk prompt_experiments/ and return structured index:
@@ -1450,6 +1611,24 @@ app.get('/api/experiments', (req, res) => {
         }
       }
     }
+    // Include agent_batch_out outputs as additional experiments
+    for (const setup of scanAgentBatchOutputs()) {
+      const figures = setup.figures.map(f => {
+        const evalData = loadExpEval(f.htmlPath);
+        return {
+          ...f,
+          evaluationResults:  evalData?.evaluationResults  || {},
+          evaluationMeta:     evalData?.evaluationMeta     || {},
+          evaluationVersions: evalData?.evaluationVersions || {},
+        };
+      });
+      tree.push({
+        experiment: setup.experiment,
+        prompt:     setup.label || setup.model,
+        models:     [{ model: setup.model, figures }],
+        source:     'agent_batch_out',
+      });
+    }
     return res.json(tree);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1459,10 +1638,9 @@ app.get('/api/experiments', (req, res) => {
 // ── POST /api/experiments/evaluate ───────────────────────────────────────────
 // Evaluate a single experiment figure in-place; cache result as <name>.eval.json
 app.post('/api/experiments/evaluate', async (req, res) => {
-  const { htmlPath, imagePath, evalModel, criticVersion, qmdPath } = req.body;
+  const { htmlPath, imagePath, evalModel, criticVersion } = req.body;
   if (!htmlPath) return res.status(400).json({ error: 'htmlPath required.' });
   if (!imagePath) return res.status(400).json({ error: 'imagePath required.' });
-  if (!qmdPath) return res.status(400).json({ error: 'qmdPath required.' });
 
   const absHtml = path.resolve(htmlPath);
   if (!fs.existsSync(absHtml)) return res.status(404).json({ error: 'HTML file not found.' });
@@ -1470,16 +1648,12 @@ app.post('/api/experiments/evaluate', async (req, res) => {
   const absImg = path.resolve(imagePath);
   if (!fs.existsSync(absImg)) return res.status(404).json({ error: 'Source image not found.' });
 
-  const absQmd = path.resolve(qmdPath);
-  if (!fs.existsSync(absQmd)) return res.status(404).json({ error: 'QMD file not found.' });
-
   const html = fs.readFileSync(absHtml, 'utf-8');
   const base64thumb = fs.readFileSync(absImg).toString('base64');
-  const qmdContent = fs.readFileSync(absQmd, 'utf-8');
 
   try {
     const record = { html, source_base64: base64thumb, source_media_type: 'image/png' };
-    const result = await evaluateFigure({ record, evalModel, criticVersion, qmdContent });
+    const result = await evaluateFigure({ record, evalModel, criticVersion });
 
     if (!result) {
       return res.json({ skipped: true });
@@ -1522,8 +1696,8 @@ const PAIRWISE_HIDDEN_SETUPS = new Set([
 ]);
 
 // ── GET /api/pairwise/setups ──────────────────────────────────────────────────
-// Returns all <experiment>/<model> setups from both prompt_experiments/ and
-// backend/results/ (agent runs), filtered to those containing "benchmark".
+// Returns all <experiment>/<model> setups from prompt_experiments/, backend/results/
+// agent records, and local agent_batch_out-style manifests, filtered to "benchmark".
 // With ?setupA=&setupB= query params, also returns matchingFigures.
 app.get('/api/pairwise/setups', (req, res) => {
   try {
@@ -1549,6 +1723,11 @@ app.get('/api/pairwise/setups', (req, res) => {
       setups.push(s);
     }
 
+    // Local generated batch output setups
+    for (const s of scanAgentBatchOutputs()) {
+      if (!s.experiment.toLowerCase().includes('benchmark')) continue;
+      setups.push(s);
+    }
     const visibleSetups = setups.filter(s => !PAIRWISE_HIDDEN_SETUPS.has(s.id));
 
     const { setupA, setupB } = req.query;
@@ -1567,16 +1746,15 @@ app.get('/api/pairwise/setups', (req, res) => {
         for (const f of sa.figures) {
           const bFig = bMapFull.get(figKey(f)) || bMapName.get(f.name);
           if (!bFig) continue;
-          const chapter = f.chapter || bFig.chapter;
           matchingFigures.push({
             name: f.name,
-            chapter,
+            chapter: f.chapter || bFig.chapter,
             htmlPathA: f.htmlPath || null,
             resultIdA: f.resultId || null,
-            imagePathA: f.imagePath || findSourceImage(f.name, chapter),
+            imagePathA: f.imagePath || null,
             htmlPathB: bFig.htmlPath || null,
             resultIdB: bFig.resultId || null,
-            imagePathB: bFig.imagePath || findSourceImage(bFig.name, chapter),
+            imagePathB: bFig.imagePath || null,
           });
         }
       }
@@ -1619,7 +1797,11 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
       if (!fs.existsSync(abs)) return null;
       const html = fs.readFileSync(abs, 'utf-8');
       const thumbPath = abs.replace(/\.html$/, '.thumb.b64');
-      const thumb = fs.existsSync(thumbPath) ? fs.readFileSync(thumbPath, 'utf-8') : null;
+      const finalShotPath = abs.replace(/\.html$/, '.final.jpg');
+      let thumb = fs.existsSync(thumbPath) ? fs.readFileSync(thumbPath, 'utf-8') : null;
+      if (!thumb && fs.existsSync(finalShotPath)) {
+        thumb = fs.readFileSync(finalShotPath).toString('base64');
+      }
       let sourceImg = null;
       if (imagePath) {
         const absImg = path.resolve(imagePath);
@@ -1640,13 +1822,17 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
     return null;
   };
 
+  const { skipExisting = true } = req.body;
+
   for (const fig of figures) {
     const { name, chapter, htmlPathA, resultIdA, imagePathA, htmlPathB, resultIdB, imagePathB } = fig;
     try {
-      const existingResult = loadPairwiseResult(setupA, setupB, chapter, name);
-      if (existingResult?.machineEval) {
-        res.write(JSON.stringify({ name, chapter, status: 'skipped' }) + '\n');
-        continue;
+      if (skipExisting) {
+        const existing = loadPairwiseResult(setupA, setupB, chapter, name);
+        if (existing?.machineEval) {
+          res.write(JSON.stringify({ name, chapter, status: 'skipped' }) + '\n');
+          continue;
+        }
       }
 
       const assetsA = readFigureAssets(htmlPathA, resultIdA, imagePathA);
