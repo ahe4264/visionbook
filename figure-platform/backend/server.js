@@ -1361,12 +1361,19 @@ app.get('/api/thumb/:id', async (req, res) => {
 // ── GET /api/experiments/thumb  — lazy screenshot of an experiment HTML (cached) ────
 app.get('/api/experiments/thumb', async (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(EXPERIMENTS_DIR) || !fs.existsSync(p))
+  const AGENT_BATCH_DIR = path.resolve(path.join(__dirname, 'agent_batch_out'));
+  if (!p.startsWith(EXPERIMENTS_DIR) && !p.startsWith(AGENT_BATCH_DIR) || !fs.existsSync(p))
     return res.status(404).json({ error: 'Not found' });
 
   const thumbPath = p.replace(/\.html$/, '.thumb.b64');
   if (fs.existsSync(thumbPath)) {
     return res.json({ data: fs.readFileSync(thumbPath, 'utf-8'), mediaType: 'image/jpeg' });
+  }
+
+  // agent_batch_out figures have .final.jpg pre-rendered screenshots
+  const finalShotPath = p.replace(/\.html$/, '.final.jpg');
+  if (fs.existsSync(finalShotPath)) {
+    return res.json({ data: fs.readFileSync(finalShotPath).toString('base64'), mediaType: 'image/jpeg' });
   }
 
   try {
@@ -1383,7 +1390,8 @@ app.get('/api/experiments/thumb', async (req, res) => {
 // ── GET /api/experiments/html  — serve raw HTML for an experiment figure ──────
 app.get('/api/experiments/html', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(EXPERIMENTS_DIR) || !fs.existsSync(p)) return res.status(404).send('Not found');
+  const AGENT_BATCH_DIR = path.resolve(path.join(__dirname, 'agent_batch_out'));
+  if (!p.startsWith(EXPERIMENTS_DIR) && !p.startsWith(AGENT_BATCH_DIR) || !fs.existsSync(p)) return res.status(404).send('Not found');
   res.setHeader('Content-Type', 'text/html');
   res.send(fs.readFileSync(p, 'utf-8'));
 });
@@ -1391,14 +1399,16 @@ app.get('/api/experiments/html', (req, res) => {
 // ── GET /api/experiments/image  — return base64 of source image ───────────────
 app.get('/api/experiments/image', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
+  const CHAPTER_FIGURES_DIR = path.resolve(path.join(__dirname, '..', 'chapter-figures'));
+  if (!p.startsWith(FIGURES_DIR) && !p.startsWith(CHAPTER_FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
   res.send(fs.readFileSync(p).toString('base64'));
 });
 
 // ── GET /api/experiments/imageurl  — serve source image directly ──────────────
 app.get('/api/experiments/imageurl', (req, res) => {
   const p = path.resolve(req.query.path || '');
-  if (!p.startsWith(FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
+  const CHAPTER_FIGURES_DIR = path.resolve(path.join(__dirname, '..', 'chapter-figures'));
+  if (!p.startsWith(FIGURES_DIR) && !p.startsWith(CHAPTER_FIGURES_DIR) || !fs.existsSync(p)) return res.status(404).send('');
   res.sendFile(p);
 });
 
@@ -1466,7 +1476,17 @@ function scanAgentBatchOutputs() {
         name: rec.name,
         chapter: rec.chapter || inferChapter(rec.name),
         htmlPath,
-        imagePath: rec.imagePath || null,
+        imagePath: (() => {
+          const raw = rec.imagePath;
+          if (!raw) return null;
+          const marker = 'chapter-figures/';
+          const idx = raw.replace(/\\/g, '/').indexOf(marker);
+          if (idx !== -1) {
+            const candidate = path.join(__dirname, '..', raw.slice(idx));
+            if (fs.existsSync(candidate)) return candidate;
+          }
+          return fs.existsSync(raw) ? raw : null;
+        })(),
       });
     }
 
@@ -1590,6 +1610,24 @@ app.get('/api/experiments', (req, res) => {
           fig.evaluationVersions = evalData?.evaluationVersions || {};
         }
       }
+    }
+    // Include agent_batch_out outputs as additional experiments
+    for (const setup of scanAgentBatchOutputs()) {
+      const figures = setup.figures.map(f => {
+        const evalData = loadExpEval(f.htmlPath);
+        return {
+          ...f,
+          evaluationResults:  evalData?.evaluationResults  || {},
+          evaluationMeta:     evalData?.evaluationMeta     || {},
+          evaluationVersions: evalData?.evaluationVersions || {},
+        };
+      });
+      tree.push({
+        experiment: setup.experiment,
+        prompt:     setup.label || setup.model,
+        models:     [{ model: setup.model, figures }],
+        source:     'agent_batch_out',
+      });
     }
     return res.json(tree);
   } catch (err) {
@@ -1778,9 +1816,19 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
     return null;
   };
 
+  const { skipExisting = true } = req.body;
+
   for (const fig of figures) {
     const { name, chapter, htmlPathA, resultIdA, imagePathA, htmlPathB, resultIdB, imagePathB } = fig;
     try {
+      if (skipExisting) {
+        const existing = loadPairwiseResult(setupA, setupB, chapter, name);
+        if (existing?.machineEval) {
+          res.write(JSON.stringify({ name, chapter, status: 'skipped' }) + '\n');
+          continue;
+        }
+      }
+
       const assetsA = readFigureAssets(htmlPathA, resultIdA, imagePathA);
       const assetsB = readFigureAssets(htmlPathB, resultIdB, imagePathB);
       if (!assetsA || !assetsB) {

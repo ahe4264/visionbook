@@ -3181,7 +3181,7 @@ function ResultsTab({ onOpen, evaluatorModel, onEvaluatorModelChange, availableM
                     onSelect: () => setSelected({ experiment: expName, model: modelName }),
                   })),
                 }))
-                : expTree.map(exp => ({
+                : [...expTree].reverse().map(exp => ({
                   group: exp.experiment,
                   items: exp.models.map(m => ({
                     modelName: m.model, evalCount: m.figures.filter(f => hasSelectedEvaluation(f)).length, total: m.figures.length,
@@ -3623,7 +3623,7 @@ function DashboardTab({ currentCriticVersion }) {
       evaluationVersions: r.evaluationVersions || {},
     }));
     const copilot = [];
-    for (const exp of expTree)
+    for (const exp of [...expTree].reverse())
       for (const m of exp.models)
         for (const fig of m.figures)
           copilot.push({
