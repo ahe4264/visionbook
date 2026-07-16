@@ -36,14 +36,6 @@ Output ONLY this JSON:
       "teaches": "The specific concept or causal relationship this control demonstrates."
     }
   ],
-  "demo_steps": [
-    {
-      "title": "Short step title (3–6 words)",
-      "narration": "2–3 sentences as a tutor: tell the student (1) what to look at RIGHT NOW, (2) what to do or notice, (3) what to conclude and why it matters for understanding the concept.",
-      "control_values": { "camelCaseId": value },
-      "focus": "The specific visual element, relationship, or pattern to attend to in this step."
-    }
-  ],
   "reconstructionNotes": "High-level visual description for the generator: approximate layout, colors, key labels, data patterns, important annotations. No pixel measurements — describe what matters visually."
 }
 
@@ -51,8 +43,7 @@ RULES:
 - figureType: pick the closest match; used only to select the rendering library.
 - learningObjectives: 2–4 items. Be specific — not 'understand the graph' but 'understand why X increases as Y decreases'.
 - keyInsight: one sentence. This is the thing you most want the student to walk away remembering.
-- interactions: at most 3. Only include controls that genuinely reveal something about the concept — not decorative toggles. slider for continuous parameters, toggle for show/hide, button for replay/reset. Return [] if no interaction meaningfully deepens understanding.
-- demo_steps: 3–5 steps forming a pedagogical arc. Step 1 orients (what is this?). Middle steps build understanding through exploration. Final step synthesizes. Each step MUST set control_values to a concrete state. Return [] only if the figure is completely static with no pedagogical progression.
+- interactions: at most 3. Ask yourself: does adjusting this control let the student discover something about the concept that they couldn't see otherwise? If the answer is no — if it's decorative, if it just relabels something, if the figure would teach equally well without it — leave it out. Return [] if the figure is a static diagram or illustration with no meaningful parameter to explore.
 - reconstructionNotes: describe what matters for faithful recreation — axis labels, approximate data shape, color coding, key annotations — but do NOT try to enumerate exact data coordinates.
 - Output ONLY valid JSON — no markdown fences, no explanation.`;
 

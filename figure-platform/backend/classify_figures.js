@@ -167,7 +167,8 @@ function extractFiguresFromQmd(chapter, qmdPath) {
     return null;
   }
   const content = fs.readFileSync(file, 'utf-8');
-  const pattern = new RegExp(`!\\[[^\\]]*\\]\\(figures/${chapter}/([a-zA-Z0-9_.-]+\\.(?:png|jpg|JPG))\\)`, 'g');
+  const escapedChapter = chapter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`!\\[[^\\]]*\\]\\(\\.?/?figures/${escapedChapter}/([a-zA-Z0-9_.-]+\\.(?:png|jpe?g))\\)`, 'gi');
   const used = new Set();
   let match;
   while ((match = pattern.exec(content)) !== null) used.add(match[1]);

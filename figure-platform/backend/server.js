@@ -2275,6 +2275,15 @@ app.patch('/api/chapter-pipeline/run/:runId', (req, res) => {
   }
 });
 
+// DELETE /api/chapter-pipeline/run/:runId — delete a past pipeline run
+app.delete('/api/chapter-pipeline/run/:runId', (req, res) => {
+  try {
+    res.json(chapterPipeline.deleteChapterPipelineRun(req.params.runId));
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
 // GET /api/chapter-pipeline/preview/:runId — render chapter HTML with pipeline results
 app.get('/api/chapter-pipeline/preview/:runId', async (req, res) => {
   try {

@@ -563,12 +563,14 @@ async function buildPipelinePreviewHtml(runId) {
 
   // Pre-read original image dimensions so each figure iframe matches the
   // source image's aspect ratio instead of using fixed height buckets.
+  // Must cover both regular figures (meta.figures) and stitched panel parents (meta.stitchedFigures).
+  const allFigEntries = [...(meta.figures || []), ...(meta.stitchedFigures || [])];
   const imgDimsMap = {}; // stem -> paddingPct (image_height / image_width * 100)
   await Promise.all(
     Object.entries(figureHtmlMap)
       .filter(([, v]) => typeof v === 'string')
       .map(async ([stem]) => {
-        const figEntry = (meta.figures || []).find(f => f.stem === stem);
+        const figEntry = allFigEntries.find(f => f.stem === stem);
         if (!figEntry) return;
         const imgPath = path.join(FIGURES_DIR, figEntry.folder || chapter, figEntry.filename);
         if (!fs.existsSync(imgPath)) return;
@@ -622,15 +624,10 @@ async function buildPipelinePreviewHtml(runId) {
 
       const src = 'data:text/html;charset=utf-8;base64,' + Buffer.from(result).toString('base64');
       const paddingPct = imgDimsMap[stem];
-      const attrs = pre + post;
-      const styleWM = attrs.match(/style="[^"]*width\s*:\s*([\d.]+)%/);
-      const widthAttrM = !styleWM && attrs.match(/\bwidth="([\d.]+)%"/);
-      const qmdWidthPct = styleWM ? parseFloat(styleWM[1]) : (widthAttrM ? parseFloat(widthAttrM[1]) : null);
-      const wPct = qmdWidthPct != null ? qmdWidthPct : 100;
+      const wPct = 100;
       if (paddingPct != null) {
         const adjPadding = (paddingPct * wPct / 100).toFixed(2);
-        const marginStr = wPct < 100 ? ';margin:0 auto' : '';
-        return `<div style="position:relative;width:${wPct.toFixed(1)}%;padding-top:${adjPadding}%${marginStr};"><iframe src="${src}" style="position:absolute;inset:0;width:100%;height:100%;border:none;" scrolling="no" allowfullscreen loading="lazy"></iframe></div>`;
+        return `<div style="position:relative;width:${wPct.toFixed(1)}%;padding-top:${adjPadding}%;"><iframe src="${src}" style="position:absolute;inset:0;width:100%;height:100%;border:none;" scrolling="no" allowfullscreen loading="lazy"></iframe></div>`;
       }
       return `<iframe class="fig-iframe" src="${src}" style="width:${wPct.toFixed(1)}%;height:500px;border:none;display:block;margin:0 auto;" scrolling="no" allowfullscreen loading="lazy"></iframe>`;
     }
@@ -682,8 +679,19 @@ function listChapterPipelineRuns() {
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }
 
+function resolveRunDir(runId) {
+  const runDir = path.resolve(PIPELINE_RESULTS_DIR, String(runId || ''));
+  const rootDir = path.resolve(PIPELINE_RESULTS_DIR);
+  if (runDir === rootDir || !runDir.startsWith(rootDir + path.sep)) {
+    const err = new Error(`Invalid run id: ${runId}`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return runDir;
+}
+
 function getChapterPipelineRun(runId) {
-  const runDir = path.join(PIPELINE_RESULTS_DIR, runId);
+  const runDir = resolveRunDir(runId);
   if (!fs.existsSync(runDir)) {
     const err = new Error(`Run not found: ${runId}`);
     err.statusCode = 404;
@@ -693,7 +701,7 @@ function getChapterPipelineRun(runId) {
 }
 
 function updateChapterPipelineRun(runId, updates) {
-  const runDir = path.join(PIPELINE_RESULTS_DIR, runId);
+  const runDir = resolveRunDir(runId);
   if (!fs.existsSync(runDir)) {
     const err = new Error(`Run not found: ${runId}`);
     err.statusCode = 404;
@@ -709,10 +717,22 @@ function updateChapterPipelineRun(runId, updates) {
   return meta;
 }
 
+function deleteChapterPipelineRun(runId) {
+  const runDir = resolveRunDir(runId);
+  if (!fs.existsSync(runDir)) {
+    const err = new Error(`Run not found: ${runId}`);
+    err.statusCode = 404;
+    throw err;
+  }
+  fs.rmSync(runDir, { recursive: true, force: true });
+  return { deleted: true, runId };
+}
+
 module.exports = {
   runChapterPipeline,
   buildPipelinePreviewHtml,
   listChapterPipelineRuns,
   getChapterPipelineRun,
   updateChapterPipelineRun,
+  deleteChapterPipelineRun,
 };

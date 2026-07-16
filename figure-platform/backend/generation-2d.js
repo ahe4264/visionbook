@@ -84,7 +84,7 @@ function getLibraryForFigureType(figureType, renderingMode) {
 // ── System prompt builder ─────────────────────────────────────────────────────
 function buildSystem2dPrompt(scaffold, library) {
   const libSection = {
-    svgjs:   `SVG.js v3 (global: SVG). var draw=SVG().addTo(document.getElementById('container')).size('100%','100%'); var W=600,H=Math.round(W*(3/4)); draw.viewbox(0,0,W,H). font-size in user units (no px). Hover: el.on('mousemove',e=>showTooltip('label',e)).on('mouseleave',()=>hideTooltip()).on('click',()=>showPopup('Title','body')); el.css('cursor','pointer'). window.__markRendered() synchronously at end.`,
+    svgjs: `SVG.js v3 (global: SVG). var draw=SVG().addTo(document.getElementById('container')).size('100%','100%'); var W=600,H=Math.round(W*(3/4)); draw.viewbox(0,0,W,H). font-size in user units (no px). Hover: el.on('mousemove',e=>showTooltip('label',e)).on('mouseleave',()=>hideTooltip()).on('click',()=>showPopup('Title','body')); el.css('cursor','pointer'). window.__markRendered() synchronously at end.`,
     chartjs: `Chart.js v4 (global: Chart). Append <canvas style="width:100%;height:100%;display:block"> to #container; options:{responsive:true,maintainAspectRatio:false}. window.__markRendered() immediately after new Chart().`,
     mermaid: `Mermaid v11 (global: mermaid). Append div.mermaid to #container. mermaid.initialize({startOnLoad:false}); mermaid.run({nodes:[div]}).then(function(){ window.__markRendered(); /* style svg, add listeners */ }); — __markRendered() MUST be inside .then().`,
   }[library] || `SVG.js v3 — see svgjs above.`;
@@ -98,7 +98,7 @@ OUTPUT: respond with ONLY these two marker-wrapped sections (include both even i
 SCAFFOLD (do not reproduce — backend injects your output at the markers):
 ${scaffold}
 
-GLOBALS (do not re-declare): showPopup(title,body), showTooltip(text,event), hideTooltip(), #container (mount target), window.__markRendered() (call once when drawn), 'fig-resize' CustomEvent on document
+GLOBALS (do not re-declare): showPopup(title,body), showTooltip(text,event), hideTooltip(), #container (mount target), window.__markRendered() (call once when drawn), 'fig-resize' CustomEvent on document.
 
 LIBRARY: ${libSection}
 
@@ -111,26 +111,26 @@ VISUAL FIDELITY: the default state must be a faithful inline replacement for the
 - The step-0 (default) state should look indistinguishable from the original at a glance — a student replacing a static figure with this widget should see the same image they expect
 - No title bar or toolbar visible by default
 
+TEXT PLACEMENT & READABILITY: faithful labels must still be readable.
+- Treat every label, tick label, annotation, formula, and legend item as a collision-checked object with a real text box.
+- Before finalizing, check each text box against lines, arrows, curves, points, nodes, tick marks, gridlines, controls, and other text. Text must not sit on top of strokes or dense marks.
+- If the source label is visually anchored to a busy line/arrow/node, keep the semantic anchor but move the text to the nearest open whitespace and connect it with a short leader line, pointer, or subtle dot if needed.
+- Draw text and label backgrounds after geometry so labels are on top. For labels over busy regions, add a small white or translucent background rectangle, or use SVG paint-order/stroke halo: text.attr({ 'paint-order':'stroke', stroke:'#fff', 'stroke-width':3, 'stroke-linejoin':'round' }).
+- Do not add extra visible explanatory text inside the figure; use hover tooltips, click popups, and the scaffold narration panel for explanation.
+
+SCALE SAFETY: figures may be stitched into chapters at different sizes.
+- If using Canvas, Chart.js custom drawing, or any pixel-based renderer, derive point radius, stroke width, arrowheads, ticks, label size, and annotation padding from min(plotWidth, plotHeight).
+- Avoid large fixed pixel minimums such as Math.max(20, scaledRadius); use only small clamps that prevent invisibility.
+- If using SVG/viewBox with naturally scaling geometry, preserve that behavior and avoid fixed px sizes that break scaling.
+- If space is small, simplify or hide secondary labels instead of making marks oversized.
+
 HOVER/CLICK (on user action only): hover → showTooltip(label,event)/hideTooltip(); cursor:pointer on interactive elements. Click → showPopup('Title','2–3 sentence explanation'). Animation: fill/opacity transitions only; no scale/translate/bounce.
 
 CONTROLS (blueprint.interactions — render in UI section; add id="{id}Input" to every input):
   slider → <label>{label}: <output id="{id}Val">{default}</output><input id="{id}Input" type="range" min="{min}" max="{max}" step="{step}" value="{default}" oninput="document.getElementById('{id}Val').value=this.value;update_{id}(+this.value)"></label>  +  function update_{id}(v){ /* implement blueprint.interactions[].effect */ }
   toggle → <label><input id="{id}Input" type="checkbox" onchange="toggle_{id}(this.checked)"> {label}</label>  +  function toggle_{id}(on){}
   button → <button onclick="trigger_{id}()">{label}</button>  +  function trigger_{id}(){}
-Each control's handler must implement the visual change described in blueprint.interactions[].effect and teach the concept in blueprint.interactions[].teaches.
-
-GUIDED DEMO (blueprint.demo_steps — this is the core educational feature):
-The scaffold already provides a top-of-screen narration banner. Do NOT add nav or narration to the UI section.
-Scaffold elements (pre-existing — do not create them): #demoPanel, #demoPanelTitle, #demoPanelStep, #demoPanelText, and ◀/▶ buttons wired to demoPrev()/demoNext().
-
-In code:
-1. Inline _demoSteps array from blueprint.demo_steps. Each step has {title, narration, control_values, focus}.
-2. Show the panel: document.getElementById('demoPanel').style.display = 'block';
-3. _applyDemoStep(i): (a) sync all controls to s.control_values, (b) set #demoPanelTitle.textContent = s.title, (c) set #demoPanelStep.textContent = (i+1)+' / '+_demoSteps.length, (d) set #demoPanelText.textContent = s.narration + (s.focus ? '  ' + s.focus : ''), (e) redraw/update the figure to match the new control state.
-4. demoNext/demoPrev wrap with modulo.
-5. Call _applyDemoStep(0) on load.
-
-Do NOT call showPopup from _applyDemoStep — the top panel is the explainer; popups are for hover/click only.`;
+Each control's handler must implement the visual change described in blueprint.interactions[].effect and teach the concept in blueprint.interactions[].teaches.`;
 }
 
 // ── User message builder ──────────────────────────────────────────────────────
@@ -141,8 +141,8 @@ function buildUser2dMessage(plan, library, userText) {
   let blueprintSection = '';
   if (plan) {
     const highlights = [
-      plan.concept     ? `CONCEPT: ${plan.concept}` : null,
-      plan.keyInsight  ? `KEY INSIGHT (what students should walk away understanding): ${plan.keyInsight}` : null,
+      plan.concept ? `CONCEPT: ${plan.concept}` : null,
+      plan.keyInsight ? `KEY INSIGHT (what students should walk away understanding): ${plan.keyInsight}` : null,
       plan.learningObjectives?.length
         ? `LEARNING OBJECTIVES:\n${plan.learningObjectives.map(o => `  - ${o}`).join('\n')}` : null,
     ].filter(Boolean).join('\n');
@@ -151,11 +151,11 @@ function buildUser2dMessage(plan, library, userText) {
       `\n\nFULL BLUEPRINT:\n${JSON.stringify(plan, null, 2)}`;
   }
 
-  return `Build an educational guided demo of this figure using ${libName}.
+  return `Build an interactive figure using ${libName}.
 
-FAITHFULNESS FIRST: the default state (step 0, no interaction yet) must be a pixel-accurate inline replacement for the source image — same colors, same data shape, same labels, same proportions. A student who sees the static figure in the textbook should recognize it immediately.
+FAITHFULNESS FIRST: the default state must be a pixel-accurate inline replacement for the source image — same colors, same data shape, same labels, same proportions. A student who sees the static figure in the textbook should recognize it immediately.
 
-THEN EDUCATE: the demo_steps in the blueprint define a pedagogical arc — implement them faithfully so a student navigating ◀/▶ discovers the concept step by step. Each step's narration and focus field tell you exactly what the student should be seeing and thinking at that moment.${blueprintSection}`;
+THEN ADD INTERACTIVITY: implement any controls from blueprint.interactions so a student can explore the concept hands-on. Each control's handler should teach the relationship described in its "teaches" field. Use hover tooltips and click popups to surface explanations on demand.${blueprintSection}`;
 }
 
 // ── Strip markdown fences ─────────────────────────────────────────────────────
@@ -180,6 +180,14 @@ FIDELITY: first frame = drop-in for source image.
 - font-size in SVG user units (no px suffix): <text font-size="11"> ✓   <text font-size="11px"> ✗
 - Use blueprint elementSizes (strokeWidth, fontSize) directly; edge count and arrowhead directions must match exactly
 - No title, toolbar, or description text visible by default
+
+TEXT PLACEMENT: preserve label meaning, but make text legible.
+- Treat labels/ticks/annotations/formulas/legends as collision-checked boxes. Before finalizing, check them against every line, arrow, curve, node, point, tick, gridline, and other label.
+- Text must not overlap strokes or dense marks. If the original label is anchored to a busy region, move it to nearby open whitespace and add a short leader line or pointer.
+- Draw labels after geometry and give labels over busy regions a white/translucent background or SVG halo: paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round".
+- Leave at least 4-6 SVG user units between text and nearby strokes; stagger clustered labels by at least fontSize + 4.
+- Wrap long annotations into short multi-line text instead of letting them cross the figure. Keep legends outside dense data/edge regions when possible.
+- Do not add extra visible explanatory prose inside the figure; use hover tooltips and click popups for explanation.
 
 INTERACTIONS (reveal on user action only):
 - Hover: stroke/opacity shift only; fixed tooltip div near cursor (position:fixed;background:rgba(0,0,0,.55);color:#fff;font:11px sans-serif;padding:3px 8px;border-radius:4px;pointer-events:none)

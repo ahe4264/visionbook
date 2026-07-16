@@ -1895,7 +1895,7 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
       : null);
   const viewerPlan = record?.plan || null;
   const hasAttemptHistory = attempts.length > 0;
-const isTwoPhase = record?.extra?.twoPhasePipeline === true || record?.twoPhasePipeline === true;
+  const isTwoPhase = record?.extra?.twoPhasePipeline === true || record?.twoPhasePipeline === true;
   const phase1Evaluation = record?.extra?.phase1Evaluation || record?.phase1Evaluation || null;
   const phase2Evaluation = record?.extra?.phase2Evaluation || record?.phase2Evaluation || null;
   const phase1Status = record?.extra?.phase1Status || record?.phase1Status || null;
@@ -2055,34 +2055,34 @@ const isTwoPhase = record?.extra?.twoPhasePipeline === true || record?.twoPhaseP
                   );
                 })
               ) : (
-              <div style={styles.viewerHistoryRail}>
-                {attempts.map((attempt, index) => {
-                  const isActive = index === selectedAttemptIndex;
-                  const score = attempt?.evaluation?.overall_average;
-                  const attemptLabel = typeof attempt?.iteration === 'number' ? Math.max(0, attempt.iteration - 1) : index + 1;
-                  return (
-                    <button
-                      key={`${record?.id || 'record'}-${attemptLabel}-${index}`}
-                      type="button"
-                      onClick={() => setSelectedAttemptIndex(index)}
-                      style={{
-                        ...styles.viewerHistoryButton,
-                        ...(isActive ? styles.viewerHistoryButtonActive : {}),
-                      }}
-                    >
-                      <span style={styles.viewerHistoryButtonLabel}>{attemptLabel}</span>
-                      <span style={styles.viewerHistoryButtonMeta}>
-                        {attempt?.status || attempt?.step || 'attempt'}
-                      </span>
-                      {Number.isFinite(score) && (
-                        <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
-                          {score.toFixed(1)}/5
+                <div style={styles.viewerHistoryRail}>
+                  {attempts.map((attempt, index) => {
+                    const isActive = index === selectedAttemptIndex;
+                    const score = attempt?.evaluation?.overall_average;
+                    const attemptLabel = typeof attempt?.iteration === 'number' ? Math.max(0, attempt.iteration - 1) : index + 1;
+                    return (
+                      <button
+                        key={`${record?.id || 'record'}-${attemptLabel}-${index}`}
+                        type="button"
+                        onClick={() => setSelectedAttemptIndex(index)}
+                        style={{
+                          ...styles.viewerHistoryButton,
+                          ...(isActive ? styles.viewerHistoryButtonActive : {}),
+                        }}
+                      >
+                        <span style={styles.viewerHistoryButtonLabel}>{attemptLabel}</span>
+                        <span style={styles.viewerHistoryButtonMeta}>
+                          {attempt?.status || attempt?.step || 'attempt'}
                         </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+                        {Number.isFinite(score) && (
+                          <span style={{ ...styles.viewerHistoryScore, color: scoreTextColor(score) }}>
+                            {score.toFixed(1)}/5
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
 
               <div style={styles.viewerHistoryDetail}>
@@ -3896,6 +3896,7 @@ function ChapterPipelineTab({ availableModels }) {
   const [showHistory, setShowHistory] = React.useState(false);
   const [editingRunId, setEditingRunId] = React.useState(null);
   const [editingName, setEditingName] = React.useState('');
+  const [deletingRunId, setDeletingRunId] = React.useState(null);
   const [pipelinePreviewHtml, setPipelinePreviewHtml] = React.useState('');
   const [pipelinePreviewLoading, setPipelinePreviewLoading] = React.useState(false);
   const [pipelinePreviewError, setPipelinePreviewError] = React.useState(null);
@@ -4067,6 +4068,34 @@ function ChapterPipelineTab({ availableModels }) {
       setRuns(prev => prev.map(r => r.runId === rid ? { ...r, name } : r));
     } catch { /* ignore */ }
     setEditingRunId(null);
+  }
+
+  async function deleteRun(run) {
+    const defaultLabel = `${humanTitle(run.chapter)} · ${formatRunDate(run.timestamp)}`;
+    const label = run.name || defaultLabel;
+    if (!window.confirm(`Delete pipeline run "${label}"? This cannot be undone.`)) return;
+
+    setDeletingRunId(run.runId);
+    try {
+      const resp = await apiFetch(`/api/chapter-pipeline/run/${encodeURIComponent(run.runId)}`, { method: 'DELETE' });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || 'Delete failed');
+      }
+      setRuns(prev => prev.filter(r => r.runId !== run.runId));
+      if (run.runId === runId) {
+        setRunId(null);
+        setFigures([]);
+        setPipelineStatus('idle');
+        setPipelinePreviewHtml('');
+        setPipelinePreviewError(null);
+        setFinalCounts(null);
+      }
+    } catch (e) {
+      setErrorMsg(e.message || 'Delete failed');
+    } finally {
+      setDeletingRunId(null);
+    }
   }
 
   const categoryColor = { '3d_projection': '#2a5a94', '2d_diagram': '#2e7d32', 'other': '#888' };
@@ -4268,6 +4297,12 @@ function ChapterPipelineTab({ availableModels }) {
                             title="Rename"
                             style={{ fontSize: 10, padding: '1px 4px', border: '1px solid #ddd', borderRadius: 3, background: 'transparent', color: '#aaa', cursor: 'pointer', flexShrink: 0, lineHeight: 1.4 }}
                           >✏</button>
+                          <button
+                            onClick={e => { e.stopPropagation(); deleteRun(run); }}
+                            disabled={deletingRunId === run.runId}
+                            title="Delete"
+                            style={{ fontSize: 10, padding: '1px 5px', border: '1px solid #f1c0c0', borderRadius: 3, background: deletingRunId === run.runId ? '#f8f8f8' : 'transparent', color: '#c44', cursor: deletingRunId === run.runId ? 'default' : 'pointer', flexShrink: 0, lineHeight: 1.4 }}
+                          >{deletingRunId === run.runId ? '...' : 'Delete'}</button>
                         </>
                       )}
                     </div>
@@ -5057,7 +5092,7 @@ function PairwiseTab({ availableModels }) {
 
   useEffect(() => {
     if (rankingsSelectedSetups !== null) {
-      try { localStorage.setItem('rankingsSelectedSetups', JSON.stringify(rankingsSelectedSetups)); } catch {}
+      try { localStorage.setItem('rankingsSelectedSetups', JSON.stringify(rankingsSelectedSetups)); } catch { }
     }
   }, [rankingsSelectedSetups]);
 
