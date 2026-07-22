@@ -1103,19 +1103,32 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
       activeMap.set(candidate.stem, { figureStem: candidate.stem, phase: 'looping' });
       updateProgress();
       try {
-        const loopResult = await runGenerationLoop({
-          base64: candidate.base64,
-          mediaType: candidate.mediaType,
-          filename: candidate.filename,
-          figureStem: candidate.stem,
-          chapterName: candidate.chapterName,
-          model: selectedModel || undefined,
-          plannerModel: selectedPlannerModel || undefined,
-          evalModel: selectedCriticModel || undefined,
-          criticVersion: 'benchmark',
-          experiment: selectedExperiment || undefined,
-          fewShot,
-        });
+        const is2d = candidate.figureType === '2d';
+        const loopResult = is2d
+          ? await runGenerationJob2d({
+              base64: candidate.base64,
+              mediaType: candidate.mediaType,
+              filename: candidate.filename,
+              figureStem: candidate.stem,
+              chapterName: candidate.chapterName,
+              model: selectedModel || undefined,
+              experiment: selectedExperiment || undefined,
+              subject: candidate.subject || undefined,
+            })
+          : await runGenerationLoop({
+              base64: candidate.base64,
+              mediaType: candidate.mediaType,
+              filename: candidate.filename,
+              figureStem: candidate.stem,
+              chapterName: candidate.chapterName,
+              model: selectedModel || undefined,
+              plannerModel: selectedPlannerModel || undefined,
+              evalModel: selectedCriticModel || undefined,
+              criticVersion: 'benchmark',
+              experiment: selectedExperiment || undefined,
+              fewShot,
+              subject: candidate.subject || undefined,
+            });
         if (benchmarkAbortRef.current) { activeMap.delete(candidate.stem); return; }
         results.push({ figureStem: candidate.stem, status: 'ok', figureId: loopResult.figureId });
       } catch (err) {
