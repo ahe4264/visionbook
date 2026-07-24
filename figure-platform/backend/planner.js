@@ -14,105 +14,12 @@
  * Used by the web generation pipeline.
  */
 
-const fs = require('fs');
-const path = require('path');
 const { generateWithModel } = require('./models');
 const { inferChapterFromFilename, list3dCandidates } = require('./chapter-discovery');
-
-// ── Paths ──────────────────────────────────────────────────────────────────────
-const ROOT_DIR = path.join(__dirname, '..', '..');
-const QMD_DIR = ROOT_DIR;                                     // .qmd files live at repo root
+const { findQmdFile, extractFigureContext } = require('./qmd_utils');
 
 const PLANNER_MODEL = 'gemini-3.5-flash';
 const PLANNER_MAX_TOKENS = 10240;
-
-// ── Context extraction ─────────────────────────────────────────────────────────
-
-/**
- * Find the .qmd file for a given chapter name.
- * Chapter names may differ slightly from filenames, so we try several matches.
- */
-function findQmdFile(chapterName) {
-  if (!chapterName) return null;
-
-  // Direct match
-  const direct = path.join(QMD_DIR, `${chapterName}.qmd`);
-  if (fs.existsSync(direct)) return direct;
-
-  // Try common variations: underscores → hyphens, etc.
-  const candidates = fs.readdirSync(QMD_DIR).filter(f => f.endsWith('.qmd'));
-  const normalised = chapterName.toLowerCase().replace(/[-_ ]/g, '');
-  for (const c of candidates) {
-    const stem = c.replace(/\.qmd$/, '').toLowerCase().replace(/[-_ ]/g, '');
-    if (stem === normalised) return path.join(QMD_DIR, c);
-  }
-
-  // Substring match (e.g. "blurring_2" matches "blurring_2.qmd")
-  for (const c of candidates) {
-    const stem = c.replace(/\.qmd$/, '').toLowerCase();
-    if (stem.includes(chapterName.toLowerCase()) || chapterName.toLowerCase().includes(stem)) {
-      return path.join(QMD_DIR, c);
-    }
-  }
-
-  return null;
-}
-
-/**
- * Extract a focused chunk of text around references to a specific figure.
- * Returns ~3-5 paragraphs surrounding each reference to the figure stem.
- */
-function extractFigureContext(qmdContent, figureStem) {
-  const lines = qmdContent.split('\n');
-  const stemLower = figureStem.toLowerCase().replace(/\.[^.]+$/, ''); // strip extension
-  const contextRadius = 15; // lines before/after a reference to include
-  const collected = new Set();
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].toLowerCase();
-    // Match figure image paths like figures/imaging/brdf.png or @fig-lightSpray references
-    if (line.includes(stemLower) || line.includes(`/${stemLower}.`) || line.includes(`/${stemLower})`)) {
-      const start = Math.max(0, i - contextRadius);
-      const end = Math.min(lines.length - 1, i + contextRadius);
-      for (let j = start; j <= end; j++) collected.add(j);
-    }
-  }
-
-  if (collected.size === 0) {
-    // Fallback: return first ~40 lines (chapter intro) as minimal context
-    return lines.slice(0, 40).join('\n');
-  }
-
-  // Build contiguous chunks
-  const sortedIndices = [...collected].sort((a, b) => a - b);
-  const chunks = [];
-  let chunkStart = sortedIndices[0];
-  let chunkEnd = sortedIndices[0];
-
-  for (let k = 1; k < sortedIndices.length; k++) {
-    if (sortedIndices[k] <= chunkEnd + 3) {
-      chunkEnd = sortedIndices[k];
-    } else {
-      chunks.push(lines.slice(chunkStart, chunkEnd + 1).join('\n'));
-      chunkStart = sortedIndices[k];
-      chunkEnd = sortedIndices[k];
-    }
-  }
-  chunks.push(lines.slice(chunkStart, chunkEnd + 1).join('\n'));
-
-  return chunks.join('\n\n[...]\n\n');
-}
-
-/**
- * Extract full text for a chapter (used in chapter mode to parse all figure refs).
- */
-function loadChapterText(chapterName) {
-  const qmdPath = findQmdFile(chapterName);
-  if (!qmdPath) return null;
-  return fs.readFileSync(qmdPath, 'utf-8');
-}
-
-
 
 // ── LLM interaction planner (fast, small-token call) ────────────────────────
 
@@ -120,22 +27,17 @@ function loadChapterText(chapterName) {
 // Interactions are grouped by "load" — how much generator code and failure
 // risk each type adds — so the planner spends complexity only where the
 // concept demands it.
-const INTERACTION_PALETTE = `INTERACTION PALETTE — pick the fewest, lowest-load interactions that convey the concept. "Load" = generator code + failure risk; spend it only when the concept needs it. In "teaches", say what the learner understands, not what the control does.
+const INTERACTION_PALETTE = `INTERACTION PALETTE — choose the interactions that best fit the concept. Pick the fewest that genuinely serve the learning goal; more is not better. In "teaches", say what the learner understands, not what the control does.
 
-LOW (scaffold-provided; prefer these, often one suffices):
 • orbit / drag — rotate/move the scene. When depth or 3D shape IS the concept.
 • hover — reveal a label on demand. When showing every label at once clutters.
 • click — highlight one element. When focus on one part of a busy scene matters.
-
-MEDIUM (a few reactive lines):
 • slider — sweep one continuous variable. When dragging it visibly transforms the figure.
 • toggle — switch between 2+ named views. For before/after or dual views (e.g. spatial ↔ frequency).
 • button / state — step through discrete phases. When distinct stages should be visited deliberately.
-
-HIGH (self-driving or free-form; much more code, more ways to break — at most one per figure):
 • animation — self-playing motion. When the concept is inherently dynamic and a slider can't convey it.
 • equation_input — learner types math, parsed at runtime. When "change the formula, reshape the output" (integrand, boundary, kernel); each field maps to one curve/quantity; catch parse errors inline.
-• code_editor — learner writes/debugs code; the figure traces its execution. Highest load — ONLY when the concept IS an algorithm. Give a minimal API (e.g. swap(i,j), compare(i,j)) and a reference implementation.`;
+• code_editor — learner writes/debugs code; the figure traces its execution. ONLY when the concept IS an algorithm. Give a minimal API (e.g. swap(i,j), compare(i,j)) and a reference implementation.`;
 
 const INTERACTION_FIELDS = `INTERACTION FIELDS — every interaction object has "id" (unique camelCase), "type", and "teaches". Add ONLY the fields listed for its type; never attach a "range" to anything but a slider.
 • orbit / drag / hover / click — no extra fields.
@@ -431,15 +333,9 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
 async function planForFigure(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL, useFewShot = true, authoredIntent = {}) {
   const resolvedChapter = chapterName || inferChapterFromFilename(figureStem);
 
-  // Try to load chapter text
-  const qmdContent = resolvedChapter ? loadChapterText(resolvedChapter) : null;
-  let contextChunk = '';
+  let contextChunk = (resolvedChapter && extractFigureContext(figureStem, resolvedChapter)) ||
+    `Figure: ${figureStem}. No chapter text found — plan from filename alone.`;
 
-  if (qmdContent) {
-    contextChunk = extractFigureContext(qmdContent, figureStem);
-  } else {
-    contextChunk = `Figure: ${figureStem}. No chapter text found — plan from filename alone.`;
-  }
   if (authoredIntent?.authoredPrompt) {
     contextChunk = String(authoredIntent.authoredPrompt);
   }
@@ -468,16 +364,11 @@ async function planChapter(chapterName, imageDataMap = {}, plannerModel = PLANNE
   const candidates = list3dCandidates(chapterName);
   if (!candidates.length) return [];
 
-  const qmdContent = loadChapterText(chapterName);
   const plans = [];
 
   for (const candidate of candidates) {
-    let contextChunk = '';
-    if (qmdContent) {
-      contextChunk = extractFigureContext(qmdContent, candidate.stem);
-    } else {
-      contextChunk = `Figure: ${candidate.stem} from chapter "${chapterName}". No chapter text found.`;
-    }
+    const contextChunk = extractFigureContext(candidate.stem, chapterName) ||
+      `Figure: ${candidate.stem} from chapter "${chapterName}". No chapter text found.`;
 
     const interactionPlan = await generateInteractionPlan(contextChunk, candidate.stem, imageDataMap[candidate.stem], plannerModel, useFewShot);
 
@@ -568,4 +459,7 @@ module.exports = {
   planChapter,
   refinePlan,
   PLANNER_MODEL,
+  INTERACTION_PALETTE,
+  INTERACTION_FIELDS,
+  buildAuthoredIntentBlock,
 };

@@ -32,7 +32,7 @@ function chapterFromSource(source) {
 
 function safeStem(value) {
   return String(value || '')
-    .replace(/\.[^.]+$/, '')
+    .replace(/\.(png|jpg|jpeg|webp|gif|svg)$/i, '')
     .replace(/[^a-z0-9_-]+/gi, '_')
     .replace(/^_+|_+$/g, '');
 }

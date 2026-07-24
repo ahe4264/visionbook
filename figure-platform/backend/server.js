@@ -409,7 +409,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   };
 }
 
-async function generate2dFigure({ base64, mediaType, filename, figureStem: requestedFigureStem, chapterName: requestedChapterName, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, extra: requestedExtra }) {
+async function generate2dFigure({ base64, mediaType, filename, figureStem: requestedFigureStem, chapterName: requestedChapterName, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
   if (!base64 || !mediaType || !filename) {
     const err = new Error('base64, mediaType, and filename are required.');
     err.statusCode = 400;
@@ -472,7 +472,7 @@ async function generate2dFigure({ base64, mediaType, filename, figureStem: reque
     throw err;
   }
 
-  const figureId = makeId();
+  const figureId = requestedFigureId || makeId();
   const timestamp = new Date().toISOString();
   const shot = await screenshotHtml(html);
   const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
@@ -522,7 +522,7 @@ async function generate2dFigure({ base64, mediaType, filename, figureStem: reque
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, extra: requestedExtra }) {
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -588,7 +588,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     throw err;
   }
 
-  const figureId = makeId();
+  const figureId = requestedFigureId || makeId();
   const timestamp = new Date().toISOString();
   const shot = await screenshotHtml(html);
   const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
@@ -831,6 +831,7 @@ async function generateContextExportItem(body) {
     sourcePath: item.sourcePath,
     resultCollection: 'context_export',
     resultSource: 'context_export',
+    figureId: body.figureId,
     extra: {
       ...contextExportExtraFromItem(item),
       ...(body.llmInputLogPath ? { llmInputLogPath: body.llmInputLogPath } : {}),
@@ -924,7 +925,7 @@ app.post('/api/context-export-generate-async', (req, res) => {
     updatedAt: new Date().toISOString(),
   });
 
-  const body = { ...(req.body || {}), llmInputLogPath: logContext.logPath };
+  const body = { ...(req.body || {}), llmInputLogPath: logContext.logPath, figureId: jobId };
   runWithLLMInputLogging(logContext, () => generateContextExportItem(body))
     .then((result) => updateGenerationJob(jobId, { status: 'done', result: { ...result, llmInputLogPath: logContext.logPath } }))
     .catch((err) => updateGenerationJob(jobId, {

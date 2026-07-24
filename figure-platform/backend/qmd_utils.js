@@ -70,4 +70,60 @@ function numberLines(text) {
     .join('\n');
 }
 
-module.exports = { findQmdFile, loadQmdForChapter, numberLines };
+/**
+ * Extract focused context around all references to a figure stem in a chapter.
+ * Uses multi-match chunk joining (collects every occurrence, merges nearby lines).
+ * Falls back to the first 40 lines if the stem is not mentioned.
+ * Returns null if the chapter file cannot be found or read.
+ */
+function extractFigureContext(figureStem, chapterName) {
+  const qmdPath = findQmdFile(chapterName);
+  if (!qmdPath) return null;
+
+  let content;
+  try {
+    content = fs.readFileSync(qmdPath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const lines = content.split('\n');
+  const stemLower = figureStem.toLowerCase().replace(/\.[^.]+$/, '');
+  const RADIUS = 15;
+  const collected = new Set();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase();
+    if (
+      line.includes(stemLower) ||
+      line.includes('/' + stemLower + '.') ||
+      line.includes('/' + stemLower + ')')
+    ) {
+      const start = Math.max(0, i - RADIUS);
+      const end = Math.min(lines.length - 1, i + RADIUS);
+      for (let j = start; j <= end; j++) collected.add(j);
+    }
+  }
+
+  if (collected.size === 0) {
+    return lines.slice(0, 40).join('\n');
+  }
+
+  const sorted = [...collected].sort((a, b) => a - b);
+  const chunks = [];
+  let chunkStart = sorted[0];
+  let chunkEnd = sorted[0];
+  for (let k = 1; k < sorted.length; k++) {
+    if (sorted[k] <= chunkEnd + 3) {
+      chunkEnd = sorted[k];
+    } else {
+      chunks.push(lines.slice(chunkStart, chunkEnd + 1).join('\n'));
+      chunkStart = sorted[k];
+      chunkEnd = sorted[k];
+    }
+  }
+  chunks.push(lines.slice(chunkStart, chunkEnd + 1).join('\n'));
+  return chunks.join('\n\n[...]\n\n');
+}
+
+module.exports = { findQmdFile, loadQmdForChapter, numberLines, extractFigureContext };

@@ -14,55 +14,15 @@
 const fs = require('fs');
 const path = require('path');
 const { generateWithModel } = require('./models');
+const { mergePayloadIntoScaffold, extractPayloadFromText } = require('./generation');
 
-// ── Scaffold constants ────────────────────────────────────────────────────────
+// ── Scaffold ──────────────────────────────────────────────────────────────────
 const SCAFFOLD_2D_PATH = path.join(__dirname, 'base_scene_2d.html');
-const UI_BEGIN_MARKER = '<!-- @FIGURE_UI_BEGIN -->';
-const UI_END_MARKER = '<!-- @FIGURE_UI_END -->';
-const CODE_BEGIN_MARKER = '// @FIGURE_CODE_BEGIN';
-const CODE_END_MARKER = '// @FIGURE_CODE_END';
 
 let _scaffold2d = null;
 function getScaffold2d() {
   if (!_scaffold2d) _scaffold2d = fs.readFileSync(SCAFFOLD_2D_PATH, 'utf-8');
   return _scaffold2d;
-}
-
-// ── Scaffold utilities ────────────────────────────────────────────────────────
-function _escapeRegExp(str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function extractPayloadFromText(text) {
-  if (!text) return null;
-  const str = String(text);
-  const uiRe = new RegExp(
-    `${_escapeRegExp(UI_BEGIN_MARKER)}([\\s\\S]*?)${_escapeRegExp(UI_END_MARKER)}`, 'm'
-  );
-  const codeRe = new RegExp(
-    `${_escapeRegExp(CODE_BEGIN_MARKER)}([\\s\\S]*?)${_escapeRegExp(CODE_END_MARKER)}`, 'm'
-  );
-  const uiMatch = str.match(uiRe);
-  const codeMatch = str.match(codeRe);
-  if (!uiMatch && !codeMatch) return null;
-  return {
-    uiHtml: uiMatch ? uiMatch[1].trim() : '',
-    codeJs: codeMatch ? codeMatch[1].trim() : '',
-  };
-}
-
-function mergePayloadIntoScaffold(scaffold, { uiHtml = '', codeJs = '' } = {}) {
-  const replaceBlock = (src, begin, end, body) => {
-    const re = new RegExp(
-      `(${_escapeRegExp(begin)})([\\s\\S]*?)(${_escapeRegExp(end)})`, 'm'
-    );
-    if (!re.test(src)) throw new Error(`Missing scaffold marker: ${begin}`);
-    const middle = body.trim() ? `\n${body.trim()}\n` : '\n';
-    return src.replace(re, `$1${middle}$3`);
-  };
-  let out = replaceBlock(scaffold, UI_BEGIN_MARKER, UI_END_MARKER, uiHtml);
-  out = replaceBlock(out, CODE_BEGIN_MARKER, CODE_END_MARKER, codeJs);
-  return out;
 }
 
 // ── Library routing ───────────────────────────────────────────────────────────
@@ -127,10 +87,17 @@ SCALE SAFETY: figures may be stitched into chapters at different sizes.
 HOVER/CLICK (on user action only): hover → showTooltip(label,event)/hideTooltip(); cursor:pointer on interactive elements. Click → showPopup('Title','2–3 sentence explanation'). Animation: fill/opacity transitions only; no scale/translate/bounce.
 
 CONTROLS (blueprint.interactions — render in UI section; add id="{id}Input" to every input):
-  slider → <label>{label}: <output id="{id}Val">{default}</output><input id="{id}Input" type="range" min="{min}" max="{max}" step="{step}" value="{default}" oninput="document.getElementById('{id}Val').value=this.value;update_{id}(+this.value)"></label>  +  function update_{id}(v){ /* implement blueprint.interactions[].effect */ }
+  slider → <label>{label}: <output id="{id}Val">{default}</output><input id="{id}Input" type="range" min="{min}" max="{max}" step="{step}" value="{default}" oninput="document.getElementById('{id}Val').value=this.value;update_{id}(+this.value)"></label>  +  function update_{id}(v){ /* teach: blueprint.interactions[].teaches */ }
   toggle → <label><input id="{id}Input" type="checkbox" onchange="toggle_{id}(this.checked)"> {label}</label>  +  function toggle_{id}(on){}
   button → <button onclick="trigger_{id}()">{label}</button>  +  function trigger_{id}(){}
-Each control's handler must implement the visual change described in blueprint.interactions[].effect and teach the concept in blueprint.interactions[].teaches.`;
+Each control's handler must teach the concept described in blueprint.interactions[].teaches.
+
+DEMO STEPS (blueprint.demo_steps): if present and non-empty, build a step player in #ui:
+  - A <p id="demoNarration" style="margin:0;font-size:10px;max-width:180px"> showing the current step's narration
+  - <button onclick="prevStep()">◀</button> <span id="stepLabel"></span> <button onclick="nextStep()">▶</button>
+  - Each step's .state sets matching interaction inputs to the specified values and calls their update functions
+  - Step 0 is the default view (set on load); subsequent steps are one click away
+  - Omit the player entirely if demo_steps is absent or empty`;
 }
 
 // ── User message builder ──────────────────────────────────────────────────────
@@ -143,8 +110,7 @@ function buildUser2dMessage(plan, library, userText) {
     const highlights = [
       plan.concept ? `CONCEPT: ${plan.concept}` : null,
       plan.keyInsight ? `KEY INSIGHT (what students should walk away understanding): ${plan.keyInsight}` : null,
-      plan.learningObjectives?.length
-        ? `LEARNING OBJECTIVES:\n${plan.learningObjectives.map(o => `  - ${o}`).join('\n')}` : null,
+      plan.demo_steps?.length ? `DEMO STEPS: ${plan.demo_steps.length} guided steps — implement the step player in #ui` : null,
     ].filter(Boolean).join('\n');
 
     blueprintSection = (highlights ? `\n\n${highlights}` : '') +

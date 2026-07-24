@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: absolute;
+      inset: 0;
+      transition: top 0.16s ease;
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span id="demoNarration" style="margin:0;font-size:10px;max-width:180px;display:block"></span><span><button onclick="prevStep()">◀</button> <span id="stepLabel"></span> <button onclick="nextStep()">▶</button></span><label><input id="integrationTypeInput" type="checkbox" onchange="toggle_integrationType(this.checked)"> Integration Order: <span id="integrationTypeVal">Type I</span></label><label>Sweep Slice: <output id="sliceSweepVal">-1</output><input id="sliceSweepInput" type="range" min="-2" max="2" step="0.1" value="-1" oninput="document.getElementById('sliceSweepVal').value=this.value;update_sliceSweep(+this.value)"></label>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    new ResizeObserver(function () {
+      var rect = document.getElementById('container').getBoundingClientRect();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+var W = 600, H = 450;
+draw.viewbox(0, 0, W, H);
+
+var x0 = 295, y0 = 385, s = 85;
+function X(x) { return x0 + s * x; }
+function Y(y) { return y0 - s * y; }
+
+var blue = '#2aa8df';
+var lightBlue = '#c9e3ec';
+var lightOrange = '#fde7b8';
+var purple = '#d9cdf4';
+var red = '#ee4b63';
+var green = '#2ca25f';
+var ink = '#231f20';
+
+var verticalMode = true;
+var sweepValue = -1;
+
+var gFill = draw.group();
+var gBound = draw.group();
+var gSlice = draw.group();
+var gAxes = draw.group();
+var gLabels = draw.group();
+
+function polyPoints(arr) {
+  return arr.map(function (p) { return [X(p[0]), Y(p[1])]; });
+}
+
+var triLeft = gFill.polygon(polyPoints([[-2, 3], [0, 3], [0, 1]])).fill(lightBlue).stroke('none');
+var triRight = gFill.polygon(polyPoints([[0, 3], [2, 3], [0, 1]])).fill(lightOrange).stroke('none');
+var triWhole = gFill.polygon(polyPoints([[-2, 3], [2, 3], [0, 1]])).fill(purple).opacity(0).stroke('none');
+
+triLeft.css('cursor', 'pointer').on('mousemove', function (e) {
+  showTooltip('R₁: for vertical slices, −2 ≤ x ≤ 0 and −x + 1 ≤ y ≤ 3.', e);
+}).on('mouseleave', hideTooltip).on('click', function () {
+  showPopup('Region R₁', 'In Type I order, the left half uses the lower boundary y = −x + 1. This is why it must be written as a separate integral from the right half.');
+});
+triRight.css('cursor', 'pointer').on('mousemove', function (e) {
+  showTooltip('R₂: for vertical slices, 0 ≤ x ≤ 2 and x + 1 ≤ y ≤ 3.', e);
+}).on('mouseleave', hideTooltip).on('click', function () {
+  showPopup('Region R₂', 'In Type I order, the right half uses the lower boundary y = x + 1. The formula changes at x = 0, forcing a split.');
+});
+triWhole.css('cursor', 'pointer').on('mousemove', function (e) {
+  showTooltip('Type II view: one horizontal slice spans from x = 1 − y to x = y − 1.', e);
+}).on('mouseleave', hideTooltip).on('click', function () {
+  showPopup('Type II Region', 'With horizontal slices, the left and right boundaries keep the same formulas for every y from 1 to 3. No split into R₁ and R₂ is needed.');
+});
+
+function boundaryLine(x1, y1, x2, y2, tip, title, body) {
+  var l = gBound.line(X(x1), Y(y1), X(x2), Y(y2)).stroke({ color: blue, width: 4, linecap: 'butt' });
+  var hit = gBound.line(X(x1), Y(y1), X(x2), Y(y2)).stroke({ color: '#fff', width: 18, opacity: 0 }).fill('none');
+  hit.css('cursor', 'pointer').on('mousemove', function (e) { showTooltip(tip, e); }).on('mouseleave', hideTooltip).on('click', function () { showPopup(title, body); });
+  return l;
+}
+boundaryLine(-2, 3, 2, 3, 'Top boundary: y = 3.', 'Top boundary', 'The horizontal line y = 3 is the upper boundary for every vertical slice and the top y-value for horizontal slicing.');
+boundaryLine(-2, 3, 0, 1, 'Left boundary: y = −x + 1, equivalently x = 1 − y.', 'Left boundary', 'For vertical slices on the left, this line is the lower boundary. For horizontal slices, it becomes the left boundary x = 1 − y.');
+boundaryLine(0, 1, 2, 3, 'Right boundary: y = x + 1, equivalently x = y − 1.', 'Right boundary', 'For vertical slices on the right, this line is the lower boundary. For horizontal slices, it becomes the right boundary x = y − 1.');
+
+var activeSlice = gSlice.line(0, 0, 0, 0).stroke({ color: red, width: 3, linecap: 'butt' });
+var companionSlice = gSlice.line(X(0.82), Y(1.82), X(0.82), Y(3)).stroke({ color: red, width: 3, linecap: 'butt' });
+var horizontalSlice = gSlice.line(0, 0, 0, 0).stroke({ color: green, width: 4, linecap: 'round' }).opacity(0);
+
+activeSlice.css('cursor', 'pointer').on('mousemove', function (e) {
+  showTooltip(verticalMode ? 'A vertical slice has y-limits that depend on which side of x = 0 it lies.' : 'A horizontal slice uses one left boundary and one right boundary across the whole region.', e);
+}).on('mouseleave', hideTooltip).on('click', function () {
+  showPopup(verticalMode ? 'Vertical slice' : 'Horizontal slice', verticalMode ? 'When the slice crosses from x < 0 to x > 0, the lower boundary formula changes. That is the reason the integral is split into R₁ and R₂.' : 'For a fixed y, the slice runs from x = 1 − y to x = y − 1. Those formulas work for the entire y-interval, so one integral is enough.');
+});
+horizontalSlice.css('cursor', 'pointer').on('mousemove', function (e) {
+  showTooltip('Horizontal slice: x goes from 1 − y to y − 1.', e);
+}).on('mouseleave', hideTooltip).on('click', function () {
+  showPopup('No split needed', 'The horizontal slice always begins on the line y = −x + 1 and ends on the line y = x + 1. Since the boundary descriptions do not change, Type II order is simpler here.');
+});
+
+gAxes.line(10, y0, 585, y0).stroke({ color: ink, width: 2.2 });
+gAxes.polygon([[584, y0 - 10], [584, y0 + 10], [600, y0]]).fill(ink);
+gAxes.line(x0, 448, x0, 36).stroke({ color: ink, width: 2.2 });
+gAxes.polygon([[x0 - 10, 45], [x0 + 10, 45], [x0, 25]]).fill(ink);
+gAxes.line(X(-2), y0, X(-2), y0 - 18).stroke({ color: ink, width: 2 });
+gAxes.line(X(2), y0, X(2), y0 - 18).stroke({ color: ink, width: 2 });
+
+function label(txt, x, y, size, anchor) {
+  return gLabels.text(txt).font({
+    family: 'Times New Roman, Georgia, serif',
+    size: size,
+    style: 'italic',
+    anchor: anchor || 'middle'
+  }).fill(ink).attr({
+    x: x,
+    y: y,
+    'paint-order': 'stroke',
+    stroke: '#ffffff',
+    'stroke-width': 3,
+    'stroke-linejoin': 'round'
+  });
+}
+function plainLabel(txt, x, y, size, anchor) {
+  return gLabels.text(txt).font({
+    family: 'Times New Roman, Georgia, serif',
+    size: size,
+    anchor: anchor || 'middle'
+  }).fill(ink).attr({
+    x: x,
+    y: y,
+    'paint-order': 'stroke',
+    stroke: '#ffffff',
+    'stroke-width': 3,
+    'stroke-linejoin': 'round'
+  });
+}
+
+var lblR1 = label('R₁', X(-0.48), Y(2.34), 34, 'middle');
+var lblR2 = label('R₂', X(0.50), Y(2.34), 34, 'middle');
+label('y = 3', X(-0.82), Y(3) - 55, 32, 'middle');
+label('y = 3', X(0.96), Y(3) - 55, 32, 'middle');
+label('y = −x + 1', X(-2.28), Y(2.0), 30, 'middle');
+label('y = x + 1', X(2.15), Y(2.0), 30, 'middle');
+label('x', 591, y0 - 22, 31, 'middle');
+label('y', x0 + 28, 22, 31, 'middle');
+plainLabel('−2', X(-2) - 10, y0 + 15, 29, 'middle');
+plainLabel('0', x0 + 18, y0 + 15, 29, 'middle');
+plainLabel('2', X(2), y0 + 15, 29, 'middle');
+
+function setVerticalSlice(x) {
+  var xb = Math.max(-2, Math.min(2, x));
+  var low = 1 + Math.abs(xb);
+  activeSlice.plot(X(xb), Y(low), X(xb), Y(3));
+  if (xb < 0) {
+    companionSlice.plot(X(0.82), Y(1.82), X(0.82), Y(3)).opacity(1);
+  } else {
+    companionSlice.plot(X(-0.82), Y(1.82), X(-0.82), Y(3)).opacity(1);
+  }
+}
+
+function setHorizontalSlice(v) {
+  var y = 2 + Math.max(-2, Math.min(2, v)) / 2;
+  horizontalSlice.plot(X(1 - y), Y(y), X(y - 1), Y(y));
+}
+
+function update_sliceSweep(v) {
+  sweepValue = v;
+  if (verticalMode) {
+    setVerticalSlice(v);
+  } else {
+    setHorizontalSlice(v);
+  }
+}
+
+function toggle_integrationType(on) {
+  verticalMode = !on;
+  document.getElementById('integrationTypeVal').textContent = verticalMode ? 'Type I' : 'Type II';
+  document.getElementById('integrationTypeInput').checked = !verticalMode ? true : false;
+
+  if (verticalMode) {
+    triWhole.opacity(0);
+    triLeft.opacity(1);
+    triRight.opacity(1);
+    lblR1.opacity(1);
+    lblR2.opacity(1);
+    activeSlice.stroke({ color: red, width: 3, linecap: 'butt' }).opacity(1);
+    companionSlice.opacity(1);
+    horizontalSlice.opacity(0);
+    setVerticalSlice(sweepValue);
+  } else {
+    triLeft.opacity(0);
+    triRight.opacity(0);
+    triWhole.opacity(0.9);
+    lblR1.opacity(0);
+    lblR2.opacity(0);
+    activeSlice.opacity(0);
+    companionSlice.opacity(0);
+    horizontalSlice.opacity(1);
+    setHorizontalSlice(sweepValue);
+  }
+}
+
+var demoSteps = [
+  {
+    title: 'The Triangular Region',
+    narration: 'Observe the triangular region R bounded by y = 3, y = −x + 1, and y = x + 1. We want to set up a double integral over this region.',
+    state: { integrationType: 'Type I (Vertical Slices)', sliceSweep: -1 }
+  },
+  {
+    title: 'Type I: Splitting at x = 0',
+    narration: 'Using vertical slices (dy dx), the lower boundary changes from y = −x + 1 to y = x + 1 at x = 0. Therefore, we must split the region into R1 and R2.',
+    state: { integrationType: 'Type I (Vertical Slices)', sliceSweep: 1 }
+  },
+  {
+    title: 'Type II: A Simpler Alternative',
+    narration: 'Switch to horizontal slices (dx dy). The left boundary is always x = 1 − y and the right boundary is always x = y − 1. No splitting is required!',
+    state: { integrationType: 'Type II (Horizontal Slices)', sliceSweep: 0 }
+  }
+];
+
+var currentStep = 0;
+function applyStep(i) {
+  currentStep = Math.max(0, Math.min(demoSteps.length - 1, i));
+  var st = demoSteps[currentStep];
+  document.getElementById('demoNarration').textContent = st.narration;
+  document.getElementById('stepLabel').textContent = (currentStep + 1) + '/' + demoSteps.length;
+  var isTypeII = st.state.integrationType.indexOf('Type II') === 0;
+  document.getElementById('integrationTypeInput').checked = isTypeII;
+  toggle_integrationType(isTypeII);
+  document.getElementById('sliceSweepInput').value = st.state.sliceSweep;
+  document.getElementById('sliceSweepVal').value = st.state.sliceSweep;
+  update_sliceSweep(+st.state.sliceSweep);
+}
+function prevStep() { applyStep(currentStep - 1); }
+function nextStep() { applyStep(currentStep + 1); }
+
+applyStep(0);
+window.__markRendered();
+// @FIGURE_CODE_END
+  </script>
+</body>
+
+</html>

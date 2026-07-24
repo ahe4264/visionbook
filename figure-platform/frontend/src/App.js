@@ -6,6 +6,7 @@ const FALLBACK_PROMPT = '(Loading system prompt from server…)';
 function ContextExportsTab({ availableModels, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, experimentOptions, fewShot, onOpenResult }) {
   const concurrency = 10;
   const abortRef = React.useRef(false);
+  const runGuardRef = React.useRef(false);
   const [items, setItems] = React.useState([]);
   const [history, setHistory] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
@@ -100,11 +101,13 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
   }, []);
 
   const handleRun = async () => {
+    if (runGuardRef.current) return;
     if (!selectedModel) { setError('Set a generator model first.'); return; }
     if (!selectedExperiment?.trim()) { setError('Select or type an experiment name before generating.'); return; }
     const queue = selectedItems.filter(item => !item.imageMissing);
     if (!queue.length) { setError('No runnable context export rows in the current selection.'); return; }
 
+    runGuardRef.current = true;
     setError('');
     setRunning(true);
     setResults([]);
@@ -148,6 +151,7 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
     await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => worker()));
     setProgress(null);
     setRunning(false);
+    runGuardRef.current = false;
     await refreshHistory();
   };
 
@@ -216,7 +220,7 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
             <button style={{ ...styles.backBtn, padding: '7px 12px' }} onClick={selectAllFiltered}>Select Filtered ({filtered.length})</button>
             <button style={{ ...styles.backBtn, padding: '7px 12px' }} onClick={clearSelection}>Clear Selection</button>
             {!running ? (
-              <button style={{ ...styles.generateBtn, width: 'auto', padding: '8px 18px', ...(!selectedModel ? styles.generateBtnDisabled : {}) }} disabled={!selectedModel} onClick={handleRun}>
+              <button style={{ ...styles.generateBtn, width: 'auto', padding: '8px 18px', ...(!selectedModel || running ? styles.generateBtnDisabled : {}) }} disabled={!selectedModel || running} onClick={handleRun}>
                 Generate {selectedIds.size ? selectedIds.size : filtered.length} Figure{(selectedIds.size ? selectedIds.size : filtered.length) !== 1 ? 's' : ''}
               </button>
             ) : (
