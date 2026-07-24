@@ -116,6 +116,38 @@ function loadChapterText(chapterName) {
 
 // ── LLM interaction planner (fast, small-token call) ────────────────────────
 
+// Shared across both planner profiles so the two prompts never drift.
+// Interactions are grouped by "load" — how much generator code and failure
+// risk each type adds — so the planner spends complexity only where the
+// concept demands it.
+const INTERACTION_PALETTE = `INTERACTION PALETTE — pick the fewest, lowest-load interactions that convey the concept. "Load" = generator code + failure risk; spend it only when the concept needs it. In "teaches", say what the learner understands, not what the control does.
+
+LOW (scaffold-provided; prefer these, often one suffices):
+• orbit / drag — rotate/move the scene. When depth or 3D shape IS the concept.
+• hover — reveal a label on demand. When showing every label at once clutters.
+• click — highlight one element. When focus on one part of a busy scene matters.
+
+MEDIUM (a few reactive lines):
+• slider — sweep one continuous variable. When dragging it visibly transforms the figure.
+• toggle — switch between 2+ named views. For before/after or dual views (e.g. spatial ↔ frequency).
+• button / state — step through discrete phases. When distinct stages should be visited deliberately.
+
+HIGH (self-driving or free-form; much more code, more ways to break — at most one per figure):
+• animation — self-playing motion. When the concept is inherently dynamic and a slider can't convey it.
+• equation_input — learner types math, parsed at runtime. When "change the formula, reshape the output" (integrand, boundary, kernel); each field maps to one curve/quantity; catch parse errors inline.
+• code_editor — learner writes/debugs code; the figure traces its execution. Highest load — ONLY when the concept IS an algorithm. Give a minimal API (e.g. swap(i,j), compare(i,j)) and a reference implementation.`;
+
+const INTERACTION_FIELDS = `INTERACTION FIELDS — every interaction object has "id" (unique camelCase), "type", and "teaches". Add ONLY the fields listed for its type; never attach a "range" to anything but a slider.
+• orbit / drag / hover / click — no extra fields.
+• animation      — "label", optional "loop": true | false.
+• slider         — "label", "range": [min, max, step], "default": <number>.
+• toggle         — "label", "options": ["A", "B", ...], "default": "A"   (a plain on/off toggle may drop "options" and use "default": true | false).
+• button / state — "label", "states": ["idle", "running", "done"], "default": "idle".
+• equation_input — "label", "fields": [ { "id": "...", "label": "f(x) =", "default": "sin(x)", "variables": ["x"], "role": "integrand | boundary | kernel | ..." } ].
+• code_editor    — "label", "api": "the minimal operation API user code calls (e.g. swap(i,j), compare(i,j)); each op should record a trace frame so execution can be played back", "sample_code": "<correct implementation as a string>", optional "buggy_code": "<broken variant for the learner to debug>".
+
+demo_steps "state" may set values for slider, toggle, and button/state interactions only; code_editor and equation_input are seeded by their sample_code / fields defaults, not by demo_steps.`;
+
 function buildPlannerPrompt(useFewShot = true) {
   if (process.env.PLANNER_PROFILE === 'standalone-demo') {
     return `You are an expert at planning interactive 3D visualizations for textbook figures.
@@ -123,136 +155,86 @@ function buildPlannerPrompt(useFewShot = true) {
 PRIMARY CONTEXT:
 The generated output will be opened as a standalone interactive learning artifact. It should still begin from a faithful reconstruction of the source figure, but it does not need to behave like a same-size inline PDF replacement. Decide which interactions, controls, annotations, and guided states best help a learner understand the concept.
 
-Plan the figure as one coherent teaching system:
-  1. DIRECT MANIPULATION — drag/rotate/orbit, hover, and click interactions on meaningful geometry.
-  2. CONTROLS — sliders/toggles/buttons are allowed when they clarify variables, states, comparisons, or sequences.
-  3. EXPLANATION — use concise narration, callouts, or guided steps when they help connect the 3D geometry to the textbook idea.
-
-Keep the experience focused and readable. Avoid decorative animation or generic narration. Let the figure's concept determine the amount and type of interactivity.
+${INTERACTION_PALETTE}
 
 Output ONLY valid JSON (no markdown, no explanation):
 {
+  "projection_type": "perspective | axonometric | oblique",
+  "camera_view": { "azimuthDeg": <0=side · 45=three-quarter · 90=front-on>, "elevationDeg": <0=eye-level · 20-35=slightly above · 90=top-down>, "rollDeg": 0, "heightFraction": <0.5 default · up to 0.75 to fill the frame> },
   "elements": ["exhaustive list of every geometric element visible in the figure that must be recreated in 3D"],
   "interactions": [
-    {
-      "id": "unique_camelCase_id",
-      "type": "hover | click | drag | orbit | slider | toggle | button | state | animation",
-      "label": "short user-facing label if this is visible",
-      "range": [min, max, step],
-      "default": defaultValue,
-      "teaches": "one sentence: what manipulating this demonstrates"
-    }
+    { "id": "uniqueCamelCaseId", "type": "one palette type", "teaches": "what the learner understands", "...": "plus ONLY that type's fields — see INTERACTION FIELDS below" }
   ],
   "demo_steps": [
     {
-      "title": "short step title",
-      "narration": "2-3 specific sentences explaining what changes and why it matters",
-      "control_values": { "unique_camelCase_id": value },
-      "animate": true
+      "title": "Step name shown in UI",
+      "narration": "What the learner sees and understands at this step — one or two sentences",
+      "state": { "interactionId": value }
     }
   ],
-  "camera_suggestion": "description of useful initial viewpoint and zoom level",
-  "view_reasoning": "Ground the initial view in source-image cues: visible axes, dominant edges/rays, foreshortening, and depth cues.",
-  "camera_view": {
-    "projection": "orthographic",
-    "azimuth_deg": number,
-    "elevation_deg": number,
-    "roll_deg": number,
-    "zoom": number,
-    "target": [0, 0, 0],
-    "height_fraction": number,
-    "view_notes": "specific visual cues from the source image that justify this camera"
-  },
-  "standalone_demo_notes": {
-    "layout": "suggest compact layout structure if useful",
-    "controls": "which controls should be visible and why",
-    "explanation": "what explanatory affordances should be available"
-  },
-  "notes": "any special Three.js or rendering considerations"
+  "geometry_notes": "Approximate world-space scale (e.g. 'cube ~2 units side'), dominant colors, and any domain-specific formula or value needed for correctness.",
+  "notes": "Three.js / rendering technique notes (distinct from geometry_notes)"
 }
 
+${INTERACTION_FIELDS}
+
 Rules:
-- Prefer interactions that expose relationships in the figure rather than generic controls.
-- Use guided steps only if there is a real sequence, comparison, or conceptual progression.
-- Preserve a recognizable first view of the source figure, but do not let source-matching prevent useful exploration.
-- camera_view is mandatory for 3D figures and should be justified by concrete source cues.
-- Narration must be specific to THIS figure.
-- demo_steps, if present, should tell a coherent pedagogical story.`;
+- PROJECTION TYPE: Examine the image carefully and identify which of these three types it is:
+  • "perspective" — depth edges converge toward one or more vanishing points; objects/faces farther away are visibly smaller; parallel edges in 3D fan out toward a horizon. Dead giveaway: a box where the far face is smaller than the near face.
+  • "axonometric" — depth edges are parallel to each other (never converge); the figure looks like it was viewed from a corner or above-angle; all three axes visible simultaneously at consistent angles; equal lengths along an axis stay equal. Dead giveaway: a cube where all edges along the same axis are the same length and direction.
+  • "oblique" — the front face is a perfect undistorted rectangle (right angles, no foreshortening); depth edges all leave at the same fixed diagonal angle (typically 30–45°) and are shorter than true length. Dead giveaway: a box whose front face looks like a flat 2D square and whose side/top edges go off diagonally.
+  Decision priority: classify by the camera/drawing projection, not by the subject matter. Do not infer "perspective" merely because the diagram shows light rays, arrows, a camera, a 3D surface, or depth labels. First look for projected-parallel 3D line families: if they visibly converge or objects shrink with distance, use "perspective"; if those line families remain parallel in the drawing, use "axonometric" unless the front-face/depth-edge pattern specifically matches "oblique". A parallelogram face or plane is a preserved-parallelism cue, not by itself a perspective cue.
+  If the figure is a flat 2D plot or diagram with no 3D depth cues at all, use "axonometric".
+- CAMERA VIEW: From the image, estimate the pose that reproduces the source's framing — this is what makes the result recognizable as the same figure. azimuthDeg: 90 front-on, 45 three-quarter/corner, 0 side. elevationDeg: 0 eye-level, 20–35 looking slightly down, 90 top-down. heightFraction: how much of the frame the figure fills (0.5 default, up to 0.75). rollDeg is usually 0. A flat 2D plot/diagram → view head-on with no tilt (front-on 90/0, or top-down 0/90 — whichever plane the geometry lives in). camera_view sets pose and framing only; projection_type still decides the mechanism.
+- DEMO STEPS: Include demo_steps when the concept has 2+ distinct phases the learner should visit in sequence. Use [] if the figure is a single continuous exploration.
+- GEOMETRY NOTES: Always fill geometry_notes. State world-space dimensions, color palette, and any formula the generator needs to be mathematically correct.
+- MULTI-PART FIGURES: If the source figure contains multiple labeled panels (e.g., (a)/(b)/(c), side-by-side comparisons, before/after pairs, or sequential diagrams), do NOT recreate all panels simultaneously in the initial view. Show one panel as the default and link the rest through a single interaction — a toggle, tab switch, or slider — so the learner actively moves between parts. The transition itself should teach the comparison or progression.
+- Prefer interactions that expose relationships in the figure rather than generic controls.`;
   }
 
   return `You are an expert at planning interactive 3D visualizations for textbook figures.
 
 PRIMARY CONTEXT:
-The generated figure will usually be embedded INLINE on top of the original figure inside a PDF reader. It must behave as a same-size replacement, not as a standalone demo app.
+The generated figure will be embedded alongside the original in a PDF reader. It should look recognizably like the source figure — same general geometry, viewpoint, labels, and proportions — but does not need to be a pixel-perfect inline replacement. Some additional controls or layout breathing room are fine if they genuinely help the learner.
 
-Your output drives these interactions as ONE unified system:
-  1. DIRECT MANIPULATION — drag/rotate/orbit, hover, and click interactions on the figure itself.
-  2. EDGE-PLACED COMPACT CONTROLS — at most 2 small sliders/toggles, only when the original figure has a parameter worth manipulating. They should be visible but unobtrusive, with no filled panel over the figure.
-  3. OPTIONAL GUIDED DEMO — hidden-by-default state transitions that can be triggered by clicking meaningful elements.
-
-Do NOT plan bulky panels, toolbars, large buttons, legends, title cards, or explainer cards in the default view. Do not place a translucent/opaque control box over important geometry or labels. Any explanations should be hover/click popups posted to the parent reader, not fixed panels inside the figure.
+${INTERACTION_PALETTE}
 
 Output ONLY valid JSON (no markdown, no explanation):
 {
+  "projection_type": "perspective | axonometric | oblique",
+  "camera_view": { "azimuthDeg": <0=side · 45=three-quarter · 90=front-on>, "elevationDeg": <0=eye-level · 20-35=slightly above · 90=top-down>, "rollDeg": 0, "heightFraction": <0.5 default · up to 0.75 to fill the frame> },
   "elements": ["exhaustive list of every geometric element visible in the figure that must be recreated in 3D"],
 
   "interactions": [
-    {
-      "id": "unique_camelCase_id",
-      "type": "hover | click | drag | orbit | compact_slider | compact_toggle | hidden_state",
-      "label": "very short label; visible only for compact sliders/toggles",
-      "range": [min, max, step],
-      "default": defaultValue,
-      "teaches": "one sentence: what manipulating this control demonstrates"
-    }
+    { "id": "uniqueCamelCaseId", "type": "one palette type", "teaches": "what the learner understands", "...": "plus ONLY that type's fields — see INTERACTION FIELDS below" }
   ],
 
   "demo_steps": [
     {
-      "title": "short step title (3-6 words)",
-      "narration": "2-3 sentences written as a tutor speaking directly to the learner — explain what is happening and why it matters, referencing what they can see changing in the scene. Make it conversational and specific, not generic.",
-      "control_values": { "unique_camelCase_id": value, ... },
-      "animate": true
+      "title": "Step name shown in UI",
+      "narration": "What the learner sees and understands at this step — one or two sentences",
+      "state": { "interactionId": value }
     }
   ],
 
-  "camera_suggestion": "description of ideal initial viewpoint and zoom level",
-  "view_reasoning": "REQUIRED step-by-step grounding, done BEFORE picking any camera_view numbers: (1) name the dominant baseline/axis/edge/ray visible in the source image and which screen direction it runs (e.g. left-right, diagonal toward upper-right, receding into the page), (2) state what azimuth_deg that visible direction implies and why (a baseline running left-right across the image means the camera is roughly broadside to it, often near 90 deg off the default; a baseline receding into the page/foreshortened toward a vanishing point means the camera looks more along it, near 0 deg), (3) name the foreshortening/tilt cue that implies elevation_deg.",
-  "camera_view": {
-    "projection": "orthographic",
-    "azimuth_deg": number,
-    "elevation_deg": number,
-    "roll_deg": number,
-    "zoom": number,
-    "target": [0, 0, 0],
-    "height_fraction": number,
-    "view_notes": "specific visual cues from the source image that justify this camera"
-  },
-  "inline_constraints": {
-    "default_view": "must match the original image silhouette, size, label scale, and crop",
-    "visible_ui": "at most 2 compact sliders/toggles, visible near an edge with no filled panel, and must not cover important geometry",
-    "explainers": "hover tooltips and click popups only",
-    "framing": "match the source crop and whitespace; do not force-fill the iframe if the original has margins",
-    "camera": "infer the source camera angle/projection/zoom so the first rendered frame is a drop-in visual replacement"
-  },
-  "notes": "any special Three.js or rendering considerations"
+  "geometry_notes": "Approximate world-space scale (e.g. 'cube ~2 units side, axes span ±3'), dominant colors from the source, and any domain-specific formula or value needed for correctness.",
+
+  "notes": "Three.js / rendering technique notes (distinct from geometry_notes)"
 }
 
+${INTERACTION_FIELDS}
+
 Rules:
-- At least 3 demo steps, at most 6.
-- Prefer direct manipulation or hidden state. Use compact sliders/toggles only when they directly control a meaningful figure variable, and assume they live near an edge without a filled panel.
-- Never plan visible buttons for Next/Reset/Animate; if a sequence is needed, trigger it by clicking a meaningful part of the figure.
-- Treat the initial camera/view as part of the plan. The generator should not invent a prettier or more dramatic 3D view; it should preserve the original apparent viewpoint, crop, label density, and whitespace.
-- camera_view is mandatory for 3D figures. Fill in view_reasoning FIRST, then derive camera_view's numbers from that reasoning — do not pick azimuth/elevation from taste or default to a "typical textbook angle" without tying it to a specific visible cue. A wrong azimuth is still wrong even if the resulting view looks plausible in isolation.
-  - azimuth_deg: rotation around vertical Y axis. Use the visible direction of axes, plane edges, rays, and object faces. Must match the direction named in view_reasoning step (1)/(2).
-  - elevation_deg: angle above the ground/XZ plane. Shallow textbook diagrams are often 10-30 degrees; top-down views are higher.
-  - roll_deg: usually 0 unless the original image is visibly tilted.
-  - projection: use "orthographic". If the source has perspective cues, encode the apparent view through azimuth/elevation/zoom and explain the cue in view_notes.
-  - zoom: choose an orthographic zoom that preserves the original crop and margins.
-  - height_fraction: how much of iframe height the scene occupies; lower values preserve source whitespace.
-  - view_notes must cite concrete source cues, e.g. "green plane appears as a shallow parallelogram, normal points upward, outgoing ray leans right".
-- Narration must be specific to THIS figure — never generic like "notice how things change". Say exactly what changes and what it means physically/mathematically.
-- demo_steps must tell a coherent pedagogical story: start simple, build complexity, end with the key insight.
+- PROJECTION TYPE: Examine the image carefully and identify which of these three types it is:
+  • "perspective" — depth edges converge toward one or more vanishing points; objects/faces farther away are visibly smaller; parallel edges in 3D fan out toward a horizon. Dead giveaway: a box where the far face is smaller than the near face.
+  • "axonometric" — depth edges are parallel to each other (never converge); the figure looks like it was viewed from a corner or above-angle; all three axes visible simultaneously at consistent angles; equal lengths along an axis stay equal. Dead giveaway: a cube where all edges along the same axis are the same length and direction.
+  • "oblique" — the front face is a perfect undistorted rectangle (right angles, no foreshortening); depth edges all leave at the same fixed diagonal angle (typically 30–45°) and are shorter than true length. Dead giveaway: a box whose front face looks like a flat 2D square and whose side/top edges go off diagonally.
+  Decision priority: classify by the camera/drawing projection, not by the subject matter. Do not infer "perspective" merely because the diagram shows light rays, arrows, a camera, a 3D surface, or depth labels. First look for projected-parallel 3D line families: if they visibly converge or objects shrink with distance, use "perspective"; if those line families remain parallel in the drawing, use "axonometric" unless the front-face/depth-edge pattern specifically matches "oblique". A parallelogram face or plane is a preserved-parallelism cue, not by itself a perspective cue.
+  If the figure is a flat 2D plot or diagram with no 3D depth cues at all, use "axonometric".
+- CAMERA VIEW: From the image, estimate the pose that reproduces the source's framing — this is what makes the result recognizable as the same figure. azimuthDeg: 90 front-on, 45 three-quarter/corner, 0 side. elevationDeg: 0 eye-level, 20–35 looking slightly down, 90 top-down. heightFraction: how much of the frame the figure fills (0.5 default, up to 0.75). rollDeg is usually 0. A flat 2D plot/diagram → view head-on with no tilt (front-on 90/0, or top-down 0/90 — whichever plane the geometry lives in). camera_view sets pose and framing only; projection_type still decides the mechanism.
+- DEMO STEPS: Include demo_steps when the concept has 2+ distinct phases the learner should visit in sequence. Each step drives one named configuration of the interaction state. Use [] if the figure is a single continuous exploration with no natural sequence.
+- GEOMETRY NOTES: Always fill geometry_notes. State approximate world-space dimensions, color palette (with hex codes when determinable from the source), and any formula or numeric range the generator needs to be mathematically correct. This prevents the generator from guessing sizes and getting the zoom wrong.
+- MULTI-PART FIGURES: If the source figure contains multiple labeled panels (e.g., (a)/(b)/(c), side-by-side comparisons, before/after pairs), do NOT show all panels simultaneously. Show one panel by default and link the others through a single interaction — a toggle, tab, or slider — so the learner actively moves between them. The transition itself should teach the comparison or progression.
 
 ${useFewShot ? `Here are two examples of good plans:
 
@@ -262,6 +244,8 @@ Textbook context:
 Perspective projection equations derived geometrically. A 3D point P at world coordinates (X, Y, Z) projects through the pinhole (at the origin) onto the projection plane at distance f. From similar triangles: x = f * X/Z and y = f * Y/Z. Under perspective projection, distant objects become smaller through the inverse scaling by Z. The focal length f is the distance from the pinhole to the sensing plane.
 
 {
+  "projection_type": "perspective",
+  "camera_view": { "azimuthDeg": 60, "elevationDeg": 12, "rollDeg": 0, "heightFraction": 0.6 },
   "elements": [
     "pinhole/aperture point at the origin",
     "3D point P floating in space at coordinates (X, Y, Z)",
@@ -301,42 +285,22 @@ Perspective projection equations derived geometrically. A 3D point P at world co
   ],
   "demo_steps": [
     {
-      "title": "Basic pinhole setup",
-      "narration": "A 3D point P sits at depth Z=5 and lateral offset X=2. A light ray travels from P straight through the pinhole and hits the projection plane at distance f=2. The projected position is x = f*X/Z = 0.8 — similar triangles make this exact.",
-      "control_values": { "pointZ": 5, "pointX": 2, "focalLength": 2 },
-      "animate": false
+      "title": "Default setup",
+      "narration": "P at depth Z=5 projects through the pinhole to x=f·X/Z=0.8 on the plane. Observe the ray from P through the origin continuing to the projected point.",
+      "state": { "pointZ": 5, "pointX": 2, "focalLength": 2 }
     },
     {
-      "title": "Depth doubles, image halves",
-      "narration": "Move P to depth Z=10 — twice as far away. The projected x shrinks to 0.4, exactly half. This is the 1/Z law: every doubling of depth halves the projected size, which is why objects look smaller when they are farther away.",
-      "control_values": { "pointZ": 10, "pointX": 2, "focalLength": 2 },
-      "animate": true
+      "title": "Increase depth Z",
+      "narration": "Move P to Z=10. The projected x halves to 0.4 — the 1/Z inverse scaling is directly visible.",
+      "state": { "pointZ": 10, "pointX": 2, "focalLength": 2 }
     },
     {
-      "title": "Focal length zooms in",
-      "narration": "Restore Z to 5 and increase the focal length to f=4. The projection plane moves farther out and the projected point x doubles to 1.6 — the scene is magnified. A longer focal length is a zoom lens: same 3D scene, bigger image.",
-      "control_values": { "pointZ": 5, "pointX": 2, "focalLength": 4 },
-      "animate": true
-    },
-    {
-      "title": "Lateral shift scales linearly",
-      "narration": "Now move P sideways from X=2 to X=4, keeping Z and f fixed. The projected x doubles to 3.2. Unlike the depth direction, lateral position scales linearly — the similar triangles on the left and right side of the optical axis are identical in shape.",
-      "control_values": { "pointZ": 5, "pointX": 4, "focalLength": 4 },
-      "animate": true
+      "title": "Longer focal length",
+      "narration": "Increase f to 4. The projection plane moves out and x grows again — a longer focal length zooms in.",
+      "state": { "pointZ": 10, "pointX": 2, "focalLength": 4 }
     }
   ],
-  "camera_suggestion": "Side view looking along the Y-axis, slightly elevated, showing the full XZ plane with the pinhole at center-left and the projection plane to the right",
-  "view_reasoning": "(1) The dominant baseline is the optical axis from the pinhole to the projection plane, and in the source image it runs left-to-right across the page with the ray receding only slightly. (2) A baseline drawn left-to-right in a flat diagram means the camera looks roughly along the depth axis, broadside to nothing — azimuth stays near 0, not rotated toward the baseline. (3) The diagram is nearly flat/side-on with only slight vertical spread, implying a shallow elevation around 5-10 deg rather than a steep top-down tilt.",
-  "camera_view": {
-    "projection": "orthographic",
-    "azimuth_deg": 0,
-    "elevation_deg": 8,
-    "roll_deg": 0,
-    "zoom": 1.1,
-    "target": [0, 0, 0],
-    "height_fraction": 0.58,
-    "view_notes": "Source is mostly a side-on XZ diagram: projection plane sits to the right, rays are visible in profile, and vertical Y depth is minimal."
-  },
+  "geometry_notes": "Pinhole at origin: SphereGeometry ~0.08 units radius, black. 3D point P at roughly (2, 0.5, -5) from origin. Projection plane at z=-f as semi-transparent PlaneGeometry ~3×2 units, blue 0.18 opacity. Ray as a thin Line from P through origin to projected point. Geometry fits within ±3 X, ±2 Y, -12 to 0 Z. Colors: pinhole black, P orange #ff8800, projected point red #cc2200, ray red, plane blue.",
   "notes": "Update the ray endpoint, projected point position, and both similar-triangle overlays reactively on every slider change. Use orthographic camera so the similar-triangle proportions remain visually accurate. Render the ray as a solid line from P through the origin and on to the projection plane; use a dashed extension beyond the plane to hint at the virtual camera plane."
 }
 
@@ -348,6 +312,8 @@ Textbook context:
 The parameter sigma adjusts the spatial extent of the Gaussian g(x; sigma) = (1 / sqrt(2*pi*sigma^2)) * exp(-x^2 / (2*sigma^2)). The normalization constant is set so that the function integrates to 1. The Gaussian kernel is positive and symmetric (a zero-phase filter). In practice only samples within three standard deviations are needed — at 3*sigma the amplitude is around 1% of its central value. The Fourier transform of a Gaussian is also a Gaussian with width inversely proportional to sigma.
 
 {
+  "projection_type": "axonometric",
+  "camera_view": { "azimuthDeg": 0, "elevationDeg": 90, "rollDeg": 0, "heightFraction": 0.7 },
   "elements": [
     "x-axis with tick marks spanning -4 to +4",
     "y-axis with tick marks from 0 to 1",
@@ -384,49 +350,23 @@ The parameter sigma adjusts the spatial extent of the Gaussian g(x; sigma) = (1 
   ],
   "demo_steps": [
     {
-      "title": "The Gaussian kernel, sigma=1",
-      "narration": "This bell curve is the 1D Gaussian filter with sigma=1. It is centered at zero, symmetric, and normalized to integrate to 1 — meaning it computes a weighted average of neighboring pixels without changing the overall image brightness.",
-      "control_values": { "sigma": 1, "showDiscrete": false, "domain": "Spatial" },
-      "animate": false
+      "title": "Narrow kernel",
+      "narration": "σ=0.5 gives a tall, narrow peak — only very close neighbors are averaged; minimal blurring.",
+      "state": { "sigma": 0.5, "showDiscrete": false }
     },
     {
-      "title": "Wider sigma, stronger blur",
-      "narration": "Increase sigma and the bell flattens and spreads. Pixels farther from the center now carry significant weight, so the filter averages over a larger neighborhood and produces stronger blurring. Sigma is the single knob that controls how much detail is removed.",
-      "control_values": { "sigma": 2.5, "showDiscrete": false, "domain": "Spatial" },
-      "animate": true
+      "title": "Show discrete samples",
+      "narration": "Toggle on discrete stems to see integer-position samples. Tails beyond 3σ are negligible — truncation loses almost nothing.",
+      "state": { "sigma": 0.5, "showDiscrete": true }
     },
     {
-      "title": "Discretizing: truncate at 3*sigma",
-      "narration": "Enable discrete samples. The continuous bell is sampled at integer pixel positions. Notice that beyond 3*sigma the value is already around 1% of the peak — truncating the kernel there loses almost nothing while keeping the filter small enough to be practical.",
-      "control_values": { "sigma": 1, "showDiscrete": true, "domain": "Spatial" },
-      "animate": true
-    },
-    {
-      "title": "Frequency domain: wide kernel, narrow pass",
-      "narration": "Switch to the frequency domain. With sigma=2.5, the Fourier transform is a narrow bell — the filter strongly attenuates high spatial frequencies, which is exactly what blurring does. Only low-frequency structure, the gradual changes, passes through.",
-      "control_values": { "sigma": 2.5, "showDiscrete": false, "domain": "Frequency" },
-      "animate": true
-    },
-    {
-      "title": "The sigma trade-off: space vs. frequency",
-      "narration": "Reduce sigma to 0.5. The spatial kernel shrinks but the frequency response widens — the filter now passes more high-frequency content and blurs less. This inverse relationship between spatial width and frequency width is a fundamental property of the Fourier transform.",
-      "control_values": { "sigma": 0.5, "showDiscrete": false, "domain": "Frequency" },
-      "animate": true
+      "title": "Wide kernel",
+      "narration": "Increase σ to 2. The curve spreads and flattens — more neighbors averaged, stronger blurring.",
+      "state": { "sigma": 2, "showDiscrete": true }
     }
   ],
-  "camera_suggestion": "Front-facing 2D orthographic view centered on the origin, x-axis spanning -4 to +4, y-axis from 0 to 1.1",
-  "view_reasoning": "(1) The curve and axes lie flat in a single plane facing the reader directly, with no visible depth axis or foreshortening on the axis lines. (2) A plot facing the viewer head-on with no foreshortened baseline means the camera must look straight along the plot's normal — for a curve built in the XY plane this means azimuth near 90 deg so the view is perpendicular to it, not along it. (3) No tilt or perspective cues are visible (tick marks are evenly spaced, axis lines are straight), implying elevation 0.",
-  "camera_view": {
-    "projection": "orthographic",
-    "azimuth_deg": 90,
-    "elevation_deg": 0,
-    "roll_deg": 0,
-    "zoom": 1.0,
-    "target": [0, 0, 0],
-    "height_fraction": 0.72,
-    "view_notes": "Source is a front-facing plot, so the camera should be perpendicular to the plot plane with no dramatic 3D tilt."
-  },
-  "notes": "Render the Gaussian curve as a smooth THREE.Line sampled at 200 points. For discrete stems use LineSegments from each integer sample down to y=0. Recompute all curve points reactively whenever sigma changes. For the domain toggle, keep both curves in the scene and show/hide rather than destroying geometry. The frequency-domain Gaussian has sigma_freq = 1 / (2 * pi * sigma_spatial) — for sigma in [0.5, 3] this gives sigma_freq in [0.053, 0.318], so the frequency axis must use x range [-0.5, 0.5] (Nyquist range) rather than the spatial domain's [-4, 4], otherwise the curve will be an invisible spike."
+  "geometry_notes": "X-axis spans x ∈ [-4.5, 4.5]. Y scale: map sigma=1 peak (0.399) to 0.8 world-units for readability (multiply curve values by 0.8/gauss(0,1)). Y-axis 0 to ~1.0. Curve as 200-pt THREE.Line, blue #1a66cc. Stems as LineSegments at integer x ∈ [-4,4], grey. Sigma bracket dark-grey. Camera bird's-eye (azimuth=0, elevation=90) — pure 2D XY plot. For frequency domain: sigma_freq = 1/(2π·sigma_spatial), x-axis MUST switch to [-0.5, 0.5] (Nyquist range) or the curve is an invisible spike.",
+  "notes": "Render the Gaussian curve as a smooth THREE.Line sampled at 200 points. For discrete stems use LineSegments from each integer sample down to y=0. Recompute all curve points reactively whenever sigma changes. For the domain toggle, keep both curves in the scene and show/hide rather than destroying geometry."
 }
 
 === END EXAMPLE 2 ===` : ''}`;
@@ -437,7 +377,15 @@ The parameter sigma adjusts the spatial extent of the Gaussian g(x; sigma) = (1 
  * Optionally includes the image for vision-based planning.
  * Returns the parsed plan object.
  */
-async function generateInteractionPlan(contextChunk, figureStem, { base64, mediaType } = {}, plannerModel = PLANNER_MODEL, useFewShot = true) {
+function buildAuthoredIntentBlock({ authoredInteractions, sourcePath } = {}) {
+  const parts = [];
+  if (authoredInteractions) parts.push(`Requested interactions:\n${String(authoredInteractions).trim()}`);
+  if (sourcePath) parts.push(`Source file:\n${String(sourcePath).trim()}`);
+  if (!parts.length) return '';
+  return `AUTHOR-PROVIDED INTERACTION REQUESTS:\n${parts.join('\n\n')}\n\nUse these requested interactions when forming the plan. Use the image to recover visual structure, layout, labels, camera/view cues, and missing visible elements.`;
+}
+
+async function generateInteractionPlan(contextChunk, figureStem, { base64, mediaType } = {}, plannerModel = PLANNER_MODEL, useFewShot = true, authoredIntent = {}) {
   const userContent = [];
 
   // Include image if provided
@@ -449,9 +397,10 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
   }
 
   // Always include text
+  const authoredBlock = buildAuthoredIntentBlock(authoredIntent);
   userContent.push({
     type: 'text',
-    text: `Figure: ${figureStem}\n\nTextbook context:\n${contextChunk.slice(0, 3000)}`,
+    text: `Figure: ${figureStem}\n\n${authoredBlock ? `${authoredBlock}\n\n` : ''}Planner context:\n${contextChunk.slice(0, 3000)}`,
   });
 
   let content = await generateWithModel(plannerModel || PLANNER_MODEL, {
@@ -479,7 +428,7 @@ async function generateInteractionPlan(contextChunk, figureStem, { base64, media
  * @param {object} imageData   - optional { base64, mediaType }
  * @returns {{ figureStem, chapterName, contextChunk, interactionPlan }}
  */
-async function planForFigure(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL, useFewShot = true) {
+async function planForFigure(figureStem, chapterName, imageData, plannerModel = PLANNER_MODEL, useFewShot = true, authoredIntent = {}) {
   const resolvedChapter = chapterName || inferChapterFromFilename(figureStem);
 
   // Try to load chapter text
@@ -491,13 +440,19 @@ async function planForFigure(figureStem, chapterName, imageData, plannerModel = 
   } else {
     contextChunk = `Figure: ${figureStem}. No chapter text found — plan from filename alone.`;
   }
-  const interactionPlan = await generateInteractionPlan(contextChunk, figureStem, imageData, plannerModel, useFewShot);
+  if (authoredIntent?.authoredPrompt) {
+    contextChunk = String(authoredIntent.authoredPrompt);
+  }
+  const interactionPlan = await generateInteractionPlan(contextChunk, figureStem, imageData, plannerModel, useFewShot, authoredIntent);
 
   return {
     figureStem,
     chapterName: resolvedChapter || null,
     contextChunk,
     interactionPlan,
+    ...(authoredIntent?.authoredPrompt ? { authoredPrompt: authoredIntent.authoredPrompt } : {}),
+    ...(authoredIntent?.authoredInteractions ? { authoredInteractions: authoredIntent.authoredInteractions } : {}),
+    ...(authoredIntent?.sourcePath ? { sourcePath: authoredIntent.sourcePath } : {}),
   };
 }
 
@@ -556,10 +511,19 @@ async function refinePlan(previousPlan, evaluation, feedback, figureStem, planne
   if (!feedback) throw new Error('feedback is required');
   if (!figureStem) throw new Error('figureStem is required');
 
+  // The critic emits plan-level fixes separately from generation-level ones.
+  // Prefer plan_action_items here — those are the fixes aimed at the planner —
+  // and keep the generation-level action_items as secondary symptom context.
+  const planActionItems = (evaluation.plan_action_items || []).filter(Boolean);
+  const genActionItems = (feedback.action_items || evaluation.action_items || []).filter(Boolean);
+
   const feedbackSummary = [
     'The previous interaction plan had issues.',
-    'Critic feedback:',
-    ...(feedback.action_items || []).map(a => `  • ${a}`),
+    ...(planActionItems.length
+      ? ['Plan-level fixes requested by the critic:', ...planActionItems.map(a => `  • ${a}`), '']
+      : []),
+    'Generation-level issues observed (symptoms that may trace back to the plan):',
+    ...genActionItems.map(a => `  • ${a}`),
     '',
     'Specific scores:',
     `  • Overall: ${evaluation.overall_average}/5`,

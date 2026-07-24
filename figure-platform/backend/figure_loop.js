@@ -92,6 +92,7 @@ async function runFigureLoop(opts) {
         generatorModel = 'gpt-4o',
         criticModel = 'claude-opus-4.7',
         fewShot = { planner: true, critic: true, orchestrator: true },
+        plannerOptions = {},
         seedHtml = null,
     } = opts;
 
@@ -130,7 +131,7 @@ async function runFigureLoop(opts) {
     try {
         const _planStart = Date.now();
         loopState.currentPlan = await withRetry(`plan:${figureStem}`, () =>
-            planForFigure(figureStem, chapterName, imageData, plannerModel, fewShot.planner !== false)
+            planForFigure(figureStem, chapterName, imageData, plannerModel, fewShot.planner !== false, plannerOptions)
         );
         loopState.timings.planMs = Date.now() - _planStart;
         console.log(`[timing] PLAN ${figureStem}: ${fmt(loopState.timings.planMs)}`);

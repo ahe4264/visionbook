@@ -230,19 +230,25 @@
       heightFraction = 0.5,
       distanceScale = 1.2
     } = {}) {
-      const { center, size } = computeSceneBounds();
+      const desiredProjection = projection === 'perspective' ? 'perspective' : 'orthographic';
+      const needsPerspective = desiredProjection === 'perspective' && !camera.isPerspectiveCamera;
+      const needsOrthographic = desiredProjection === 'orthographic' && !camera.isOrthographicCamera;
+      if (needsPerspective || needsOrthographic) {
+        if (needsPerspective) {
+          camera = new THREE.PerspectiveCamera(35, aspect, 0.1, 1000);
+        } else {
+          camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 0.1, 100);
+        }
+        controls.object = camera;
+        if (window.__figverify) window.__figverify.camera = camera;
+      }
+
+      const { box, center, size } = computeSceneBounds();
       const viewTarget = Array.isArray(target)
         ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
         : center;
 
-      // Compute zoom so contentHeight occupies `heightFraction` of the view height
-      const contentHeight = Math.max(size.y, 1e-6);
-      const desiredViewHeight = contentHeight / Math.max(heightFraction, 0.01);
-      let resolvedZoom = Number.isFinite(zoom) ? zoom : (2 * FRAME_HALF_HEIGHT) / desiredViewHeight;
-      resolvedZoom = Math.min(Math.max(resolvedZoom, MIN_ZOOM), MAX_ZOOM);
-      camera.zoom = resolvedZoom;
-
-      // Place camera at a distance scaled to scene size so the viewing angle is meaningful.
+      // Position camera first so we can project the bounding box for zoom computation.
       const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
       const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
       const elevation = THREE.MathUtils.degToRad(elevationDeg);
@@ -252,12 +258,46 @@
       const z = viewTarget.z + radius * Math.sin(azimuth) * cosElev;
       camera.position.set(x, y, z);
 
-      controls.target.copy(viewTarget);
       camera.up.set(0, 1, 0);
       if (Number.isFinite(rollDeg) && rollDeg !== 0) {
         const viewDir = new THREE.Vector3().subVectors(viewTarget, camera.position).normalize();
         camera.up.applyAxisAngle(viewDir, THREE.MathUtils.degToRad(rollDeg));
       }
+      camera.lookAt(viewTarget);
+      camera.updateMatrixWorld();
+
+      // Compute zoom from the projected screen-space extent of the bounding box.
+      // Projecting all 8 corners through the view matrix makes this correct for any
+      // camera angle — including axonometric off-axis views where size.y alone would
+      // undercount the vertical screen extent contributed by the X and Z axes.
+      let resolvedZoom;
+      if (Number.isFinite(zoom)) {
+        resolvedZoom = zoom;
+      } else {
+        const toView = camera.matrixWorldInverse;
+        const pt = new THREE.Vector3();
+        let minVY = Infinity, maxVY = -Infinity, minVX = Infinity, maxVX = -Infinity;
+        for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
+          pt.set(
+            xi ? box.max.x : box.min.x,
+            yi ? box.max.y : box.min.y,
+            zi ? box.max.z : box.min.z,
+          ).applyMatrix4(toView);
+          if (pt.y < minVY) minVY = pt.y;
+          if (pt.y > maxVY) maxVY = pt.y;
+          if (pt.x < minVX) minVX = pt.x;
+          if (pt.x > maxVX) maxVX = pt.x;
+        }
+        const projH = Math.max(maxVY - minVY, 1e-6);
+        const projW = Math.max(maxVX - minVX, 1e-6);
+        const zH = (2 * FRAME_HALF_HEIGHT * heightFraction) / projH;
+        const zW = (2 * FRAME_HALF_HEIGHT * aspect * heightFraction) / projW;
+        resolvedZoom = Math.min(zH, zW);
+        resolvedZoom = Math.min(Math.max(resolvedZoom, MIN_ZOOM), MAX_ZOOM);
+      }
+
+      camera.zoom = resolvedZoom;
+      controls.target.copy(viewTarget);
       camera.updateProjectionMatrix();
       controls.update();
 
@@ -484,8 +524,12 @@
     new ResizeObserver(() => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
       aspect = w / h;
-      camera.left = -d * aspect;
-      camera.right = d * aspect;
+      if (camera.isPerspectiveCamera) {
+        camera.aspect = aspect;
+      } else {
+        camera.left = -d * aspect;
+        camera.right = d * aspect;
+      }
       camera.updateProjectionMatrix();
       renderer.setSize(w, h, false);
     }).observe(canvas);

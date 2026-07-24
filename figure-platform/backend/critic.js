@@ -40,10 +40,11 @@ const GOLD_EVAL = {
   concept_accuracy: 5,
   notes: 'Labels are too tiny, Geometry is incorrect, Rotation interaction is broken',
   action_items: [
-    'Make the geometry of the cameras rectangles',
-    'Remove unnecessary labels and increase font size of other ones',
-    'Fix/Remove the rotation interaction since it is broken',
+    'Make the geometry of the cameras rectangles instead of pyramids/cones',
+    'Remove unnecessary labels and increase font size of remaining ones',
+    'Fix or remove the rotation interaction — it is broken',
   ],
+  plan_action_items: [],
 };
 
 // ── 10 canonical failure modes ─────────────────────────────────────────────────
@@ -64,6 +65,7 @@ const FAILURE_MODES = [
 const SCORE_METRICS = [
   {
     id: 'geometry_accuracy',
+    note: 'Also judge whether the projection is implemented with the right geometric mechanism: axonometric should be off-axis orthographic without shear; oblique should be front-on orthographic plus a consistent depth shear; perspective should use true perspective projection when the source has convergence or distance-based shrinking.',
     rubric: [
       '5 – All elements represented; plausible positions, connections, proportions',
       '4 – All major elements present; minor position/alignment issues',
@@ -76,20 +78,20 @@ const SCORE_METRICS = [
     id: 'interactivity_usability',
     note: 'CRITICAL: OrbitControls (mouse drag to rotate/zoom) does NOT count as an interaction. Meaningful interactions = buttons, sliders, toggles, step-through animations, parameter controls built by the developer.',
     rubric: [
-      '5 – 3+ meaningful interactions all functional and pedagogically useful; reset button works; guided step-through demo present',
-      '4 – 2 meaningful interactions functional and pedagogically useful; reset button present; minor usability issues',
-      '3 – 1 meaningful interaction functional and pedagogically useful; no guided demo',
-      '2 – Interactions exist in code but are broken or have no visible effect',
+      '5 – All planned interactions functional and pedagogically useful; count matches figure complexity (1 deep slider is correct for a single-variable concept; 3+ expected for multi-step figures); demo steps present if the plan includes them',
+      '4 – Most planned interactions functional; minor usability issues; pedagogical value clear',
+      '3 – At least one meaningful interaction works; some planned interactions missing or broken; or interactions only weakly connected to the concept',
+      '2 – Interactions exist in code but broken or no visible effect',
       '1 – Only OrbitControls present, or no interactions at all — score MUST be 1',
     ],
   },
   {
     id: 'faithfulness',
     rubric: [
-      '5 – Matches original ≥95% (colors, proportions, composition)',
-      '4 – Matches ≥85%; recognizable at a glance',
-      '3 – Matches ≥65%; general idea clear',
-      '2 – Matches <65%; hard to recognize',
+      '5 – Clearly recognizable as the same figure: correct geometry, colors, composition, and major labels all present',
+      '4 – Recognizable at a glance; minor differences in color, proportion, or label placement',
+      '3 – General idea clear but notable differences in geometry, composition, or missing elements',
+      '2 – Hard to recognize as the same figure; significant content differences',
       '1 – Completely different or fabricated',
     ],
   },
@@ -132,11 +134,13 @@ function buildEvalPrompt(useFewShot = true) {
       ['viewing_angle_source', '2-4 sentence description of object orientations and camera position implied by the SOURCE figure'],
       ['viewing_angle_rendered', '2-4 sentence description of object orientations and camera position implied by the RENDERED screenshot'],
       ['viewing_angle_comparison', '1-3 sentence comparison of the two viewing angles, noting any meaningful differences in camera angle, elevation, or azimuth'],
+      ['shape_comparison', []],
       ['discrepancies', []],
       ['failure_modes', []],
       ...SCORE_METRICS.map(m => [m.id, 3]),
       ['notes', 'one concise sentence summarizing the main strengths and weaknesses'],
-      ['action_items', ['Specific actionable improvement 1', 'Specific actionable improvement 2']],
+      ['action_items', ['Specific generation-level fix 1', 'Specific generation-level fix 2']],
+      ['plan_action_items', ['Specific plan-level fix 1 (or empty array if plan is sound)']],
     ]),
     null,
     2
@@ -153,19 +157,14 @@ AUTOMATED VERIFICATION ALREADY PASSED — do NOT re-check these (a separate dete
 - have labels that are on-screen, not enormous, and not heavily overlapping.
 Therefore do NOT spend scores, failure modes, discrepancies, or action items on mechanical/runtime/layout issues (blank screen, "WebGL context", crashes, off-screen/clipped controls, page overflow, gross label collisions). Focus ENTIRELY on SEMANTIC FIDELITY to the source: correct geometry vs the source, correct primitives, correct camera/view, faithful composition/colors, correct and meaningful labels (right text on the right element, matching the source), meaningful and conceptually-correct interactions, and concept accuracy. Judge whether it is the *right* figure and a good teaching artifact — not whether it renders.
 
-INLINE PDF REPLACEMENT STANDARD:
-- The rendered screenshot's first frame should be a drop-in replacement for the source image: same apparent crop, zoom, camera angle, perspective/orthographic feel, object scale, label scale, whitespace, and panel layout.
-- Penalize wrong camera/view, over-zooming, under-zooming, stretched aspect ratio, shifted object position, changed perspective, missing whitespace, or labels drifting to different relative positions.
-- Penalize bulky default UI: visible toolbars, step panels, filled control boxes, large buttons, legends, narration cards, or controls covering geometry/labels.
-- Compact edge controls are acceptable only when they teach a real parameter and do not cover important figure content.
-
 VIEWING ANGLE ANALYSIS (do this BEFORE assigning any scores, only looking at screenshots):
 Step 1 — SOURCE figure only (do not look at the screenshot yet): describe the spatial layout of major objects: which appear in the foreground vs background, left/right/top/bottom, which faces of 3D objects are visible (e.g. "the top face of the cube is visible; the left face faces the viewer"), and any perspective cues (foreshortening, vanishing point direction, whether objects appear from above/below/side). Summarize the implied camera position and orientation in 2–4 sentences. Write this into "viewing_angle_source".
 Step 2 — RENDERED screenshot only (do not refer back to the source yet): independently describe the same things — object layout, visible faces, foreground/background order, implied camera position and orientation. Write this into "viewing_angle_rendered".
-Step 3 — COMPARE: now read your two descriptions side by side and write a 1–3 sentence comparison into "viewing_angle_comparison". If the camera angle, elevation, or azimuth differs meaningfully (e.g. objects appear from the opposite side, a top face that was visible is now hidden, foreground/background order is reversed), you MUST include "Camera-Wrong" in failure_modes and add a discrepancy entry naming the specific difference. A viewing angle mismatch is NOT excused by the scene content being otherwise correct.
+Step 3 — COMPARE: now read your two descriptions side by side and write a 1–3 sentence comparison into "viewing_angle_comparison". If the camera angle differs so severely that the figure is hard to recognize (e.g. objects appear from the opposite side, foreground/background order is reversed, a key face is completely hidden), include "Camera-Wrong" in failure_modes. Minor differences in exact azimuth or zoom that still leave the figure recognizable should be noted in "viewing_angle_comparison" but do not require "Camera-Wrong".
 
 SHAPE / PRIMITIVE COMPARISON (do this BEFORE assigning any scores, only looking at screenshots):
 - It is easy to glance at a rendered figure, see "roughly the right thing in roughly the right place," and miss that the underlying geometric primitive is wrong (e.g. a camera drawn as a cone/pyramid instead of a rectangular box, a plane drawn as a disc instead of a flat rectangle, a ray drawn as a thick cylinder instead of a thin line). Do not let overall composition similarity hide this.
+- Projection mechanism is part of geometry accuracy. For 3D-looking figures, inspect both the screenshot and generated code: axonometric should be an off-axis orthographic view without shear, oblique should be a front-on orthographic view with one consistent depth shear, and perspective should be a true perspective projection when the source has convergence or distance-based shrinking. If the mechanism is wrong, reflect it through geometry_accuracy and the existing Depth-Wrong and/or Camera-Wrong failure modes as appropriate.
 - Go element by element through every major labeled or visually distinct object that appears in the SOURCE image. For each one, name the single most literal geometric primitive it resembles (box/rectangle, cone, sphere, cylinder, pyramid, flat disc, flat plane, line/ray, arrow, torus, etc) — not a vague description, a specific shape word.
 - Find the same element in the RENDERED screenshot and name the primitive actually used for it.
 - Compare shape-word to shape-word for each element and report the full list in "shape_comparison", even when they match.
@@ -175,10 +174,11 @@ SCAFFOLD CONTEXT (provided automatically — do not penalise for missing these):
 - THREE, OrbitControls, renderer, scene, orthographic camera, controls, animate loop, ResizeObserver are all pre-wired
 - addLabel(text, position3D, {color, fontSize, bold, offset, background}?) — floating HTML label system
 - setStandardView({azimuth, polar, heightFraction}?) — frames the camera to scene content
-- Reset View is scaffolded but should not appear as visible chrome in inline output; generated code may add at most 2 compact edge controls only when pedagogically necessary
+- Reset View is scaffolded; generated code may add controls, panels, and UI affordances as needed to support the planned interactions
 
-DISCREPANCIES - list 0-5 visual discrepancies between the primitive elements in source figure and the generated figure
-- Primitives include color, text size, geometric shapes, geometric relations, camera/view, crop/zoom, label placement, and intrusive UI
+DISCREPANCIES - list 0-6 visual discrepancies between the source figure and the generated figure, prioritized by impact on recognizability and concept accuracy
+- Focus on: wrong geometric primitives, missing or incorrect elements, wrong colors, missing or mislabeled annotations, broken or absent interactions
+- De-prioritize: minor camera angle differences, exact crop/zoom, whitespace variation — only flag these if they make the figure hard to recognize or misleading
 
 FAILURE MODES — list any that apply (use empty array [] if none):
 ${failureModeLines}
@@ -186,11 +186,9 @@ ${failureModeLines}
 SCORES — integer 1–5 for each field:
 ${metricLines}
 
-ACTION ITEMS — list 3-5 specific actions to take to improve the scores and remove failure modes
-- Be concrete and specific to THIS figure, not generic
-- If scores are high (4+), note what works well and minor refinements
-- If scores are low, identify the most impactful fixes (geometry issues, missing labels, broken interactions, concept errors)
-- Give feedback to both the plan and the generation
+ACTION ITEMS — separate feedback for the generation and the plan:
+- action_items: list 2-4 generation-level fixes (broken controls, wrong primitives, missing labels, scale issues, camera/view correction — things fixable without changing the plan)
+- plan_action_items: list 0-2 plan-level fixes (wrong projection_type, missing core elements, wrong interaction type for the concept, fundamental misunderstanding — things requiring a revised plan). Use [] if the plan is sound.
 
 Output this exact JSON structure and nothing else:
 ${exampleOutput}
