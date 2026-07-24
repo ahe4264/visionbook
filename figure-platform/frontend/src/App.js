@@ -2,6 +2,314 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import BENCHMARK_FIGURES from './benchmarkFigures';
 
 const FALLBACK_PROMPT = '(Loading system prompt from server…)';
+// ── Context Exports Tab ───────────────────────────────────────────────────────
+function ContextExportsTab({ availableModels, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, experimentOptions, fewShot, onOpenResult }) {
+  const concurrency = 10;
+  const abortRef = React.useRef(false);
+  const [items, setItems] = React.useState([]);
+  const [history, setHistory] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState('');
+  const [query, setQuery] = React.useState('');
+  const [typeFilter, setTypeFilter] = React.useState('all');
+  const [chapterFilter, setChapterFilter] = React.useState('all');
+  const [selectedIds, setSelectedIds] = React.useState(new Set());
+  const [running, setRunning] = React.useState(false);
+  const [progress, setProgress] = React.useState(null);
+  const [results, setResults] = React.useState([]);
+
+  const loadData = React.useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [exportsData, historyData] = await Promise.all([
+        apiFetch('/api/context-exports').then(r => r.json()),
+        apiFetch('/api/context-export-history-index').then(r => r.json()),
+      ]);
+      if (exportsData.error) throw new Error(exportsData.error);
+      if (historyData.error) throw new Error(historyData.error);
+      setItems(exportsData);
+      setHistory(historyData);
+    } catch (err) {
+      setError(err.message || 'Failed to load context exports.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => { loadData(); }, [loadData]);
+
+  const chapters = React.useMemo(() => {
+    return Array.from(new Set(items.map(item => item.chapterName).filter(Boolean))).sort();
+  }, [items]);
+
+  const latestByExportId = React.useMemo(() => {
+    const map = new Map();
+    for (const record of history) {
+      if (!record.contextExportId) continue;
+      if (selectedExperiment?.trim() && record.experiment !== selectedExperiment) continue;
+      if (!map.has(record.contextExportId)) map.set(record.contextExportId, record);
+    }
+    return map;
+  }, [history, selectedExperiment]);
+
+  const allByExportId = React.useMemo(() => {
+    const map = new Map();
+    for (const record of history) {
+      if (!record.contextExportId) continue;
+      if (!map.has(record.contextExportId)) map.set(record.contextExportId, []);
+      map.get(record.contextExportId).push(record);
+    }
+    return map;
+  }, [history]);
+
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter(item => {
+      if (typeFilter !== 'all' && item.figureType !== typeFilter) return false;
+      if (chapterFilter !== 'all' && item.chapterName !== chapterFilter) return false;
+      if (!q) return true;
+      return [item.figureStem, item.chapterName, item.sourcePath, item.authoredPrompt, item.authoredInteractions]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(q));
+    });
+  }, [items, query, typeFilter, chapterFilter]);
+
+  const selectedItems = React.useMemo(() => {
+    const selected = filtered.filter(item => selectedIds.has(item.id));
+    return selected.length ? selected : filtered;
+  }, [filtered, selectedIds]);
+
+  const toggleSelected = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllFiltered = () => setSelectedIds(new Set(filtered.map(item => item.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const refreshHistory = React.useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/context-export-history-index').then(r => r.json());
+      if (!data.error) setHistory(data);
+    } catch { }
+  }, []);
+
+  const handleRun = async () => {
+    if (!selectedModel) { setError('Set a generator model first.'); return; }
+    if (!selectedExperiment?.trim()) { setError('Select or type an experiment name before generating.'); return; }
+    const queue = selectedItems.filter(item => !item.imageMissing);
+    if (!queue.length) { setError('No runnable context export rows in the current selection.'); return; }
+
+    setError('');
+    setRunning(true);
+    setResults([]);
+    abortRef.current = false;
+    const activeMap = new Map();
+    const completed = [];
+    const total = queue.length;
+    const updateProgress = () => setProgress({ completed: completed.length, total, active: [...activeMap.values()] });
+
+    const processItem = async (item) => {
+      if (abortRef.current) return;
+      activeMap.set(item.id, { id: item.id, figureStem: item.figureStem, figureType: item.figureType });
+      updateProgress();
+      try {
+        const result = await runContextExportJob({
+          id: item.id,
+          model: selectedModel || undefined,
+          plannerModel: selectedPlannerModel || undefined,
+          evalModel: selectedCriticModel || undefined,
+          experiment: selectedExperiment,
+          criticVersion: 'context_export',
+          fewShot,
+        });
+        if (abortRef.current) { activeMap.delete(item.id); return; }
+        completed.push({ contextExportId: item.id, figureStem: item.figureStem, status: 'ok', figureId: result.figureId, standaloneHtmlPath: result.standaloneHtmlPath || null });
+      } catch (err) {
+        completed.push({ contextExportId: item.id, figureStem: item.figureStem, status: 'error', error: err.message });
+      }
+      activeMap.delete(item.id);
+      setResults([...completed]);
+      updateProgress();
+    };
+
+    const workQueue = [...queue];
+    const worker = async () => {
+      while (workQueue.length && !abortRef.current) {
+        const item = workQueue.shift();
+        if (item) await processItem(item);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => worker()));
+    setProgress(null);
+    setRunning(false);
+    await refreshHistory();
+  };
+
+  const handleStop = () => { abortRef.current = true; };
+
+  return (
+    <div style={{ maxWidth: 1180, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: '0 0 4px', fontSize: 20 }}>Context Exports</h2>
+          <p style={{ margin: 0, color: '#666', fontSize: 13 }}>Generate authored prompt/context/interaction rows into separate context-export results and standalone HTML files.</p>
+        </div>
+        <button style={{ ...styles.backBtn, padding: '7px 12px' }} onClick={loadData} disabled={loading || running}>Refresh</button>
+      </div>
+
+      <div style={{ ...styles.viewerPlanWrap, gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Experiment</span>
+            <input list="contextExperimentOptions" value={selectedExperiment || ''} onChange={e => onExperimentChange(e.target.value)} style={styles.modelSelect} placeholder="context_export_run" />
+            <datalist id="contextExperimentOptions">
+              {(experimentOptions || []).map(option => <option key={option} value={option} />)}
+            </datalist>
+          </label>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Generator</span>
+            <select value={selectedModel || ''} onChange={e => onGeneratorModelChange(e.target.value)} style={styles.modelSelect}>
+              <option value="">Select model...</option>
+              {(availableModels || []).map(model => <option key={model.id || model} value={model.id || model}>{model.label || model.id || model}</option>)}
+            </select>
+          </label>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Planner</span>
+            <select value={selectedPlannerModel || ''} onChange={e => onPlannerModelChange(e.target.value)} style={styles.modelSelect}>
+              <option value="">Server default</option>
+              {(availableModels || []).map(model => <option key={model.id || model} value={model.id || model}>{model.label || model.id || model}</option>)}
+            </select>
+          </label>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Critic</span>
+            <select value={selectedCriticModel || ''} onChange={e => onCriticModelChange(e.target.value)} style={styles.modelSelect}>
+              <option value="">Server default</option>
+              {(availableModels || []).map(model => <option key={model.id || model} value={model.id || model}>{model.label || model.id || model}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 130px minmax(160px, 220px)', gap: 10 }}>
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search prompt, interactions, figure id..." style={styles.modelSelect} />
+          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={styles.modelSelect}>
+            <option value="all">All types</option>
+            <option value="2d">2D only</option>
+            <option value="3d">3D only</option>
+          </select>
+          <select value={chapterFilter} onChange={e => setChapterFilter(e.target.value)} style={styles.modelSelect}>
+            <option value="all">All chapters</option>
+            {chapters.map(chapter => <option key={chapter} value={chapter}>{chapter}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {error && <p style={styles.errorMsg}>{error}</p>}
+      {loading ? <p style={{ color: '#888', fontSize: 13 }}>Loading context exports...</p> : (
+        <>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button style={{ ...styles.backBtn, padding: '7px 12px' }} onClick={selectAllFiltered}>Select Filtered ({filtered.length})</button>
+            <button style={{ ...styles.backBtn, padding: '7px 12px' }} onClick={clearSelection}>Clear Selection</button>
+            {!running ? (
+              <button style={{ ...styles.generateBtn, width: 'auto', padding: '8px 18px', ...(!selectedModel ? styles.generateBtnDisabled : {}) }} disabled={!selectedModel} onClick={handleRun}>
+                Generate {selectedIds.size ? selectedIds.size : filtered.length} Figure{(selectedIds.size ? selectedIds.size : filtered.length) !== 1 ? 's' : ''}
+              </button>
+            ) : (
+              <button style={{ ...styles.generateBtn, width: 'auto', padding: '8px 18px', background: '#e74c3c', borderColor: '#e74c3c' }} onClick={handleStop}>Stop After Current Figures</button>
+            )}
+            <span style={{ color: '#888', fontSize: 12 }}>{selectedIds.size || filtered.length} queued by default; {history.length} generated context-export result{history.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {progress && (
+            <div style={styles.viewerPlanWrap}>
+              <p style={styles.viewerPlanTitle}>{progress.active.length} active ({progress.completed} / {progress.total} done)</p>
+              <div style={{ height: 5, background: '#eee', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progress.total ? (progress.completed / progress.total) * 100 : 0}%`, background: '#4caf50' }} />
+              </div>
+              {progress.active.map(active => <p key={active.id} style={styles.viewerPlanMeta}>{active.figureStem} ({active.figureType})</p>)}
+            </div>
+          )}
+
+          {results.length > 0 && (
+            <div style={styles.viewerPlanWrap}>
+              <p style={styles.viewerPlanTitle}>Run Results</p>
+              {results.map(result => (
+                <div key={result.contextExportId} style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid #f0f0f0', paddingTop: 6 }}>
+                  <span style={{ color: result.status === 'ok' ? '#2e7d32' : '#c62828', fontWeight: 700 }}>{result.status === 'ok' ? 'OK' : 'ERR'}</span>
+                  <span style={{ flex: 1, fontSize: 12 }}>{result.figureStem}</span>
+                  {result.figureId && <button style={{ ...styles.backBtn, padding: '3px 8px' }} onClick={() => onOpenResult({ id: result.figureId })}>View</button>}
+                  {result.figureId && <a style={{ ...styles.downloadBtn, padding: '3px 8px' }} href={`/api/context-export-result/${result.figureId}/standalone-html?download=1`}>HTML</a>}
+                  {result.error && <span style={{ color: '#c62828', fontSize: 11 }}>{result.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={styles.historyGrid}>
+            {filtered.map(item => {
+              const latest = latestByExportId.get(item.id);
+              const checked = selectedIds.has(item.id);
+              return (
+                <div key={item.id} style={{ ...styles.card, background: checked ? '#eef5ff' : '#f7f7f7', border: checked ? '1px solid #8bb7f0' : '1px solid #e6e6e6' }}>
+                  <div style={{ height: 124, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #eee' }}>
+                    {item.base64 ? <img src={`data:${item.mediaType};base64,${item.base64}`} alt={item.figureStem} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 12, color: '#c62828' }}>Image missing</span>}
+                  </div>
+                  <div style={styles.cardInfo}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleSelected(item.id)} />
+                      <span style={styles.cardFilename} title={item.figureStem}>{item.figureStem}</span>
+                    </label>
+                    <p style={styles.cardGenModel}>{item.figureType.toUpperCase()} · {item.chapterName || 'unknown chapter'}</p>
+                    <p style={styles.cardTs}>{item.sourcePath}</p>
+                    <details style={{ marginTop: 6 }}>
+                      <summary style={styles.viewerPlanSummary}>Authored prompt</summary>
+                      <p style={styles.viewerPlanRaw}>{item.authoredPrompt}</p>
+                    </details>
+                    <details>
+                      <summary style={styles.viewerPlanSummary}>Interactions</summary>
+                      <p style={styles.viewerPlanRaw}>{item.authoredInteractions}</p>
+                    </details>
+                    {latest && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                        <button style={{ ...styles.backBtn, padding: '4px 8px', flex: 1 }} onClick={() => onOpenResult({ id: latest.id })}>View Latest</button>
+                        <a style={{ ...styles.downloadBtn, padding: '4px 8px', flex: 1 }} href={`/api/context-export-result/${latest.id}/standalone-html?download=1`}>HTML</a>
+                      </div>
+                    )}
+                    {(() => {
+                      const all = allByExportId.get(item.id) || [];
+                      if (!all.length) return null;
+                      return (
+                        <details style={{ marginTop: 6 }}>
+                          <summary style={styles.viewerPlanSummary}>History ({all.length})</summary>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                            {all.map(rec => (
+                              <div key={rec.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                                <span style={{ color: '#888', flexShrink: 0 }}>{new Date(rec.timestamp).toLocaleString()}</span>
+                                <span style={{ color: '#555', flexShrink: 0, maxWidth: 70, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rec.experiment}>{rec.experiment}</span>
+                                <button style={{ ...styles.backBtn, padding: '2px 6px', fontSize: 11, marginLeft: 'auto', flexShrink: 0 }} onClick={() => onOpenResult({ id: rec.id })}>View</button>
+                                <a style={{ ...styles.downloadBtn, padding: '2px 6px', fontSize: 11, flexShrink: 0 }} href={`/api/context-export-result/${rec.id}/standalone-html?download=1`}>HTML</a>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      );
+                    })()}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const MODEL_STORAGE_KEY = 'figure-platform:selectedModel';
 const PLANNER_MODEL_STORAGE_KEY = 'figure-platform:selectedPlannerModel';
 const CRITIC_MODEL_STORAGE_KEY = 'figure-platform:selectedCriticModel';
@@ -195,7 +503,35 @@ async function runGenerationLoop(payload, { pollMs = 2000, maxPolls = 600 } = {}
   throw new Error('Loop generation timed out while waiting for completion.');
 }
 
-const VALID_TABS = ['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline'];
+async function runContextExportJob(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
+  const createRes = await apiFetch('/api/context-export-generate-async', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const createData = await createRes.json();
+  if (!createRes.ok) throw new Error(createData.error || 'Failed to start context export generation.');
+
+  let transientPollFailures = 0;
+  for (let pollCount = 0; pollCount < maxPolls; pollCount += 1) {
+    await new Promise(resolve => setTimeout(resolve, pollMs));
+    try {
+      const statusRes = await apiFetch(`/api/generate-status/${encodeURIComponent(createData.jobId)}`);
+      const statusData = await statusRes.json();
+      if (!statusRes.ok) throw new Error(statusData.error || 'Failed to check context export status.');
+      transientPollFailures = 0;
+      if (statusData.status === 'done') return statusData.result;
+      if (statusData.status === 'error') throw new Error(statusData.error || 'Context export generation failed.');
+    } catch (err) {
+      transientPollFailures += 1;
+      if (transientPollFailures >= 5) throw new Error(err.message || 'Connection error while checking context export status.');
+    }
+  }
+
+  throw new Error('Context export generation timed out.');
+}
+
+const VALID_TABS = ['generator', 'viewer', 'context-viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline', 'context-exports'];
 const tabFromHash = () => {
   const h = window.location.hash.slice(1);
   return VALID_TABS.includes(h) ? h : 'generator';
@@ -418,9 +754,10 @@ export default function App() {
   }, [syncViewerSelection, tab]);
 
   // Delete a saved result by id
-  const handleDelete = useCallback(async (id) => {
+  const handleDelete = useCallback(async (id, collection) => {
     try {
-      await apiFetch(`/api/result/${id}`, { method: 'DELETE' });
+      const qs = collection ? `?collection=${encodeURIComponent(collection)}` : '';
+      await apiFetch(`/api/result/${id}${qs}`, { method: 'DELETE' });
     } catch (err) {
       console.error('Delete failed:', err);
     }
@@ -429,12 +766,12 @@ export default function App() {
   // Clear viewer after deleting current record
   const handleDeleteCurrent = useCallback(async () => {
     if (!currentRecord?.id) return;
-    await handleDelete(currentRecord.id);
+    await handleDelete(currentRecord.id, currentRecord.resultCollection);
     setCurrentRecord(null);
     setGeneratedHtml('');
     setEvaluation(null);
     setViewerEvaluationModel(null);
-    setTab('generator');
+    setTab(currentRecord.resultCollection === 'context_export' ? 'context-exports' : 'generator');
   }, [currentRecord, handleDelete]);
 
   // Open any result (API record by id, or experiment by htmlPath) in the Viewer
@@ -478,6 +815,21 @@ export default function App() {
     }
   }, [handleLoadFromHistory, syncViewerSelection, tab]);
 
+  const handleOpenContextExportResult = useCallback(async (item) => {
+    try {
+      const res = await apiFetch(`/api/context-export-result/${item.id}`);
+      const record = await res.json();
+      if (!res.ok) throw new Error(record.error || 'Failed to load context export result.');
+      const selectedModel = pickEvaluationModel(record, null);
+      setGeneratedHtml(record.html);
+      syncViewerSelection({ ...record, resultCollection: 'context_export' }, selectedModel);
+      setViewerBackTab('context-exports');
+      setTab('context-viewer');
+    } catch (err) {
+      alert('Failed to load: ' + err.message);
+    }
+  }, [syncViewerSelection]);
+
   // Evaluate: works for API records (by id) and experiment records (by htmlPath)
   const handleEvaluate = useCallback(async (requestedEvalModel = viewerEvaluationModel) => {
     if (!currentRecord) return;
@@ -505,6 +857,7 @@ export default function App() {
             id: currentRecord.id,
             evalModel: evalModelToUse,
             criticVersion: 'benchmark',
+            collection: currentRecord.resultCollection,
           }),
         });
         data = await res.json();
@@ -540,6 +893,7 @@ export default function App() {
     if (currentRecord.id) payload.id = currentRecord.id;
     else if (currentRecord.htmlPath) payload.htmlPath = currentRecord.htmlPath;
     else throw new Error('Cannot save human evaluation: no id or htmlPath.');
+    if (currentRecord.resultCollection) payload.collection = currentRecord.resultCollection;
 
     const res = await apiFetch('/api/evaluate-human', {
       method: 'POST',
@@ -568,13 +922,13 @@ export default function App() {
       <header style={styles.header}>
         <span style={styles.logo}>3D Figure Generator</span>
         <nav style={styles.nav}>
-          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline'].map((t) => (
+          {['generator', 'viewer', 'results', 'dashboard', 'preview', 'pairwise', 'chapter-pipeline', 'context-exports'].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{ ...styles.navBtn, ...(tab === t ? styles.navBtnActive : {}) }}
             >
-              {({ 'preview': 'Chapter Preview', 'pairwise': 'Pairwise', 'chapter-pipeline': 'Chapter Pipeline' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
+              {({ 'preview': 'Chapter Preview', 'pairwise': 'Pairwise', 'chapter-pipeline': 'Chapter Pipeline', 'context-exports': 'Context Exports' }[t] || (t.charAt(0).toUpperCase() + t.slice(1)))}
             </button>
           ))}
         </nav>
@@ -630,6 +984,28 @@ export default function App() {
             defaultEvaluationModel={selectedEvaluatorModel || DEFAULT_EVALUATION_MODEL}
           />
         )}
+        {tab === 'context-viewer' && (
+          <ViewerTab
+            record={currentRecord}
+            html={generatedHtml}
+            onBack={() => setTab('context-exports')}
+            backLabel="Back to Context Exports"
+            onNew={() => setTab('context-exports')}
+            onDelete={handleDeleteCurrent}
+            evaluation={evaluation}
+            evaluationModel={viewerEvaluationModel}
+            availableEvaluationModels={models}
+            evaluating={evaluating}
+            onEvaluate={handleEvaluate}
+            onSaveHumanEvaluation={handleSaveHumanEvaluation}
+            onSelectEvaluationModel={(modelId) => {
+              setViewerEvaluationModel(modelId);
+              setSelectedEvaluatorModel(modelId);
+              setEvaluation(getRecordEvaluation(currentRecord, modelId));
+            }}
+            defaultEvaluationModel={selectedEvaluatorModel || DEFAULT_EVALUATION_MODEL}
+          />
+        )}
         {tab === 'results' && (
           <ResultsTab
             onOpen={handleOpenResult}
@@ -650,6 +1026,22 @@ export default function App() {
         )}
         {tab === 'chapter-pipeline' && (
           <ChapterPipelineTab availableModels={models} />
+        )}
+        {tab === 'context-exports' && (
+          <ContextExportsTab
+            availableModels={models}
+            selectedExperiment={selectedExperiment}
+            selectedModel={selectedModel}
+            selectedPlannerModel={selectedPlannerModel}
+            selectedCriticModel={selectedCriticModel}
+            onExperimentChange={setSelectedExperiment}
+            onGeneratorModelChange={setSelectedModel}
+            onPlannerModelChange={setSelectedPlannerModel}
+            onCriticModelChange={setSelectedCriticModel}
+            experimentOptions={experimentOptions}
+            fewShot={fewShot}
+            onOpenResult={handleOpenContextExportResult}
+          />
         )}
       </main>
     </div>
@@ -1951,6 +2343,27 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
         {record?.generationDurationMs != null && (
           <p style={styles.viewerMeta}>Generation time: {formatDuration(record.generationDurationMs)}</p>
         )}
+        {record?.resultCollection === 'context_export' && (
+          <div style={styles.viewerPlanWrap}>
+            <p style={styles.viewerPlanTitle}>Context Export</p>
+            {record.contextExportId && <p style={styles.viewerPlanMeta}>ID: {record.contextExportId}</p>}
+            {record.sourceQmd && <p style={styles.viewerPlanMeta}>Source: {record.sourceQmd}</p>}
+            {record.standaloneHtmlPath && <p style={styles.viewerPlanMeta}>HTML: {record.standaloneHtmlPath}</p>}
+            {record.llmInputLogPath && <p style={styles.viewerPlanMeta}>LLM log: {record.llmInputLogPath}</p>}
+            {record.authoredPrompt && (
+              <details>
+                <summary style={styles.viewerPlanSummary}>Authored prompt</summary>
+                <pre style={styles.viewerPlanRaw}>{record.authoredPrompt}</pre>
+              </details>
+            )}
+            {record.authoredInteractions && (
+              <details>
+                <summary style={styles.viewerPlanSummary}>Authored interactions</summary>
+                <pre style={styles.viewerPlanRaw}>{record.authoredInteractions}</pre>
+              </details>
+            )}
+          </div>
+        )}
         {isTwoPhase && (phase1Evaluation || phase2Evaluation) && (
           <div style={styles.viewerPlanWrap}>
             <p style={styles.viewerPlanTitle}>Phase Evaluations</p>
@@ -2178,6 +2591,11 @@ function ViewerTab({ record, html, onBack, backLabel, onNew, onDelete, evaluatio
         <a href={downloadUrl} download={`figure_${Date.now()}.html`} style={styles.downloadBtn}>
           Download HTML
         </a>
+        {record?.resultCollection === 'context_export' && record?.id && (
+          <a href={`/api/context-export-result/${record.id}/standalone-html?download=1`} style={styles.downloadBtn}>
+            Download Standalone HTML
+          </a>
+        )}
         {record?.id && (
           <button
             style={styles.deleteBtn}

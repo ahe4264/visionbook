@@ -103,15 +103,26 @@ function extractFigureContext(figureStem, chapterName) {
  * @param {string} mediaType    - e.g. 'image/png'
  * @returns {Promise<object>}   - parsed plan JSON
  */
-async function plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModel = PLANNER_2D_MODEL) {
+function buildAuthoredIntentBlock({ authoredInteractions, sourcePath } = {}) {
+  const parts = [];
+  if (authoredInteractions) parts.push(`Requested interactions:\n${String(authoredInteractions).trim()}`);
+  if (sourcePath) parts.push(`Source file:\n${String(sourcePath).trim()}`);
+  if (!parts.length) return '';
+  return `\n\nAUTHOR-PROVIDED INTERACTION REQUESTS:\n${parts.join('\n\n')}\n\nUse these requested interactions when forming the plan. Use the image to recover visual structure, layout, labels, and missing visible elements.`;
+}
+
+async function plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModel = PLANNER_2D_MODEL, authoredIntent = {}) {
   const contextChunk = extractFigureContext(figureStem, chapterName);
+  const effectiveContext = authoredIntent?.authoredPrompt ? String(authoredIntent.authoredPrompt) : contextChunk;
+  const authoredBlock = buildAuthoredIntentBlock(authoredIntent);
 
   const userContent = [
     { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
     {
       type: 'text',
       text: `Figure: "${figureStem}"${chapterName ? ` (chapter: ${chapterName})` : ''}` +
-        (contextChunk ? `\n\nContext from textbook:\n${contextChunk}` : '') +
+        (effectiveContext ? `\n\nPlanner context:\n${effectiveContext}` : '') +
+        authoredBlock +
         `\n\nDesign an educational guided demo for this figure. Think through:
 1. What is the core concept a student should understand from this figure?
 2. What is the single most important insight — the "aha moment"?

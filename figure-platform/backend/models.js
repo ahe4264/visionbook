@@ -12,6 +12,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const OpenAI = require('openai').default;
 const Anthropic = require('@anthropic-ai/sdk').default;
 const sharp = require('sharp');
+const { randomUUID } = require('crypto');
+const { appendLLMInputLog, summarizeUserContent } = require('./llm_input_logger');
 
 // ── URL-routed fetch patch — Gemini-only dispatcher ─────────────────────────
 // The @google/genai SDK's ApiClient calls bare `fetch()` (globalThis.fetch)
@@ -350,9 +352,6 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
   if (!entry) throw new Error(`Unknown model: "${modelId}". Available: ${Object.keys(MODEL_REGISTRY).join(', ')}`);
 
   const { provider, apiModel } = entry;
-const { randomUUID } = require('crypto');
-
-
   const callId = randomUUID();
   const startedAt = new Date().toISOString();
   const recordBase = {
@@ -362,17 +361,26 @@ const { randomUUID } = require('crypto');
     provider,
     apiModel,
   };
+  appendLLMInputLog({
+    ...recordBase,
+    event: 'llm_input',
+    systemPrompt,
+    userContent: summarizeUserContent(userContent),
+    fewShotExamples,
+    maxTokens,
+  });
   const finalize = (out, err) => {
     const finishedAt = new Date().toISOString();
     const durationMs = Date.parse(finishedAt) - Date.parse(startedAt);
-    const entry = {
+    appendLLMInputLog({
       ...recordBase,
       event: 'call_end',
       finishedAt,
       durationMs,
       success: !err,
-    };
-    if (err) entry.error = String(err?.message || err);
+      outputChars: typeof out === 'string' ? out.length : 0,
+      ...(err ? { error: String(err?.message || err) } : {}),
+    });
   };
   switch (provider) {
     case 'openai':

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: absolute;
+      inset: 0;
+      transition: top 0.16s ease;
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<label>Incident Angle (θ₁): <output id="theta1Val">45</output><input id="theta1Input" type="range" min="0" max="89" step="1" value="45" oninput="document.getElementById('theta1Val').value=this.value;update_theta1(+this.value)"></label>
+<label>Index n₁ (Top): <output id="n1Val">1</output><input id="n1Input" type="range" min="1" max="2.5" step="0.1" value="1" oninput="document.getElementById('n1Val').value=this.value;update_n1(+this.value)"></label>
+<label>Index n₂ (Bottom): <output id="n2Val">1.5</output><input id="n2Input" type="range" min="1" max="2.5" step="0.1" value="1.5" oninput="document.getElementById('n2Val').value=this.value;update_n2(+this.value)"></label>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    new ResizeObserver(function () {
+      var rect = document.getElementById('container').getBoundingClientRect();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+var W = 600, H = Math.round(W * 3 / 4);
+draw.viewbox(0, 0, W, H);
+
+var O = { x: 300, y: 235 };
+var state = { theta1: 45, n1: 1, n2: 1.5, dynamic: false };
+
+var topShade = draw.rect(W, O.y).move(0, 0).fill('#dbeeff').opacity(0);
+var bottomShade = draw.rect(W, H - O.y).move(0, O.y).fill('#dbeeff').opacity(0);
+
+var boundary = draw.line(18, O.y, 585, O.y).stroke({ color: '#000000', width: 4.2, linecap: 'butt' });
+var normal = draw.line(O.x - 4, 34, O.x + 4, 405).stroke({ color: '#0098ff', width: 2.2, linecap: 'butt' });
+
+var incidentRay = draw.line(0, 0, 0, 0).stroke({ color: '#0737ff', width: 4.8, linecap: 'butt' });
+var refractedRay = draw.line(0, 0, 0, 0).stroke({ color: '#0737ff', width: 4.8, linecap: 'butt' });
+var reflectedRay = draw.line(0, 0, 0, 0).stroke({ color: '#0737ff', width: 4.2, linecap: 'butt' }).hide();
+
+var arc1 = draw.path('').fill('none').stroke({ color: '#555555', width: 1.1, linecap: 'round' }).opacity(0);
+var arc2 = draw.path('').fill('none').stroke({ color: '#555555', width: 1.1, linecap: 'round' }).opacity(0);
+
+var rightAngle = draw.path('M 301 217 L 327 217 L 327 235').fill('none').stroke({ color: '#222222', width: 1.0 });
+
+function makeText(txt, size, x, y) {
+  return draw.text(txt).font({ family: 'Arial, Helvetica, sans-serif', size: size, weight: '400' }).fill('#222222').move(x, y);
+}
+function halo(t, sw) {
+  t.attr({ 'paint-order': 'stroke', 'stroke': '#ffffff', 'stroke-width': sw || 4, 'stroke-linejoin': 'round' });
+  t.fill('#222222');
+  return t;
+}
+
+var n1Label = makeText('n₁', 33, 83, 192);
+var n2Label = makeText('n₂', 33, 83, 246);
+
+var normalLabel = draw.text(function (add) {
+  add.tspan('surface').newLine();
+  add.tspan('normal').newLine();
+}).font({ family: 'Arial, Helvetica, sans-serif', size: 23, weight: '400', leading: 1.22 }).fill('#111111').move(310, 27);
+
+var rayLabel = makeText('ray direction', 23, 128, 48).rotate(45, 128, 48);
+
+var theta1Label = halo(makeText('θ₁', 30, 250, 148), 4);
+var theta2Label = halo(makeText('θ₂', 30, 312, 326), 4);
+var reflectedLabel = halo(makeText('reflected ray', 18, 370, 126), 4).hide();
+
+function addInfo(el, tip, title, body) {
+  el.css('cursor', 'pointer');
+  el.on('mousemove', function (e) { showTooltip(tip, e); });
+  el.on('mouseleave', function () { hideTooltip(); });
+  el.on('click', function () { showPopup(title, body); });
+}
+
+addInfo(boundary, 'Boundary between two media', 'Interface', 'At this horizontal boundary, Snell’s law relates the incident and refracted angles: n₁ sin θ₁ = n₂ sin θ₂.');
+addInfo(normal, 'Surface normal: angles are measured from this line', 'Surface normal', 'The normal is perpendicular to the interface. Both θ₁ and θ₂ are measured from the normal, not from the surface.');
+addInfo(incidentRay, 'Incident ray entering the boundary', 'Incident ray', 'This incoming ray travels through medium n₁ and strikes the interface at angle θ₁.');
+addInfo(refractedRay, 'Refracted ray predicted by Snell’s law', 'Refracted ray', 'When transmission is possible, the ray bends according to the ratio n₁/n₂. Entering a higher-index medium bends the ray toward the normal.');
+addInfo(reflectedRay, 'Reflected ray during total internal reflection', 'Total internal reflection', 'When n₁ > n₂ and θ₁ exceeds the critical angle, no real refracted angle exists. The light reflects back into the first medium.');
+addInfo(theta1Label, 'Incident angle θ₁', 'Incident angle', 'Changing θ₁ changes sin θ₁, so the refracted angle must adjust to keep n₁ sin θ₁ = n₂ sin θ₂.');
+addInfo(theta2Label, 'Refracted angle θ₂', 'Refracted angle', 'θ₂ is calculated from sin θ₂ = (n₁/n₂) sin θ₁. If this value would exceed 1, total internal reflection occurs.');
+
+function rad(d) { return d * Math.PI / 180; }
+function deg(r) { return r * 180 / Math.PI; }
+function fmt(v) { return Math.round(v); }
+
+function pathFromPoints(points) {
+  var d = 'M ' + points[0][0].toFixed(2) + ' ' + points[0][1].toFixed(2);
+  for (var i = 1; i < points.length; i++) d += ' L ' + points[i][0].toFixed(2) + ' ' + points[i][1].toFixed(2);
+  return d;
+}
+function upperArc(theta, r) {
+  var pts = [];
+  var steps = Math.max(3, Math.ceil(theta / 5));
+  for (var i = 0; i <= steps; i++) {
+    var a = rad(theta * i / steps);
+    pts.push([O.x - r * Math.sin(a), O.y - r * Math.cos(a)]);
+  }
+  return pathFromPoints(pts);
+}
+function lowerArc(theta, r) {
+  var pts = [];
+  var steps = Math.max(3, Math.ceil(theta / 5));
+  for (var i = 0; i <= steps; i++) {
+    var a = rad(theta * i / steps);
+    pts.push([O.x + r * Math.sin(a), O.y + r * Math.cos(a)]);
+  }
+  return pathFromPoints(pts);
+}
+
+function endpointIncident(theta) {
+  var a = rad(theta);
+  var s = Math.sin(a), c = Math.cos(a);
+  var lTop = c < 0.0001 ? Infinity : (O.y - 20) / c;
+  var lLeft = s < 0.0001 ? Infinity : (O.x - 80) / s;
+  var L = Math.min(lTop, lLeft, 306);
+  return [O.x - L * s, O.y - L * c];
+}
+function endpointLower(theta) {
+  var a = rad(theta);
+  var s = Math.sin(a), c = Math.cos(a);
+  var lBot = c < 0.0001 ? Infinity : (H - 20 - O.y) / c;
+  var lRight = s < 0.0001 ? Infinity : (W - 55 - O.x) / s;
+  var L = Math.min(lBot, lRight, 255);
+  return [O.x + L * s, O.y + L * c];
+}
+function endpointReflected(theta) {
+  var a = rad(theta);
+  var s = Math.sin(a), c = Math.cos(a);
+  var lTop = c < 0.0001 ? Infinity : (O.y - 20) / c;
+  var lRight = s < 0.0001 ? Infinity : (W - 45 - O.x) / s;
+  var L = Math.min(lTop, lRight, 285);
+  return [O.x + L * s, O.y - L * c];
+}
+
+function placeRayLabel(theta) {
+  var a = rad(theta);
+  var lx = O.x - 205 * Math.sin(a) - 5;
+  var ly = O.y - 205 * Math.cos(a) - 12;
+  rayLabel.move(lx, ly);
+  rayLabel.transform({ rotate: 90 - theta, cx: lx, cy: ly });
+}
+
+function redraw() {
+  var theta = state.theta1;
+  var pIn = endpointIncident(theta);
+  incidentRay.plot(pIn[0], pIn[1], O.x, O.y);
+
+  var ratio = state.n1 / state.n2;
+  var test = ratio * Math.sin(rad(theta));
+  var tir = test > 1.0000001;
+  var theta2 = tir ? null : deg(Math.asin(Math.max(-1, Math.min(1, test))));
+
+  if (state.dynamic) {
+    topShade.opacity((state.n1 - 1) / 1.5 * 0.14);
+    bottomShade.opacity((state.n2 - 1) / 1.5 * 0.14);
+  }
+
+  if (tir) {
+    refractedRay.hide();
+    arc2.opacity(state.dynamic ? 0 : 0);
+    theta2Label.text('θ₂: none').move(326, 304).show();
+    var pRef = endpointReflected(theta);
+    reflectedRay.plot(O.x, O.y, pRef[0], pRef[1]).show();
+    reflectedLabel.move(Math.min(455, O.x + 52 * Math.sin(rad(theta)) + 42), Math.max(42, O.y - 110 * Math.cos(rad(theta)) - 14)).show();
+  } else {
+    var pOut = endpointLower(theta2);
+    refractedRay.plot(O.x, O.y, pOut[0], pOut[1]).show();
+    reflectedRay.hide();
+    reflectedLabel.hide();
+    if (state.dynamic) {
+      theta2Label.text('θ₂ ' + fmt(theta2) + '°');
+      theta2Label.move(O.x + 36 * Math.sin(rad(theta2 / 2)) + 15, O.y + 72 + 18 * Math.cos(rad(theta2 / 2)));
+    } else {
+      theta2Label.text('θ₂').move(312, 326);
+    }
+    theta2Label.show();
+    arc2.plot(lowerArc(theta2, 56)).opacity(state.dynamic ? 0.58 : 0);
+  }
+
+  if (state.dynamic) {
+    theta1Label.text('θ₁ ' + fmt(theta) + '°');
+    theta1Label.move(O.x - 74 * Math.sin(rad(theta / 2)) - 62, O.y - 77 * Math.cos(rad(theta / 2)) - 18);
+    arc1.plot(upperArc(theta, 58)).opacity(0.58);
+  } else {
+    theta1Label.text('θ₁').move(250, 148);
+    arc1.opacity(0);
+  }
+
+  placeRayLabel(theta);
+  rightAngle.front();
+  n1Label.front();
+  n2Label.front();
+  normalLabel.front();
+  rayLabel.front();
+  theta1Label.front();
+  theta2Label.front();
+  reflectedLabel.front();
+}
+
+function update_theta1(v) {
+  state.theta1 = v;
+  state.dynamic = true;
+  redraw();
+}
+function update_n1(v) {
+  state.n1 = v;
+  state.dynamic = true;
+  redraw();
+}
+function update_n2(v) {
+  state.n2 = v;
+  state.dynamic = true;
+  redraw();
+}
+
+redraw();
+window.__markRendered();
+// @FIGURE_CODE_END
+  </script>
+</body>
+
+</html>

@@ -28,6 +28,8 @@ const { getAvailableModels } = require('./models');
 const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage, upsertAttempts } = require('./result_schema');
 const { getCriticContext } = require('./critic');
 const { runFigureLoop } = require('./figure_loop');
+const { listContextExports, getContextExport, safeStem } = require('./context_exports');
+const { createContextExportLLMLogContext, runWithLLMInputLogging } = require('./llm_input_logger');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -90,6 +92,12 @@ console.log('Base scaffold loaded:', BASE_SCAFFOLD_PATH);
 const RESULTS_DIR = process.env.RESULTS_DIR
   ? path.resolve(process.env.RESULTS_DIR)
   : path.join(__dirname, 'results');
+const CONTEXT_EXPORT_RESULTS_DIR = process.env.CONTEXT_EXPORT_RESULTS_DIR
+  ? path.resolve(process.env.CONTEXT_EXPORT_RESULTS_DIR)
+  : path.join(__dirname, 'context_export_results');
+const CONTEXT_EXPORT_HTML_DIR = process.env.CONTEXT_EXPORT_HTML_DIR
+  ? path.resolve(process.env.CONTEXT_EXPORT_HTML_DIR)
+  : path.join(__dirname, 'context_export_html');
 const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
 const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || 'agent_batch_out')
   .split(',')
@@ -98,6 +106,9 @@ const AGENT_BATCH_OUTPUT_DIRS = (process.env.AGENT_BATCH_OUTPUT_DIRS || 'agent_b
   .map(s => path.resolve(__dirname, s));
 if (!fs.existsSync(RESULTS_DIR)) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
+}
+for (const dir of [CONTEXT_EXPORT_RESULTS_DIR, CONTEXT_EXPORT_HTML_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 const {
@@ -112,6 +123,63 @@ console.log(`Experiment: ${CURRENT_EXPERIMENT}  (model: ${CURRENT_MODEL})`);
 // ── Helper: generate a simple unique id ───────────────────────────────────────
 function makeId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function isContextExportCollection(collection) {
+  return collection === 'context_export';
+}
+
+function resultDirForCollection(collection) {
+  return isContextExportCollection(collection) ? CONTEXT_EXPORT_RESULTS_DIR : RESULTS_DIR;
+}
+
+function resultPathForId(id, collection) {
+  return path.join(resultDirForCollection(collection), `${id}.json`);
+}
+
+function saveGeneratedRecord(record, collection) {
+  const recordPath = resultPathForId(record.id, collection);
+  saveRecord(record, recordPath);
+  if (!isContextExportCollection(collection)) refreshHistoryManifestSafe();
+  return recordPath;
+}
+
+function writeStandaloneHtml({ collection, experiment, figureId, filename, html }) {
+  if (!isContextExportCollection(collection) || !html) return null;
+  const experimentDir = path.join(CONTEXT_EXPORT_HTML_DIR, safeStem(experiment || 'default'));
+  fs.mkdirSync(experimentDir, { recursive: true });
+  const stem = safeStem(filename || figureId || 'figure') || figureId;
+  const htmlPath = path.join(experimentDir, `${stem}__${figureId}.html`);
+  fs.writeFileSync(htmlPath, html, 'utf-8');
+  return htmlPath;
+}
+
+function contextExportExtraFromItem(item, standaloneHtmlPath) {
+  if (!item) return standaloneHtmlPath ? { standaloneHtmlPath } : {};
+  const extra = {
+    resultCollection: 'context_export',
+    contextExportId: item.id,
+    contextExportIndex: item.index,
+    authoredPrompt: item.authoredPrompt || '',
+    authoredInteractions: item.authoredInteractions || '',
+    authoredContext: item.context || '',
+    sourceQmd: item.sourcePath || null,
+    logicalFigurePath: item.logicalFigurePath || null,
+    sourceImagePath: item.imagePath || null,
+  };
+  if (standaloneHtmlPath) extra.standaloneHtmlPath = standaloneHtmlPath;
+  return extra;
+}
+
+function contextExportImageRootsFromRequest(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch { }
+  return value.split(path.delimiter).map(root => root.trim()).filter(Boolean);
 }
 
 // ── GET /api/prompt — return the current system prompt for UI display ──────────
@@ -341,7 +409,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   };
 }
 
-async function generate2dFigure({ base64, mediaType, filename, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel }) {
+async function generate2dFigure({ base64, mediaType, filename, figureStem: requestedFigureStem, chapterName: requestedChapterName, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, extra: requestedExtra }) {
   if (!base64 || !mediaType || !filename) {
     const err = new Error('base64, mediaType, and filename are required.');
     err.statusCode = 400;
@@ -356,8 +424,8 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
   console.log(`[generate-2d] requested="${requestedModel}" experiment="${experimentName}" -> using="${modelId}" | file=${filename}`);
 
   // Always run the 2D planner — plan is mandatory and stored in the result record
-  const figureStem = filename.replace(/\.[^.]+$/, '');
-  const chapterName = inferChapter(figureStem);
+  const figureStem = requestedFigureStem || filename.replace(/\.[^.]+$/, '');
+  const chapterName = requestedChapterName || inferChapter(figureStem);
   const plannerModelId = requestedPlannerModel || PLANNER_2D_MODEL;
 
   // rawPlan is the 2D blueprint JSON that generation-2d.js expects
@@ -365,7 +433,11 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
   let rawPlan = plan || null;
   if (!rawPlan) {
     try {
-      rawPlan = await plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModelId);
+      rawPlan = await plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModelId, {
+        authoredPrompt,
+        authoredInteractions,
+        sourcePath,
+      });
       console.log(`[generate-2d] plan produced for "${figureStem}" via ${plannerModelId}`);
     } catch (planErr) {
       const err = new Error(`2D planning failed for "${figureStem}": ${planErr.message}`);
@@ -373,7 +445,15 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
       throw err;
     }
   }
-  const storedPlan = { figureStem, chapterName: chapterName || null, contextChunk: null, interactionPlan: rawPlan };
+  const storedPlan = {
+    figureStem,
+    chapterName: chapterName || null,
+    contextChunk: authoredPrompt || null,
+    interactionPlan: rawPlan,
+    ...(authoredPrompt ? { authoredPrompt } : {}),
+    ...(authoredInteractions ? { authoredInteractions } : {}),
+    ...(sourcePath ? { sourcePath } : {}),
+  };
 
   const _generationStart = Date.now();
   const html = await withRetry(() => generate2dFigureHtml({
@@ -395,13 +475,14 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
   const figureId = makeId();
   const timestamp = new Date().toISOString();
   const shot = await screenshotHtml(html);
+  const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
 
   const record = createResultRecord({
     id: figureId,
     filename,
     html,
     timestamp,
-    source: 'api',
+    source: resultSource || 'api',
     model: modelId,
     experiment: experimentName,
     plan: storedPlan,
@@ -411,12 +492,17 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
     fallbackMediaType: mediaType || 'image/png',
     sourceBase64: base64,
     sourceMediaType: mediaType,
-    extra: { type: '2d', generationDurationMs, generationStartedAt: new Date(_generationStart).toISOString() },
+    extra: {
+      type: '2d',
+      generationDurationMs,
+      generationStartedAt: new Date(_generationStart).toISOString(),
+      ...(resultCollection ? { resultCollection } : {}),
+      ...(requestedExtra || {}),
+      ...(standaloneHtmlPath ? { standaloneHtmlPath } : {}),
+    },
   });
 
-  const recordPath = path.join(RESULTS_DIR, `${figureId}.json`);
-  saveRecord(record, recordPath);
-  refreshHistoryManifestSafe();
+  saveGeneratedRecord(record, resultCollection);
 
   return {
     html,
@@ -424,6 +510,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
     timestamp,
     model: modelId,
     experiment: experimentName,
+    standaloneHtmlPath,
     plan: storedPlan,
     evaluationResults: record.evaluationResults || {},
     evaluationMeta: record.evaluationMeta || {},
@@ -435,7 +522,7 @@ async function generate2dFigure({ base64, mediaType, filename, plan, model: requ
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 1, fewShot: requestedFewShot }) {
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, extra: requestedExtra }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -480,6 +567,11 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     generatorModel: modelId,
     criticModel: criticModelId,
     fewShot: requestedFewShot || FEW_SHOT,
+    plannerOptions: {
+      authoredPrompt,
+      authoredInteractions,
+      sourcePath,
+    },
   });
 
   if (loopState.status === 'failed_planning') {
@@ -499,6 +591,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
   const figureId = makeId();
   const timestamp = new Date().toISOString();
   const shot = await screenshotHtml(html);
+  const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
 
   // Create result record with attempts attached
   let record = createResultRecord({
@@ -506,7 +599,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     filename,
     html,
     timestamp,
-    source: 'api',
+    source: resultSource || 'api',
     model: modelId,
     experiment: experimentName,
     plan: loopState.currentPlan || null,
@@ -519,6 +612,9 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     extra: {
       generationDurationMs: loopState.generationDurationMs ?? null,
       generationStartedAt: loopState.generationStartedAt ?? null,
+      ...(resultCollection ? { resultCollection } : {}),
+      ...(requestedExtra || {}),
+      ...(standaloneHtmlPath ? { standaloneHtmlPath } : {}),
     },
   });
 
@@ -534,9 +630,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     });
   }
 
-  const recordPath = path.join(RESULTS_DIR, `${figureId}.json`);
-  saveRecord(record, recordPath);
-  refreshHistoryManifestSafe();
+  const recordPath = saveGeneratedRecord(record, resultCollection);
 
   return {
     html,
@@ -544,6 +638,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     timestamp,
     model: modelId,
     experiment: experimentName,
+    standaloneHtmlPath,
     loopStatus: loopState.status,
     attempts: loopState.attempts.length,
     bestScore: loopState.bestScore,
@@ -659,6 +754,185 @@ app.post('/api/generate-loop-async', (req, res) => {
         ...(err?.raw ? { raw: err.raw } : {}),
       });
     });
+
+  return res.status(202).json({ jobId });
+});
+
+function readContextExportRecord(fileName, { includeThumb = false } = {}) {
+  const raw = fs.readFileSync(path.join(CONTEXT_EXPORT_RESULTS_DIR, fileName), 'utf-8');
+  const parsed = materializeEvaluationViews(JSON.parse(raw));
+  const stem = parsed.filename ? parsed.filename.replace(/\.[^.]+$/, '') : '';
+  const record = {
+    id: parsed.id,
+    filename: parsed.filename,
+    timestamp: parsed.timestamp,
+    source: parsed.source || 'context_export',
+    model: parsed.model || 'unknown',
+    experiment: parsed.experiment || 'context_export',
+    evaluationResults: parsed.evaluationResults || {},
+    evaluationMeta: parsed.evaluationMeta || {},
+    evaluationVersions: parsed.evaluationVersions || {},
+    chapter: parsed.plan?.chapterName || null,
+    iterations: Array.isArray(parsed.attempts) ? parsed.attempts.length : 0,
+    resultCollection: 'context_export',
+    contextExportId: parsed.contextExportId || stem,
+    standaloneHtmlPath: parsed.standaloneHtmlPath || null,
+    llmInputLogPath: parsed.llmInputLogPath || null,
+    type: parsed.type || null,
+    sourceQmd: parsed.sourceQmd || null,
+  };
+  if (includeThumb) {
+    record.base64thumb = parsed.base64thumb || null;
+    record.mediaType = parsed.mediaType || 'image/jpeg';
+  }
+  return record;
+}
+
+function listContextExportHistoryRecords({ includeThumb = false } = {}) {
+  if (!fs.existsSync(CONTEXT_EXPORT_RESULTS_DIR)) return [];
+  return fs.readdirSync(CONTEXT_EXPORT_RESULTS_DIR)
+    .filter(file => file.endsWith('.json'))
+    .map(file => {
+      try { return readContextExportRecord(file, { includeThumb }); } catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+}
+
+async function generateContextExportItem(body) {
+  const item = getContextExport(body?.id || body?.contextExportId, {
+    includeImage: true,
+    imageRoots: contextExportImageRootsFromRequest(body?.imageRoots),
+  });
+  if (!item) {
+    const err = new Error('Context export item not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!item.base64 || item.imageMissing) {
+    const err = new Error(`Source image not found for ${item.figureStem}.`);
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const common = {
+    base64: item.base64,
+    mediaType: item.mediaType,
+    filename: item.filename,
+    figureStem: item.figureStem,
+    chapterName: item.chapterName,
+    model: body.model,
+    plannerModel: body.plannerModel,
+    evalModel: body.evalModel,
+    experiment: body.experiment || CURRENT_EXPERIMENT,
+    authoredContext: item.context,
+    authoredPrompt: item.authoredPrompt,
+    authoredInteractions: item.authoredInteractions,
+    sourcePath: item.sourcePath,
+    resultCollection: 'context_export',
+    resultSource: 'context_export',
+    extra: {
+      ...contextExportExtraFromItem(item),
+      ...(body.llmInputLogPath ? { llmInputLogPath: body.llmInputLogPath } : {}),
+    },
+  };
+
+  if (item.figureType === '2d') return generate2dFigure(common);
+
+  return generateFigureWithLoop({
+    ...common,
+    criticVersion: body.criticVersion || 'context_export',
+    maxAttempts: body.maxAttempts || 3,
+    fewShot: body.fewShot,
+  });
+}
+
+// ── Context export endpoints ─────────────────────────────────────────────────
+app.get('/api/context-exports', (req, res) => {
+  try {
+    return res.json(listContextExports({
+      includeImage: req.query.includeImage !== '0',
+      imageRoots: contextExportImageRootsFromRequest(req.query.imageRoots),
+    }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/context-export-history-index', (req, res) => {
+  try {
+    return res.json(listContextExportHistoryRecords({ includeThumb: req.query.includeThumb === '1' }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/context-export-result/:id', (req, res) => {
+  const filePath = resultPathForId(req.params.id, 'context_export');
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Result not found.' });
+  try {
+    return res.json(materializeEvaluationViews(JSON.parse(fs.readFileSync(filePath, 'utf-8'))));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/context-export-result/:id/html', (req, res) => {
+  const filePath = resultPathForId(req.params.id, 'context_export');
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  try {
+    const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (!record.html) return res.status(404).send('No HTML in record');
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(record.html);
+  } catch (err) {
+    return res.status(500).send(err.message);
+  }
+});
+
+app.get('/api/context-export-result/:id/standalone-html', (req, res) => {
+  const filePath = resultPathForId(req.params.id, 'context_export');
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  try {
+    const record = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const htmlPath = path.resolve(record.standaloneHtmlPath || '');
+    if (!htmlPath.startsWith(CONTEXT_EXPORT_HTML_DIR) || !fs.existsSync(htmlPath)) return res.status(404).send('Standalone HTML not found');
+    res.setHeader('Content-Type', 'text/html');
+    if (req.query.download === '1') res.setHeader('Content-Disposition', `attachment; filename="${path.basename(htmlPath)}"`);
+    return res.send(fs.readFileSync(htmlPath, 'utf-8'));
+  } catch (err) {
+    return res.status(500).send(err.message);
+  }
+});
+
+app.post('/api/context-export-generate-async', (req, res) => {
+  const jobId = makeId();
+  const contextExportId = req.body?.id || req.body?.contextExportId || null;
+  const logContext = createContextExportLLMLogContext({
+    jobId,
+    contextExportId,
+    experiment: req.body?.experiment || CURRENT_EXPERIMENT,
+    figureStem: contextExportId,
+  });
+  generationJobs.set(jobId, {
+    id: jobId,
+    status: 'running',
+    type: 'context_export',
+    contextExportId,
+    llmInputLogPath: logContext.logPath,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const body = { ...(req.body || {}), llmInputLogPath: logContext.logPath };
+  runWithLLMInputLogging(logContext, () => generateContextExportItem(body))
+    .then((result) => updateGenerationJob(jobId, { status: 'done', result: { ...result, llmInputLogPath: logContext.logPath } }))
+    .catch((err) => updateGenerationJob(jobId, {
+      status: 'error',
+      error: err?.message || 'Context export generation failed.',
+      llmInputLogPath: logContext.logPath,
+      ...(err?.raw ? { raw: err.raw } : {}),
+    }));
 
   return res.status(202).json({ jobId });
 });
@@ -1048,7 +1322,7 @@ function normalizeHumanEvaluation(input) {
 // ── POST /api/evaluate-human ─────────────────────────────────────────────────
 // Persist a manual/human evaluation into the same versioned schema used by AI.
 app.post('/api/evaluate-human', (req, res) => {
-  const { id, htmlPath, raterId, criticVersion, evaluation } = req.body || {};
+  const { id, htmlPath, raterId, criticVersion, evaluation, collection } = req.body || {};
   if (!id && !htmlPath) {
     return res.status(400).json({ error: 'id or htmlPath is required.' });
   }
@@ -1069,7 +1343,7 @@ app.post('/api/evaluate-human', (req, res) => {
   const evaluatedAt = new Date().toISOString();
 
   if (id) {
-    const filePath = path.join(RESULTS_DIR, `${id}.json`);
+    const filePath = resultPathForId(id, collection);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'Result not found.' });
     }
@@ -1087,7 +1361,7 @@ app.post('/api/evaluate-human', (req, res) => {
         criticModel: evalModel,
       });
       saveRecord(updated, filePath);
-      refreshHistoryManifestSafe();
+      if (!isContextExportCollection(collection)) refreshHistoryManifestSafe();
       return res.json({
         evaluation: normalizedEvaluation,
         evalModel,
@@ -1143,10 +1417,10 @@ app.post('/api/evaluate-human', (req, res) => {
 // ── POST /api/evaluate ────────────────────────────────────────────────────────
 // User-triggered evaluation endpoint. Routes through evaluator.js (external source).
 app.post('/api/evaluate', async (req, res) => {
-  const { id, evalModel, criticVersion } = req.body;
+  const { id, evalModel, criticVersion, collection } = req.body;
   if (!id) return res.status(400).json({ error: 'id is required.' });
 
-  const filePath = path.join(RESULTS_DIR, `${id}.json`);
+  const filePath = resultPathForId(id, collection);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Result not found.' });
 
   let record;
@@ -1163,7 +1437,7 @@ app.post('/api/evaluate', async (req, res) => {
     }
     if (result.record && filePath) {
       saveRecord(result.record, filePath);
-      refreshHistoryManifestSafe();
+      if (!isContextExportCollection(collection)) refreshHistoryManifestSafe();
     }
     return res.json({ ...result.evaluation, criticPasses: result.passCount });
   } catch (err) {
@@ -1222,13 +1496,14 @@ app.post('/api/evaluate-batch', async (req, res) => {
 
 // ── DELETE /api/result/:id ────────────────────────────────────────────────────
 app.delete('/api/result/:id', (req, res) => {
-  const filePath = path.join(RESULTS_DIR, `${req.params.id}.json`);
+  const collection = req.query.collection;
+  const filePath = resultPathForId(req.params.id, collection);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'Result not found.' });
   }
   try {
     fs.unlinkSync(filePath);
-    refreshHistoryManifestSafe();
+    if (!isContextExportCollection(collection)) refreshHistoryManifestSafe();
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ error: err.message });

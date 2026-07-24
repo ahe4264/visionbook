@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Lightweight hover tooltip for generated 3D explainers ───────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <!-- @FIGURE_UI_BEGIN -->
+<label>BRDF Model
+  <select id="brdfType" style="font-size:11px">
+    <option>Lambertian</option>
+    <option>Glossy (Phong)</option>
+  </select>
+</label>
+<label>Incident Angle (θ<sub>i</sub>) <span id="incidentThetaVal">45°</span>
+  <input id="incidentTheta" type="range" min="10" max="80" step="5" value="45">
+</label>
+<label>Normal Tilt <span id="normalTiltVal">0°</span>
+  <input id="normalTilt" type="range" min="-30" max="30" step="5" value="0">
+</label>
+<div style="display:flex;gap:3px;align-items:center">
+  <button id="prevStep" type="button">◀</button>
+  <button id="nextStep" type="button">Step ▶</button>
+</div>
+<div id="stepTitle" style="font-weight:bold;text-shadow:0 1px 2px #fff">Lambertian Reflection</div>
+<div id="stepText" style="line-height:1.25;text-shadow:0 1px 2px #fff">In a Lambertian BRDF, light scatters broadly over the outgoing hemisphere.</div>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    // Show error overlay if module scripts fail or take too long
+    let _rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    // Timeout fallback: if nothing renders in 12s, show overlay
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    let camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // HOME view will be computed from the scene bounds so different scenes
+    // (especially tall ones) get a consistent starting zoom/angle while
+    // still allowing interactive OrbitControls.
+    const HOME_POS = new THREE.Vector3();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    let HOME_ZOOM = 0.75;
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      camera.zoom = HOME_ZOOM;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+
+    // Framing parameters
+    const FRAME_HALF_HEIGHT = d; // base frustum half-height used when computing zoom
+    const FRAME_MARGIN = 0.08;   // fraction of extra space around content
+    const MIN_ZOOM = 0.2;
+    const MAX_ZOOM = 5;
+
+    function computeSceneBounds() {
+      const box = new THREE.Box3().setFromObject(scene);
+      if (box.isEmpty()) {
+        // fallback box so empty scenes get a sensible frame
+        box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(2 * d, 2 * d, 2 * d));
+      }
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return { box, center, size };
+    }
+
+    /**
+     * setCameraView(options)
+     * - azimuthDeg: horizontal angle around Y axis, in degrees.
+     * - elevationDeg: angle above the ground/XZ plane, in degrees.
+     * - zoom: optional orthographic zoom. If omitted, derived from content bounds.
+     * - target: optional [x,y,z] camera target. If omitted, uses scene bounds center.
+     * - heightFraction: fraction of the view the content's height should occupy.
+     * This is the preferred per-figure camera API for matching the source image.
+     */
+    function setCameraView({
+      projection = 'orthographic',
+      azimuthDeg = 45,
+      elevationDeg = 35,
+      rollDeg = 0,
+      zoom = null,
+      target = null,
+      heightFraction = 0.5,
+      distanceScale = 1.2
+    } = {}) {
+      const desiredProjection = projection === 'perspective' ? 'perspective' : 'orthographic';
+      const needsPerspective = desiredProjection === 'perspective' && !camera.isPerspectiveCamera;
+      const needsOrthographic = desiredProjection === 'orthographic' && !camera.isOrthographicCamera;
+      if (needsPerspective || needsOrthographic) {
+        if (needsPerspective) {
+          camera = new THREE.PerspectiveCamera(35, aspect, 0.1, 1000);
+        } else {
+          camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 0.1, 100);
+        }
+        controls.object = camera;
+        if (window.__figverify) window.__figverify.camera = camera;
+      }
+
+      const { box, center, size } = computeSceneBounds();
+      const viewTarget = Array.isArray(target)
+        ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
+        : center;
+
+      // Position camera first so we can project the bounding box for zoom computation.
+      const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
+      const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
+      const elevation = THREE.MathUtils.degToRad(elevationDeg);
+      const cosElev = Math.cos(elevation);
+      const x = viewTarget.x + radius * Math.cos(azimuth) * cosElev;
+      const y = viewTarget.y + radius * Math.sin(elevation);
+      const z = viewTarget.z + radius * Math.sin(azimuth) * cosElev;
+      camera.position.set(x, y, z);
+
+      camera.up.set(0, 1, 0);
+      if (Number.isFinite(rollDeg) && rollDeg !== 0) {
+        const viewDir = new THREE.Vector3().subVectors(viewTarget, camera.position).normalize();
+        camera.up.applyAxisAngle(viewDir, THREE.MathUtils.degToRad(rollDeg));
+      }
+      camera.lookAt(viewTarget);
+      camera.updateMatrixWorld();
+
+      // Compute zoom from the projected screen-space extent of the bounding box.
+      // Projecting all 8 corners through the view matrix makes this correct for any
+      // camera angle — including axonometric off-axis views where size.y alone would
+      // undercount the vertical screen extent contributed by the X and Z axes.
+      let resolvedZoom;
+      if (Number.isFinite(zoom)) {
+        resolvedZoom = zoom;
+      } else {
+        const toView = camera.matrixWorldInverse;
+        const pt = new THREE.Vector3();
+        let minVY = Infinity, maxVY = -Infinity, minVX = Infinity, maxVX = -Infinity;
+        for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
+          pt.set(
+            xi ? box.max.x : box.min.x,
+            yi ? box.max.y : box.min.y,
+            zi ? box.max.z : box.min.z,
+          ).applyMatrix4(toView);
+          if (pt.y < minVY) minVY = pt.y;
+          if (pt.y > maxVY) maxVY = pt.y;
+          if (pt.x < minVX) minVX = pt.x;
+          if (pt.x > maxVX) maxVX = pt.x;
+        }
+        const projH = Math.max(maxVY - minVY, 1e-6);
+        const projW = Math.max(maxVX - minVX, 1e-6);
+        const zH = (2 * FRAME_HALF_HEIGHT * heightFraction) / projH;
+        const zW = (2 * FRAME_HALF_HEIGHT * aspect * heightFraction) / projW;
+        resolvedZoom = Math.min(zH, zW);
+        resolvedZoom = Math.min(Math.max(resolvedZoom, MIN_ZOOM), MAX_ZOOM);
+      }
+
+      camera.zoom = resolvedZoom;
+      controls.target.copy(viewTarget);
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      HOME_POS.copy(camera.position);
+      HOME_TARGET.copy(controls.target);
+      HOME_ZOOM = camera.zoom;
+
+      window.__figureCameraView = {
+        projection,
+        azimuthDeg,
+        elevationDeg,
+        rollDeg,
+        zoom: camera.zoom,
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
+    }
+
+    /**
+     * setStandardView(options)
+     * Backwards-compatible wrapper. Prefer setCameraView({ azimuthDeg, elevationDeg, ... }).
+     */
+    function setStandardView({ azimuth = Math.PI / 4, polar = Math.PI / 4, heightFraction = 0.5 } = {}) {
+      const azimuthDeg = THREE.MathUtils.radToDeg(azimuth);
+      const elevationDeg = 90 - THREE.MathUtils.radToDeg(polar);
+      setCameraView({ azimuthDeg, elevationDeg, heightFraction });
+    }
+
+    // Apply a standard view once at startup so tall/narrow scenes get a similar framing.
+    // Call this again after adding or loading scene content that changes bounds.
+    setStandardView();
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+    const _v = new THREE.Vector3();
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color) div.style.color = options.color;
+      if (options.fontSize) div.style.fontSize = options.fontSize;
+      if (options.bold) div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background = options.background;
+        div.style.padding = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      document.body.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    const _referenceDistance = 8;
+
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+
+        // Hide labels that are behind the camera or outside the normalized device
+        // coordinate cube to avoid showing offscreen labels.
+        if (_v.z > 1 || _v.z < -1 || _v.x < -1 || _v.x > 1 || _v.y < -1 || _v.y > 1) {
+          div.style.display = 'none';
+          continue;
+        }
+        div.style.display = '';
+
+        const ox = offset && offset[0] ? offset[0] : 0;
+        const oy = offset && offset[1] ? offset[1] : 0;
+        const x = (_v.x * 0.5 + 0.5) * canvas.clientWidth + ox;
+        const y = (-_v.y * 0.5 + 0.5) * canvas.clientHeight + oy;
+
+        // Compute scale differently for orthographic vs perspective cameras.
+        let scale;
+        const distance = Math.max(camera.position.distanceTo(pos), 1e-4);
+        scale = (_referenceDistance / distance) * (camera.zoom || 1);
+
+        // Clamp scale to a reasonable range to avoid extremely small/large labels.
+        scale = Math.max(0.5, Math.min(scale, 6));
+
+        div.style.left = x + 'px';
+        div.style.top = y + 'px';
+        div.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      }
+    }
+
+    /* ── Interaction explainer helpers ───────────────────────────────────── */
+    const _tooltip = document.getElementById('figTooltip');
+    const _raycaster = new THREE.Raycaster();
+    const _pointer = new THREE.Vector2();
+    const _interactiveObjects = [];
+    let _hoveredInteractive = null;
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      const pad = 12;
+      const x = Math.min(event.clientX + pad, window.innerWidth - _tooltip.offsetWidth - pad);
+      const y = Math.max(pad, event.clientY - _tooltip.offsetHeight - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    function _setPointerFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      _pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      _pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function _firstInteractiveHit(event) {
+      if (!_interactiveObjects.length) return null;
+      _setPointerFromEvent(event);
+      _raycaster.setFromCamera(_pointer, camera);
+      const hits = _raycaster.intersectObjects(_interactiveObjects.map(entry => entry.object), true);
+      for (const hit of hits) {
+        let obj = hit.object;
+        while (obj) {
+          const entry = _interactiveObjects.find(item => item.object === obj);
+          if (entry) return { ...entry, hit };
+          obj = obj.parent;
+        }
+      }
+      return null;
+    }
+
+    function registerInteractive(object, info = {}) {
+      if (!object) return object;
+      object.userData = object.userData || {};
+      object.userData.interactive = true;
+      _interactiveObjects.push({ object, info });
+      return object;
+    }
+
+    canvas.addEventListener('pointermove', (event) => {
+      moveTooltip(event);
+      const entry = _firstInteractiveHit(event);
+      if (entry) {
+        _hoveredInteractive = entry;
+        canvas.style.cursor = 'pointer';
+        showTooltip(entry.info.tooltip || entry.info.title || 'Click to explain', event);
+      } else {
+        _hoveredInteractive = null;
+        canvas.style.cursor = controls.enabled ? 'grab' : 'default';
+        hideTooltip();
+      }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      _hoveredInteractive = null;
+      canvas.style.cursor = 'default';
+      hideTooltip();
+    });
+
+    canvas.addEventListener('click', (event) => {
+      const entry = _firstInteractiveHit(event) || _hoveredInteractive;
+      if (!entry) {
+        hidePopup();
+        return;
+      }
+      const title = entry.info.title || entry.info.tooltip || 'Figure element';
+      const body = entry.info.body || entry.info.description || 'This part is interactive.';
+      showPopup(title, body);
+      if (typeof entry.info.onClick === 'function') entry.info.onClick(entry.hit, entry.object);
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hidePopup();
+        hideTooltip();
+      }
+    });
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    let _firstFrame = true;
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+      // Frame counter used by the headless verifier to prove the render loop is
+      // actually alive (not frozen by an exception thrown after the first frame).
+      window.__figFrames = (window.__figFrames || 0) + 1;
+      if (_firstFrame) { _firstFrame = false; window.__markRendered?.(); }
+    }
+    animate();
+
+    /* ── Verification hook (invisible; read by the headless verifier) ──────── */
+    // Exposes the live objects so automated checks can confirm the GPU drew
+    // something, the scene has content, and no geometry has NaN coordinates.
+    window.__figverify = { renderer, scene, camera, controls };
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      aspect = w / h;
+      if (camera.isPerspectiveCamera) {
+        camera.aspect = aspect;
+      } else {
+        camera.left = -d * aspect;
+        camera.right = d * aspect;
+      }
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }).observe(canvas);
+
+    // @FIGURE_CODE_BEGIN
+// surface plane → PlaneGeometry(8,5.2), bright lime mesh lying in XZ plane
+// black border → four thin black cylinders following the surface edges
+// origin mark → small black torus ring at ray/surface intersection
+// normal n → thick black cylinder+cone arrow from origin along tilted local normal
+// incoming ray → long yellow-to-orange cylinder+cone arrow descending from upper-left into origin
+// p vector → shorter red cylinder+cone arrow collinear with incoming direction and pointing to origin
+// q vector → highlighted thick dark-green cylinder+cone arrow along mirror/outgoing direction
+// BRDF lobe → 17 translucent green cylinder+cone arrows in a hemisphere around n
+// right-angle marker → black Line square at base of n in the local tangent-normal plane
+// labels → HTML billboards for ℓ_in(λ), p, n, q, and ℓ_out = F(ℓ_in,n,λ,p,q)
+
+document.getElementById('btnReset').style.display = 'block';
+
+scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+const state = {
+  brdfType: 'Lambertian',
+  incidentTheta: 45,
+  normalTilt: 0
+};
+
+const ui = {
+  brdfType: document.getElementById('brdfType'),
+  incidentTheta: document.getElementById('incidentTheta'),
+  incidentThetaVal: document.getElementById('incidentThetaVal'),
+  normalTilt: document.getElementById('normalTilt'),
+  normalTiltVal: document.getElementById('normalTiltVal'),
+  prevStep: document.getElementById('prevStep'),
+  nextStep: document.getElementById('nextStep'),
+  stepTitle: document.getElementById('stepTitle'),
+  stepText: document.getElementById('stepText')
+};
+
+const surfaceW = 8.0;
+const surfaceD = 5.2;
+
+const surface = new THREE.Mesh(
+  new THREE.PlaneGeometry(surfaceW, surfaceD),
+  new THREE.MeshBasicMaterial({ color: 0x7fff00, side: THREE.DoubleSide })
+);
+surface.rotation.x = -Math.PI / 2;
+surface.position.y = -0.02;
+scene.add(surface);
+registerInteractive(surface, {
+  title: 'Reflecting surface',
+  tooltip: 'BRDF surface',
+  body: 'The bright lime plane is the material surface. A BRDF describes how light arriving at one point is redistributed into outgoing directions.'
+});
+
+const yAxis = new THREE.Vector3(0, 1, 0);
+
+function cylinderBetween(start, end, radius, color) {
+  const dir = new THREE.Vector3().subVectors(end, start);
+  const len = dir.length();
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, len, 14),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  mesh.position.copy(start).add(end).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(yAxis, dir.normalize());
+  scene.add(mesh);
+  return mesh;
+}
+
+const yBorder = 0.012;
+const borderPts = [
+  new THREE.Vector3(-surfaceW / 2, yBorder, -surfaceD / 2),
+  new THREE.Vector3(surfaceW / 2, yBorder, -surfaceD / 2),
+  new THREE.Vector3(surfaceW / 2, yBorder, surfaceD / 2),
+  new THREE.Vector3(-surfaceW / 2, yBorder, surfaceD / 2)
+];
+for (let i = 0; i < 4; i++) cylinderBetween(borderPts[i], borderPts[(i + 1) % 4], 0.035, 0x090909);
+
+const originRing = new THREE.Mesh(
+  new THREE.TorusGeometry(0.14, 0.022, 12, 48),
+  new THREE.MeshBasicMaterial({ color: 0x050505 })
+);
+originRing.rotation.x = Math.PI / 2;
+originRing.position.y = 0.018;
+scene.add(originRing);
+
+function makeArrow({
+  shaftColor = 0x008000,
+  shaftColors = null,
+  coneColor = shaftColor,
+  radius = 0.025,
+  coneRadius = 0.11,
+  coneLength = 0.28,
+  opacity = 1,
+  renderOrder = 0
+} = {}) {
+  const group = new THREE.Group();
+  const colors = shaftColors || [shaftColor];
+  const shafts = colors.map((color) => {
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: opacity < 1,
+      opacity,
+      depthWrite: opacity >= 1
+    });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 18), mat);
+    shaft.renderOrder = renderOrder;
+    group.add(shaft);
+    return shaft;
+  });
+
+  const coneMat = new THREE.MeshBasicMaterial({
+    color: coneColor,
+    transparent: opacity < 1,
+    opacity,
+    depthWrite: opacity >= 1
+  });
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 28), coneMat);
+  cone.renderOrder = renderOrder;
+  group.add(cone);
+
+  group.userData.radius = radius;
+  group.userData.coneRadius = coneRadius;
+  group.userData.coneLength = coneLength;
+  group.userData.shafts = shafts;
+  group.userData.cone = cone;
+  scene.add(group);
+  return group;
+}
+
+function updateArrow(group, start, dir, length) {
+  const direction = dir.clone();
+  if (direction.lengthSq() < 1e-9) direction.set(0, 1, 0);
+  direction.normalize();
+
+  const coneLength = Math.min(group.userData.coneLength, Math.max(0.07, length * 0.38));
+  const shaftLength = Math.max(0.001, length - coneLength);
+  const quat = new THREE.Quaternion().setFromUnitVectors(yAxis, direction);
+  const shafts = group.userData.shafts;
+  const segmentLength = shaftLength / shafts.length;
+
+  shafts.forEach((shaft, i) => {
+    shaft.position.copy(start).addScaledVector(direction, segmentLength * (i + 0.5));
+    shaft.quaternion.copy(quat);
+    shaft.scale.set(group.userData.radius, segmentLength, group.userData.radius);
+  });
+
+  const cone = group.userData.cone;
+  cone.position.copy(start).addScaledVector(direction, shaftLength + coneLength / 2);
+  cone.quaternion.copy(quat);
+  cone.scale.set(group.userData.coneRadius, coneLength, group.userData.coneRadius);
+
+  group.userData.start = start.clone();
+  group.userData.dir = direction.clone();
+  group.userData.length = length;
+}
+
+function setArrowOpacity(group, opacity) {
+  const children = [...group.userData.shafts, group.userData.cone];
+  children.forEach((child) => {
+    child.material.opacity = opacity;
+    child.material.transparent = opacity < 1;
+    child.material.depthWrite = opacity >= 0.95;
+    child.material.needsUpdate = true;
+  });
+}
+
+const incomingRay = makeArrow({
+  shaftColors: [0xffeb00, 0xff9d00],
+  coneColor: 0xff3a22,
+  radius: 0.052,
+  coneRadius: 0.17,
+  coneLength: 0.42,
+  renderOrder: 4
+});
+registerInteractive(incomingRay, {
+  title: 'Incoming radiance ℓᵢₙ(λ)',
+  tooltip: 'Incoming light ray',
+  body: 'This yellow-orange ray represents incident radiance arriving at wavelength λ before it interacts with the surface.'
+});
+
+const pArrow = makeArrow({
+  shaftColor: 0xff1010,
+  coneColor: 0xff1010,
+  radius: 0.034,
+  coneRadius: 0.13,
+  coneLength: 0.30,
+  renderOrder: 5
+});
+registerInteractive(pArrow, {
+  title: 'Incoming direction p',
+  tooltip: 'p: incoming direction',
+  body: 'The vector p is the local incident direction used as an argument of the BRDF.'
+});
+
+const normalArrow = makeArrow({
+  shaftColor: 0x000000,
+  coneColor: 0x000000,
+  radius: 0.037,
+  coneRadius: 0.14,
+  coneLength: 0.30,
+  renderOrder: 7
+});
+registerInteractive(normalArrow, {
+  title: 'Surface normal n',
+  tooltip: 'n: surface normal',
+  body: 'The surface normal defines the local hemisphere into which the BRDF scatters outgoing radiance.'
+});
+
+const qArrow = makeArrow({
+  shaftColor: 0x0b7f00,
+  coneColor: 0x0b7f00,
+  radius: 0.052,
+  coneRadius: 0.19,
+  coneLength: 0.38,
+  renderOrder: 6
+});
+registerInteractive(qArrow, {
+  title: 'Outgoing direction q',
+  tooltip: 'q: outgoing direction',
+  body: 'The highlighted green vector q is one outgoing/viewing direction. In the glossy case, the lobe concentrates around the mirror-reflection direction.'
+});
+
+const scatterArrows = [];
+const scatterSpecs = [];
+[
+  { polar: 0, count: 1, phase: 0 },
+  { polar: 28, count: 8, phase: 0 },
+  { polar: 55, count: 8, phase: Math.PI / 8 }
+].forEach((ring) => {
+  for (let i = 0; i < ring.count; i++) {
+    scatterSpecs.push({
+      polar: THREE.MathUtils.degToRad(ring.polar),
+      phi: ring.count === 1 ? 0 : ring.phase + (i / ring.count) * Math.PI * 2
+    });
+  }
+});
+
+scatterSpecs.forEach(() => {
+  const a = makeArrow({
+    shaftColor: 0x2fca00,
+    coneColor: 0x36d400,
+    radius: 0.022,
+    coneRadius: 0.11,
+    coneLength: 0.24,
+    opacity: 0.52,
+    renderOrder: 2
+  });
+  scatterArrows.push(a);
+  registerInteractive(a, {
+    title: 'Scattered outgoing radiance',
+    tooltip: 'One BRDF outgoing direction',
+    body: 'The green cluster samples many possible outgoing directions. Lambertian reflection spreads them broadly; glossy reflection weights directions near the specular reflection.'
+  });
+});
+
+const angleGeom = new THREE.BufferGeometry();
+const angleLine = new THREE.Line(
+  angleGeom,
+  new THREE.LineBasicMaterial({ color: 0x000000 })
+);
+angleLine.renderOrder = 8;
+scene.add(angleLine);
+
+const labelEntries = {
+  lin: null,
+  p: null,
+  n: null,
+  q: null,
+  lout: null
+};
+
+function localFrame() {
+  const tilt = THREE.MathUtils.degToRad(state.normalTilt);
+  const n = new THREE.Vector3(Math.sin(tilt), Math.cos(tilt), 0).normalize();
+  const t = new THREE.Vector3(Math.cos(tilt), -Math.sin(tilt), 0).normalize();
+  const b = new THREE.Vector3(0, 0, 1);
+  return { n, t, b };
+}
+
+function currentDirections() {
+  const { n, t, b } = localFrame();
+  const theta = THREE.MathUtils.degToRad(state.incidentTheta);
+  const incidentTowardSurface = new THREE.Vector3()
+    .copy(t).multiplyScalar(Math.sin(theta))
+    .addScaledVector(n, -Math.cos(theta))
+    .normalize();
+  const reflected = new THREE.Vector3()
+    .copy(t).multiplyScalar(Math.sin(theta))
+    .addScaledVector(n, Math.cos(theta))
+    .normalize();
+  return { n, t, b, incidentTowardSurface, reflected };
+}
+
+function moveLabel(entry, pos) {
+  if (entry) entry.pos.copy(pos);
+}
+
+function updateLabelPositions(positions) {
+  moveLabel(labelEntries.lin, positions.lin);
+  moveLabel(labelEntries.p, positions.p);
+  moveLabel(labelEntries.n, positions.n);
+  moveLabel(labelEntries.q, positions.q);
+  moveLabel(labelEntries.lout, positions.lout);
+}
+
+function updateScene() {
+  state.brdfType = ui.brdfType.value;
+  state.incidentTheta = Number(ui.incidentTheta.value);
+  state.normalTilt = Number(ui.normalTilt.value);
+
+  ui.incidentThetaVal.textContent = `${state.incidentTheta}°`;
+  ui.normalTiltVal.textContent = `${state.normalTilt}°`;
+
+  const { n, t, b, incidentTowardSurface, reflected } = currentDirections();
+  const origin = new THREE.Vector3(0, 0.025, 0);
+
+  const incomingStart = incidentTowardSurface.clone().multiplyScalar(-4.8).add(origin);
+  updateArrow(incomingRay, incomingStart, incidentTowardSurface, incomingStart.distanceTo(origin) - 0.03);
+
+  const pStart = incidentTowardSurface.clone().multiplyScalar(-1.28).add(origin);
+  updateArrow(pArrow, pStart, incidentTowardSurface, 1.12);
+
+  updateArrow(normalArrow, origin, n, 1.30);
+  updateArrow(qArrow, origin, reflected, 2.05);
+
+  scatterArrows.forEach((arrow, i) => {
+    const spec = scatterSpecs[i];
+    const hemiDir = new THREE.Vector3()
+      .copy(n).multiplyScalar(Math.cos(spec.polar))
+      .addScaledVector(t, Math.sin(spec.polar) * Math.cos(spec.phi))
+      .addScaledVector(b, Math.sin(spec.polar) * Math.sin(spec.phi))
+      .normalize();
+
+    let length;
+    let opacity;
+    if (state.brdfType === 'Lambertian') {
+      length = 0.72 + 0.18 * Math.cos(spec.polar);
+      opacity = 0.46;
+    } else {
+      const align = Math.max(0, hemiDir.dot(reflected));
+      const weight = Math.pow(align, 16);
+      length = 0.20 + 1.55 * weight;
+      opacity = 0.16 + 0.74 * weight;
+    }
+
+    updateArrow(arrow, origin, hemiDir, length);
+    setArrowOpacity(arrow, opacity);
+  });
+
+  const s = 0.30;
+  angleGeom.setFromPoints([
+    origin.clone().addScaledVector(t, s),
+    origin.clone().addScaledVector(t, s).addScaledVector(n, s),
+    origin.clone().addScaledVector(n, s),
+    origin.clone()
+  ]);
+  angleGeom.computeBoundingSphere();
+
+  updateLabelPositions({
+    lin: incomingStart.clone().lerp(origin, 0.30).add(new THREE.Vector3(0.05, 0.52, 0.12)),
+    p: pStart.clone().lerp(origin, 0.45).add(new THREE.Vector3(-0.30, 0.22, -0.04)),
+    n: origin.clone().addScaledVector(n, 1.02).add(new THREE.Vector3(-0.18, 0.14, 0.02)),
+    q: origin.clone().addScaledVector(reflected, 1.12).add(new THREE.Vector3(0.18, 0.10, 0.02)),
+    lout: origin.clone().addScaledVector(reflected, 2.08).add(new THREE.Vector3(1.05, 0.70, 0.12))
+  });
+}
+
+ui.brdfType.addEventListener('change', updateScene);
+ui.incidentTheta.addEventListener('input', updateScene);
+ui.normalTilt.addEventListener('input', updateScene);
+
+const steps = [
+  {
+    title: 'Lambertian Reflection',
+    narration: 'In a Lambertian (diffuse) BRDF, light is scattered equally in all directions. The outgoing arrows form a broad hemisphere.',
+    state: { brdfType: 'Lambertian', incidentTheta: 45, normalTilt: 0 }
+  },
+  {
+    title: 'Glossy Specular Lobe',
+    narration: 'A Glossy (Phong) BRDF concentrates scattered light into a specular lobe centered around the mirror-reflection direction.',
+    state: { brdfType: 'Glossy (Phong)', incidentTheta: 45, normalTilt: 0 }
+  },
+  {
+    title: 'Changing Light Angle',
+    narration: 'Steepening the incoming ray shifts the specular lobe to mirror the new incident angle.',
+    state: { brdfType: 'Glossy (Phong)', incidentTheta: 70, normalTilt: 0 }
+  },
+  {
+    title: 'Tilting the Surface',
+    narration: 'Tilting n rotates the local reference frame and re-orients the entire reflection pattern.',
+    state: { brdfType: 'Glossy (Phong)', incidentTheta: 45, normalTilt: -20 }
+  }
+];
+
+let currentStep = 0;
+let tweenTimer = null;
+
+function applyStepText() {
+  ui.stepTitle.textContent = steps[currentStep].title;
+  ui.stepText.textContent = steps[currentStep].narration;
+}
+
+function setControlsFromState(next) {
+  ui.brdfType.value = next.brdfType;
+  ui.incidentTheta.value = next.incidentTheta;
+  ui.normalTilt.value = next.normalTilt;
+  updateScene();
+}
+
+window.goToStep = function goToStep(index) {
+  currentStep = (index + steps.length) % steps.length;
+  const target = steps[currentStep].state;
+  const start = {
+    brdfType: ui.brdfType.value,
+    incidentTheta: Number(ui.incidentTheta.value),
+    normalTilt: Number(ui.normalTilt.value)
+  };
+
+  applyStepText();
+  if (tweenTimer) clearInterval(tweenTimer);
+  ui.brdfType.value = target.brdfType;
+
+  const t0 = performance.now();
+  const duration = 540;
+  tweenTimer = setInterval(() => {
+    const a = Math.min(1, (performance.now() - t0) / duration);
+    const ease = a * a * (3 - 2 * a);
+    ui.incidentTheta.value = Math.round((start.incidentTheta + (target.incidentTheta - start.incidentTheta) * ease) / 5) * 5;
+    ui.normalTilt.value = Math.round((start.normalTilt + (target.normalTilt - start.normalTilt) * ease) / 5) * 5;
+    updateScene();
+
+    if (a >= 1) {
+      clearInterval(tweenTimer);
+      tweenTimer = null;
+      setControlsFromState(target);
+    }
+  }, 16);
+};
+
+ui.prevStep.addEventListener('click', () => window.goToStep(currentStep - 1));
+ui.nextStep.addEventListener('click', () => window.goToStep(currentStep + 1));
+
+updateScene();
+
+setCameraView({
+  projection: 'orthographic',
+  azimuthDeg: 35,
+  elevationDeg: 25,
+  rollDeg: 0,
+  heightFraction: 0.82
+});
+
+labelEntries.lin = addLabel(
+  '<span style="font-family:serif;font-style:italic">&#8467;<sub>in</sub>(&lambda;)</span>',
+  new THREE.Vector3(),
+  { fontSize: '35px', color: '#111', offset: [0, -5] }
+);
+labelEntries.p = addLabel(
+  '<span style="font-family:serif;font-weight:bold">p</span>',
+  new THREE.Vector3(),
+  { fontSize: '35px', color: '#050505', bold: true, offset: [-4, 0] }
+);
+labelEntries.n = addLabel(
+  '<span style="font-family:serif;font-weight:bold">n</span>',
+  new THREE.Vector3(),
+  { fontSize: '35px', color: '#050505', bold: true, offset: [-2, -2] }
+);
+labelEntries.q = addLabel(
+  '<span style="font-family:serif;font-weight:bold">q</span>',
+  new THREE.Vector3(),
+  { fontSize: '35px', color: '#050505', bold: true, offset: [4, 0] }
+);
+labelEntries.lout = addLabel(
+  '<span style="font-family:serif;font-style:italic">&#8467;<sub>out</sub> = F(&#8467;<sub>in</sub>, n, &lambda;, p, q)</span>',
+  new THREE.Vector3(),
+  { fontSize: '31px', color: '#111', offset: [10, -8] }
+);
+
+applyStepText();
+updateScene();
+// @FIGURE_CODE_END
+
+  </script>
+</body>
+
+</html>
