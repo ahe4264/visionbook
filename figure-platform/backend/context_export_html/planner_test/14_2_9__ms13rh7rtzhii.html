@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: absolute;
+      inset: 0;
+      transition: top 0.16s ease;
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<label><input id="integrationTypeInput" type="checkbox" onchange="toggle_integrationType(this.checked)"> Type II horizontal slices</label>
+<label>y_left(x) = <input id="y_leftInput" value="-x + 1" style="width:86px"></label>
+<label>y_right(x) = <input id="y_rightInput" value="x + 1" style="width:86px"></label>
+<span id="demoNarration" style="margin:0;font-size:10px;max-width:180px">In Type I integration, we slice vertically. The lower boundary changes formula at x = 0, so the region splits into R1 and R2.</span>
+<span><button onclick="prevStep()">◀</button> <span id="stepLabel">1/3</span> <button onclick="nextStep()">▶</button></span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    new ResizeObserver(function () {
+      var rect = document.getElementById('container').getBoundingClientRect();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var container = document.getElementById('container');
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: container.clientWidth || 900,
+        height: container.clientHeight || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({ color: opts.fill || '#7fb3ff',
+                    opacity: (opts.opacity == null) ? 0.45 : opts.opacity });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({ color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                        linecap: 'round', linejoin: 'round' });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+setPlotFrame({
+  xDomain: [-3.45, 3.45],
+  yDomain: [-0.66, 4.45],
+  margin: 16,
+  draw: draw
+});
+
+var leftSrc = '-x + 1';
+var rightSrc = 'x + 1';
+var leftFn = compileExpr(leftSrc, ['x']);
+var rightFn = compileExpr(rightSrc, ['x']);
+var integrationMode = 'I';
+var currentStep = 0;
+
+var steps = [
+  {
+    narration: 'In Type I integration, we slice vertically. Looking left to right, the lower boundary changes formula at x = 0, forcing two integrals: R1 and R2.',
+    state: { integrationType: 'Type I (Vertical Slices)' }
+  },
+  {
+    narration: 'Try editing the boundary equations. The shaded regions and vertical sample strips resample from your functions, so the limits follow the boundary formulas.',
+    state: { integrationType: 'Type I (Vertical Slices)' }
+  },
+  {
+    narration: 'Switch to Type II. Horizontal slices cross the whole region at once, replacing two vertical-slice integrals with one horizontal-slice integral.',
+    state: { integrationType: 'Type II (Horizontal Slices)' }
+  }
+];
+
+function fmt(v) {
+  if (!isFinite(v)) return '?';
+  if (Math.abs(v - Math.round(v)) < 0.015) return String(Math.round(v));
+  return String(Math.round(v * 100) / 100);
+}
+
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function topCross(fn, a, b, preferRight) {
+  var roots = [];
+  var prevX = a, prevY = fn(a) - 3;
+  if (Math.abs(prevY) < 1e-8) roots.push(a);
+  for (var i = 1; i <= 160; i++) {
+    var x = a + (b - a) * i / 160;
+    var y = fn(x) - 3;
+    if (isFinite(prevY) && isFinite(y)) {
+      if (Math.abs(y) < 1e-8) roots.push(x);
+      if (prevY * y < 0) {
+        var r = findRoot(function (t) { return fn(t) - 3; }, prevX, x, 1e-7);
+        if (r !== null) roots.push(r);
+      }
+    }
+    prevX = x;
+    prevY = y;
+  }
+  if (!roots.length) {
+    if (preferRight) return fn(b) <= 3 ? b : a;
+    return fn(a) <= 3 ? a : b;
+  }
+  roots.sort(function (p, q) { return p - q; });
+  return preferRight ? roots[roots.length - 1] : roots[0];
+}
+
+function solveXForY(fn, a, b, yTarget, preferRight) {
+  var roots = [];
+  var prevX = a, prevY = fn(a) - yTarget;
+  for (var i = 1; i <= 180; i++) {
+    var x = a + (b - a) * i / 180;
+    var y = fn(x) - yTarget;
+    if (isFinite(prevY) && isFinite(y)) {
+      if (Math.abs(y) < 1e-7) roots.push(x);
+      if (prevY * y < 0) {
+        var r = findRoot(function (t) { return fn(t) - yTarget; }, prevX, x, 1e-7);
+        if (r !== null) roots.push(r);
+      }
+    }
+    prevX = x;
+    prevY = y;
+  }
+  if (!roots.length) return null;
+  roots.sort(function (p, q) { return p - q; });
+  return preferRight ? roots[roots.length - 1] : roots[0];
+}
+
+function addHaloText(txt, x, y, size, anchor, italic) {
+  var t = draw.text(txt)
+    .font({
+      family: 'Georgia, "Times New Roman", serif',
+      size: size,
+      anchor: anchor || 'middle',
+      style: italic === false ? 'normal' : 'italic'
+    })
+    .fill('#231f20')
+    .attr({
+      'paint-order': 'stroke',
+      stroke: '#ffffff',
+      'stroke-width': Math.max(3, size * 0.08),
+      'stroke-linejoin': 'round'
+    });
+  t.center(x, y);
+  return t;
+}
+
+function polyFromBoundary(fn, a, b, n) {
+  var top = [], bottom = [];
+  for (var i = 0; i <= n; i++) {
+    var x = a + (b - a) * i / n;
+    var y = fn(x);
+    if (isFinite(y)) {
+      y = Math.min(y, 3);
+      top.push([plotX(x), plotY(3)]);
+      bottom.push([plotX(x), plotY(y)]);
+    }
+  }
+  bottom.reverse();
+  return top.concat(bottom);
+}
+
+function boundaryPoints(fn, a, b, n) {
+  var pts = [];
+  for (var i = 0; i <= n; i++) {
+    var x = a + (b - a) * i / n;
+    var y = fn(x);
+    if (isFinite(y)) pts.push([plotX(x), plotY(y)]);
+  }
+  return pts;
+}
+
+function pointsAttr(pts) {
+  return pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+}
+
+function addInteractive(el, tip, title, body) {
+  el.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip(tip, e); })
+    .on('mouseleave', function () { hideTooltip(); })
+    .on('click', function () { showPopup(title, body); });
+  return el;
+}
+
+function drawArrowLine(x1, y1, x2, y2, color, width, both) {
+  var line = draw.line(x1, y1, x2, y2).stroke({ color: color, width: width, linecap: 'round' });
+  var ang = Math.atan2(y2 - y1, x2 - x1);
+  var len = 13, wid = 7;
+  function head(x, y, a) {
+    var p1 = [x, y];
+    var p2 = [x - len * Math.cos(a) + wid * Math.sin(a), y - len * Math.sin(a) - wid * Math.cos(a)];
+    var p3 = [x - len * Math.cos(a) - wid * Math.sin(a), y - len * Math.sin(a) + wid * Math.cos(a)];
+    draw.polygon([p1, p2, p3]).fill(color).stroke('none');
+  }
+  head(x2, y2, ang);
+  if (both) head(x1, y1, ang + Math.PI);
+  return line;
+}
+
+function redraw() {
+  draw.clear();
+
+  var w = _plotFrame.width, h = _plotFrame.height;
+  var sw = Math.max(2.3, Math.min(w, h) / 190);
+  var blue = '#26a9df';
+  var axis = '#231f20';
+  var red = '#ef4c5a';
+
+  var xL = topCross(leftFn, -3, 0, true);
+  var xR = topCross(rightFn, 0, 3, false);
+  xL = clamp(xL, -3, 0);
+  xR = clamp(xR, 0, 3);
+
+  if (integrationMode === 'I') {
+    var leftPoly = draw.polygon(pointsAttr(polyFromBoundary(leftFn, xL, 0, 100)))
+      .fill({ color: '#c9e4ef', opacity: 0.95 })
+      .stroke('none');
+    var rightPoly = draw.polygon(pointsAttr(polyFromBoundary(rightFn, 0, xR, 100)))
+      .fill({ color: '#fde6b6', opacity: 0.95 })
+      .stroke('none');
+
+    addInteractive(leftPoly, 'R1: vertical slices use lower boundary y = ' + leftSrc, 'Region R1',
+      'For vertical slices on the left, y runs from the left lower boundary up to y = 3. This is one integral because the lower formula is the same throughout R1.');
+    addInteractive(rightPoly, 'R2: vertical slices use lower boundary y = ' + rightSrc, 'Region R2',
+      'For vertical slices on the right, the lower boundary has a different formula. That change is why the Type I setup is split into two integrals.');
+  } else {
+    var wholePts = polyFromBoundary(leftFn, xL, 0, 100).slice(0, 101)
+      .concat(boundaryPoints(rightFn, 0, xR, 100).reverse());
+    var wholePoly = draw.polygon(pointsAttr(wholePts))
+      .fill({ color: '#d9c7f2', opacity: 0.82 })
+      .stroke('none');
+    addInteractive(wholePoly, 'Type II view: one horizontal strip spans the full region.', 'Type II shortcut',
+      'A horizontal slice enters at the left boundary and exits at the right boundary without changing formulas at x = 0. For the textbook triangle this gives one integral instead of two.');
+  }
+
+  draw.line(plotX(xL), plotY(3), plotX(xR), plotY(3))
+    .stroke({ color: blue, width: sw * 1.9, linecap: 'butt' });
+
+  var lPts = boundaryPoints(leftFn, xL, 0, 120);
+  var rPts = boundaryPoints(rightFn, 0, xR, 120);
+  var leftLine = draw.polyline(pointsAttr(lPts)).fill('none')
+    .stroke({ color: blue, width: sw * 1.9, linecap: 'round', linejoin: 'round' });
+  var rightLine = draw.polyline(pointsAttr(rPts)).fill('none')
+    .stroke({ color: blue, width: sw * 1.9, linecap: 'round', linejoin: 'round' });
+
+  addInteractive(leftLine, 'Left lower boundary: y = ' + leftSrc, 'Left boundary',
+    'This formula supplies the lower limit for vertical slices in R1. Editing it changes the shape and the left integral limits.');
+  addInteractive(rightLine, 'Right lower boundary: y = ' + rightSrc, 'Right boundary',
+    'This formula supplies the lower limit for vertical slices in R2. Since it differs from the left formula, Type I integration must split.');
+
+  if (integrationMode === 'I') {
+    var xs1 = clamp((xL + 0) * 0.47, xL + 0.12, -0.12);
+    var xs2 = clamp(xR * 0.48, 0.12, xR - 0.12);
+    var y1 = Math.min(leftFn(xs1), 3), y2 = Math.min(rightFn(xs2), 3);
+    var strip1 = draw.line(plotX(xs1), plotY(y1), plotX(xs1), plotY(3))
+      .stroke({ color: red, width: sw * 1.35, linecap: 'butt' });
+    var strip2 = draw.line(plotX(xs2), plotY(y2), plotX(xs2), plotY(3))
+      .stroke({ color: red, width: sw * 1.35, linecap: 'butt' });
+    addInteractive(strip1, 'A vertical strip in R1: ' + leftSrc + ' ≤ y ≤ 3.', 'Vertical slice in R1',
+      'This slice has lower limit y = ' + leftSrc + ' and upper limit y = 3. Its x-values stay in the left subregion.');
+    addInteractive(strip2, 'A vertical strip in R2: ' + rightSrc + ' ≤ y ≤ 3.', 'Vertical slice in R2',
+      'This slice has lower limit y = ' + rightSrc + ' and upper limit y = 3. Because that formula is different, it becomes a second integral.');
+  } else {
+    var yh = 2.34;
+    var hxL = solveXForY(leftFn, xL, 0, yh, true);
+    var hxR = solveXForY(rightFn, 0, xR, yh, false);
+    if (hxL === null) hxL = -(yh - 1);
+    if (hxR === null) hxR = yh - 1;
+    var strip = draw.line(plotX(hxL), plotY(yh), plotX(hxR), plotY(yh))
+      .stroke({ color: '#2476d8', width: sw * 2.2, linecap: 'round' });
+    draw.circle(7).center(plotX(hxL), plotY(yh)).fill('#2476d8');
+    draw.circle(7).center(plotX(hxR), plotY(yh)).fill('#2476d8');
+    drawArrowLine(plotX(hxL), plotY(yh), plotX(hxR), plotY(yh), '#2476d8', 0.1, true);
+    addInteractive(strip, 'A horizontal strip crosses the entire region in one piece.', 'Horizontal Type II slice',
+      'For the original triangle, a horizontal slice has x from −(y − 1) to y − 1 while y goes from 1 to 3. This avoids the R1/R2 split.');
+  }
+
+  drawArrowLine(plotX(-3.35), plotY(0), plotX(3.35), plotY(0), axis, sw * 0.95, false);
+  drawArrowLine(plotX(0), plotY(-0.62), plotX(0), plotY(4.33), axis, sw * 0.95, false);
+
+  draw.line(plotX(-2), plotY(0), plotX(-2), plotY(0.18)).stroke({ color: axis, width: sw * 0.8 });
+  draw.line(plotX(2), plotY(0), plotX(2), plotY(0.18)).stroke({ color: axis, width: sw * 0.8 });
+
+  addHaloText('y = 3', plotX(-0.92), plotY(3.37), 48, 'middle', false);
+  addHaloText('y = 3', plotX(0.98), plotY(3.37), 48, 'middle', false);
+  addHaloText('y = −x + 1', plotX(-2.62), plotY(1.92), 44, 'middle', true);
+  addHaloText('y = x + 1', plotX(2.27), plotY(1.94), 44, 'middle', true);
+
+  if (integrationMode === 'I') {
+    addHaloText('R₁', plotX(-0.50), plotY(2.50), 48, 'middle', true);
+    addHaloText('R₂', plotX(0.52), plotY(2.50), 48, 'middle', true);
+  }
+
+  addHaloText('−2', plotX(-2.12), plotY(-0.36), 47, 'middle', false);
+  addHaloText('2', plotX(2.00), plotY(-0.36), 47, 'middle', false);
+  addHaloText('0', plotX(0.22), plotY(-0.36), 47, 'middle', false);
+  addHaloText('x', plotX(3.35), plotY(0.34), 43, 'middle', true);
+  addHaloText('y', plotX(0.32), plotY(4.22), 43, 'middle', true);
+
+  var textLines;
+  if (integrationMode === 'I') {
+    textLines = [
+      'Type I:  ∫' + fmt(xL) + '⁰ ∫(' + leftSrc + ')³ f(x,y) dy dx',
+      '       + ∫₀' + fmt(xR) + ' ∫(' + rightSrc + ')³ f(x,y) dy dx'
+    ];
+  } else {
+    textLines = [
+      'Type II:  ∫₁³ ∫₋(y−1)ʸ⁻¹ f(x,y) dx dy',
+      'one horizontal-slice integral'
+    ];
+  }
+  var integralText = draw.text(function (add) {
+    for (var i = 0; i < textLines.length; i++) {
+      if (i) add.tspan(textLines[i]).newLine();
+      else add.tspan(textLines[i]);
+    }
+  }).font({ family: 'Georgia, "Times New Roman", serif', size: 16, anchor: 'start' })
+    .fill('#231f20')
+    .move(plotX(-3.32), plotY(-0.52));
+  var bb = integralText.bbox();
+  draw.rect(bb.width + 12, bb.height + 8).move(bb.x - 6, bb.y - 4)
+    .fill({ color: '#ffffff', opacity: 0.82 }).stroke({ color: '#dddddd', width: 0.8 }).back();
+}
+
+function toggle_integrationType(on) {
+  integrationMode = on ? 'II' : 'I';
+  redraw();
+}
+
+function prevStep() {
+  currentStep = (currentStep + steps.length - 1) % steps.length;
+  applyStep(currentStep);
+}
+
+function nextStep() {
+  currentStep = (currentStep + 1) % steps.length;
+  applyStep(currentStep);
+}
+
+function applyStep(i) {
+  currentStep = i;
+  var step = steps[i];
+  var isTypeII = step.state.integrationType === 'Type II (Horizontal Slices)';
+  var input = document.getElementById('integrationTypeInput');
+  input.checked = isTypeII;
+  toggle_integrationType(isTypeII);
+  document.getElementById('demoNarration').textContent = step.narration;
+  document.getElementById('stepLabel').textContent = (i + 1) + '/' + steps.length;
+}
+
+bindEquationInput('y_leftInput', function (fn, src) {
+  leftFn = fn;
+  leftSrc = src;
+  redraw();
+}, { variables: ['x'] });
+
+bindEquationInput('y_rightInput', function (fn, src) {
+  rightFn = fn;
+  rightSrc = src;
+  redraw();
+}, { variables: ['x'] });
+
+document.addEventListener('fig-resize', function () {
+  redraw();
+});
+
+applyStep(0);
+window.__markRendered();
+// @FIGURE_CODE_END
+  </script>
+</body>
+
+</html>

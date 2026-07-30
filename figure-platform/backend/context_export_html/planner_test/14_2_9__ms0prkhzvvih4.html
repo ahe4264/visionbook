@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: absolute;
+      inset: 0;
+      transition: top 0.16s ease;
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span id="demoNarration" style="margin:0;font-size:10px;max-width:180px">Integrating with vertical slices (Type I) requires splitting the triangle into sub-regions R1 and R2 at x = 0.</span><span><button onclick="prevStep()">◀</button> <span id="stepLabel">1/3</span> <button onclick="nextStep()">▶</button></span><label><input id="integrationTypeInput" type="checkbox" onchange="toggle_integrationType(this.checked)"> Type II horizontal slices</label><label>Left boundary y = <input id="f1Input" value="-x + 1" oninput="updateBoundaryEquations()" style="width:86px"></label><label>Right boundary y = <input id="f2Input" value="x + 1" oninput="updateBoundaryEquations()" style="width:86px"></label><span id="integralText" style="font-size:10px;max-width:180px;text-shadow:0 1px 2px #fff"></span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    new ResizeObserver(function () {
+      var rect = document.getElementById('container').getBoundingClientRect();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+var container = document.getElementById('container');
+var draw = SVG().addTo(container).size('100%', '100%');
+var W = 600, H = 450;
+draw.viewbox(0, 0, W, H);
+
+var X0 = 294, Y0 = 385, S = 84;
+var BLUE = '#2fa8df';
+var LEFT_FILL = '#c8e1ec';
+var RIGHT_FILL = '#fde8b8';
+var TYPE2_FILL = '#d9ead3';
+var RED = '#ef4f63';
+var AXIS = '#231f20';
+
+function X(x) { return X0 + S * x; }
+function Y(y) { return Y0 - S * y; }
+function fmt(n) {
+  if (!isFinite(n)) return '?';
+  if (Math.abs(n) < 0.0005) n = 0;
+  var s = (Math.round(n * 100) / 100).toString();
+  return s.replace('-', '−');
+}
+function txt(str, x, y, size, anchor) {
+  return draw.text(str).font({
+    family: 'Times New Roman, Times, serif',
+    size: size,
+    style: 'italic',
+    anchor: anchor || 'middle'
+  }).attr({
+    x: x,
+    y: y,
+    fill: AXIS,
+    'paint-order': 'stroke',
+    stroke: '#fff',
+    'stroke-width': 3,
+    'stroke-linejoin': 'round'
+  });
+}
+
+var fillG = draw.group();
+var lineG = draw.group();
+var axisG = draw.group();
+var labelG = draw.group();
+
+var regionType2 = fillG.polygon('').fill(TYPE2_FILL).opacity(0).stroke('none');
+var regionLeft = fillG.polygon('').fill(LEFT_FILL).opacity(0.95).stroke('none');
+var regionRight = fillG.polygon('').fill(RIGHT_FILL).opacity(0.95).stroke('none');
+
+var topLine = lineG.line(0, 0, 0, 0).stroke({ color: BLUE, width: 5, linecap: 'butt', linejoin: 'round' });
+var leftLine = lineG.line(0, 0, 0, 0).stroke({ color: BLUE, width: 5, linecap: 'round', linejoin: 'round' });
+var rightLine = lineG.line(0, 0, 0, 0).stroke({ color: BLUE, width: 5, linecap: 'round', linejoin: 'round' });
+var sliceL = lineG.line(0, 0, 0, 0).stroke({ color: RED, width: 4, linecap: 'butt' });
+var sliceR = lineG.line(0, 0, 0, 0).stroke({ color: RED, width: 4, linecap: 'butt' });
+var sliceH = lineG.line(0, 0, 0, 0).stroke({ color: BLUE, width: 4, linecap: 'round' }).opacity(0);
+
+axisG.line(12, Y0, 574, Y0).stroke({ color: AXIS, width: 2.5 });
+axisG.polygon([[574, Y0 - 10], [598, Y0], [574, Y0 + 10]]).fill(AXIS);
+axisG.line(X0, 448, X0, 40).stroke({ color: AXIS, width: 2.5 });
+axisG.polygon([[X0 - 9, 40], [X0, 14], [X0 + 9, 40]]).fill(AXIS);
+axisG.line(X(-2), Y0, X(-2), Y0 - 18).stroke({ color: AXIS, width: 2 });
+axisG.line(X(2), Y0, X(2), Y0 - 18).stroke({ color: AXIS, width: 2 });
+
+txt('−2', X(-2) - 10, Y0 + 16, 35, 'middle');
+txt('0', X0 + 18, Y0 + 16, 35, 'middle');
+txt('2', X(2), Y0 + 16, 35, 'middle');
+txt('x', 586, Y0 - 40, 35, 'middle');
+txt('y', X0 + 28, 22, 35, 'middle');
+
+var labelTopL = txt('y = 3', 215, 84, 38, 'middle');
+var labelTopR = txt('y = 3', 375, 84, 38, 'middle');
+var labelLeftEq = txt('y = −x + 1', 98, 203, 34, 'middle');
+var labelRightEq = txt('y = x + 1', 488, 203, 34, 'middle');
+var labelR1 = txt('R₁', 252, 155, 37, 'middle');
+var labelR2 = txt('R₂', 337, 155, 37, 'middle');
+
+function addInteractivity(el, title, body, tip) {
+  el.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip(tip, e); })
+    .on('mouseleave', function () { hideTooltip(); })
+    .on('click', function () { showPopup(title, body); });
+}
+addInteractivity(regionLeft, 'Region R₁', 'With vertical Type I slices, the left half uses the lower boundary y = −x + 1. This is why the integral must be split at x = 0 in the default figure.', 'R₁: vertical slices use the left lower boundary.');
+addInteractivity(regionRight, 'Region R₂', 'With vertical Type I slices, the right half uses the lower boundary y = x + 1. The lower formula changes at the center, producing a second integral.', 'R₂: vertical slices use the right lower boundary.');
+addInteractivity(regionType2, 'Unified Type II region', 'Horizontal slices run continuously across the whole triangle. Switching order describes the same region with one set of horizontal limits instead of two vertical pieces.', 'Type II: one horizontal slice spans the entire region.');
+addInteractivity(sliceL, 'A Type I slice in R₁', 'A vertical slice has y-limits from the lower line up to y = 3. On the left, the lower line is y = −x + 1.', 'Vertical slice: bottom to top.');
+addInteractivity(sliceR, 'A Type I slice in R₂', 'A vertical slice has y-limits from the lower line up to y = 3. On the right, the lower line is y = x + 1.', 'Vertical slice: bottom to top.');
+addInteractivity(sliceH, 'A Type II slice', 'A horizontal slice has x-limits from the left boundary to the right boundary. For the default triangle, that is x = 1 − y to x = y − 1.', 'Horizontal slice: left boundary to right boundary.');
+
+var state = {
+  typeII: false,
+  f1: '-x + 1',
+  f2: 'x + 1',
+  geom: { xL: -2, xA: 0, xR: 2, yA: 1 }
+};
+
+function compileExpr(s) {
+  var expr = String(s || '').replace(/\s+/g, '').replace(/\^/g, '**');
+  expr = expr.replace(/(^|[\+\-\*\/\(])x/g, '// @FIGURE_CODE_BEGIN1*x');
+  expr = expr.replace(/([0-9.])x/g, '// @FIGURE_CODE_BEGIN*x');
+  if (!/^[0-9xX+\-*/().\s*]+$/.test(expr)) throw new Error('Only arithmetic expressions in x are supported.');
+  return new Function('x', 'return Number(' + expr.replace(/X/g, 'x') + ');');
+}
+function rootBetween(fn, a, b) {
+  var fa = fn(a), fb = fn(b);
+  if (!isFinite(fa) || !isFinite(fb)) return null;
+  if (Math.abs(fa) < 1e-6) return a;
+  if (Math.abs(fb) < 1e-6) return b;
+  if (fa * fb > 0) return null;
+  for (var i = 0; i < 45; i++) {
+    var m = (a + b) / 2, fm = fn(m);
+    if (!isFinite(fm)) return null;
+    if (fa * fm <= 0) { b = m; fb = fm; } else { a = m; fa = fm; }
+  }
+  return (a + b) / 2;
+}
+function findRoot(fn, a, b, prefer) {
+  var best = null, bestD = Infinity, step = (b - a) / 160;
+  var xPrev = a, fPrev = fn(xPrev);
+  for (var i = 1; i <= 160; i++) {
+    var x = a + i * step, fx = fn(x);
+    if (isFinite(fPrev) && isFinite(fx) && fPrev * fx <= 0) {
+      var r = rootBetween(fn, xPrev, x);
+      if (r !== null) {
+        var d = Math.abs(r - prefer);
+        if (d < bestD) { best = r; bestD = d; }
+      }
+    }
+    xPrev = x; fPrev = fx;
+  }
+  return best;
+}
+function evaluateGeometry() {
+  try {
+    var f1 = compileExpr(state.f1), f2 = compileExpr(state.f2);
+    var xA = findRoot(function (x) { return f1(x) - f2(x); }, -3.5, 3.5, 0);
+    if (xA === null) throw new Error('No intersection');
+    var yA = f1(xA);
+    var xL = findRoot(function (x) { return f1(x) - 3; }, -3.5, Math.min(xA, 3.5), -2);
+    var xR = findRoot(function (x) { return f2(x) - 3; }, Math.max(xA, -3.5), 3.5, 2);
+    if (xL === null || xR === null || !isFinite(yA)) throw new Error('Bad boundary');
+    if (xL > xR) { var t = xL; xL = xR; xR = t; }
+    state.geom = { xL: xL, xA: xA, xR: xR, yA: yA, f1: f1, f2: f2 };
+  } catch (e) {
+    state.geom = {
+      xL: -2, xA: 0, xR: 2, yA: 1,
+      f1: function (x) { return -x + 1; },
+      f2: function (x) { return x + 1; }
+    };
+  }
+}
+function polyStr(points) {
+  return points.map(function (p) { return X(p[0]) + ',' + Y(p[1]); }).join(' ');
+}
+function updateIntegralText() {
+  var g = state.geom;
+  var el = document.getElementById('integralText');
+  if (!el) return;
+  if (state.typeII) {
+    el.textContent = 'Type II: ∫ᵧ₌' + fmt(g.yA) + '³ ∫ₓ₌left(y)ʳⁱᵍʰᵗ⁽ʸ⁾ dA';
+  } else {
+    el.textContent = 'Type I: ∫' + fmt(g.xL) + '→' + fmt(g.xA) + '∫f₁(x)→3 dA + ∫' + fmt(g.xA) + '→' + fmt(g.xR) + '∫f₂(x)→3 dA';
+  }
+}
+function redraw() {
+  evaluateGeometry();
+  var g = state.geom;
+  var xL = g.xL, xA = g.xA, xR = g.xR, yA = g.yA;
+  regionLeft.plot(polyStr([[xL, 3], [xA, yA], [xA, 3]]));
+  regionRight.plot(polyStr([[xA, 3], [xA, yA], [xR, 3]]));
+  regionType2.plot(polyStr([[xL, 3], [xA, yA], [xR, 3]]));
+  topLine.plot(X(xL), Y(3), X(xR), Y(3));
+  leftLine.plot(X(xL), Y(3), X(xA), Y(yA));
+  rightLine.plot(X(xA), Y(yA), X(xR), Y(3));
+
+  var xlSlice = (xL + xA) / 2;
+  var xrSlice = (xA + xR) / 2;
+  sliceL.plot(X(xlSlice), Y(3), X(xlSlice), Y(g.f1(xlSlice)));
+  sliceR.plot(X(xrSlice), Y(3), X(xrSlice), Y(g.f2(xrSlice)));
+
+  var yh = (3 + yA) / 2;
+  var xhL = xL + (xA - xL) * ((3 - yh) / (3 - yA));
+  var xhR = xR + (xA - xR) * ((3 - yh) / (3 - yA));
+  sliceH.plot(X(xhL), Y(yh), X(xhR), Y(yh));
+
+  regionLeft.animate(160).opacity(state.typeII ? 0 : 0.95);
+  regionRight.animate(160).opacity(state.typeII ? 0 : 0.95);
+  regionType2.animate(160).opacity(state.typeII ? 0.9 : 0);
+  sliceL.animate(160).opacity(state.typeII ? 0 : 1);
+  sliceR.animate(160).opacity(state.typeII ? 0 : 1);
+  sliceH.animate(160).opacity(state.typeII ? 1 : 0);
+
+  labelR1.animate(160).opacity(state.typeII ? 0 : 1);
+  labelR2.animate(160).opacity(state.typeII ? 0 : 1);
+  labelLeftEq.text('y = ' + state.f1.replace(/-/g, '−'));
+  labelRightEq.text('y = ' + state.f2.replace(/-/g, '−'));
+  updateIntegralText();
+}
+function toggle_integrationType(on) {
+  state.typeII = !!on;
+  redraw();
+}
+function updateBoundaryEquations() {
+  state.f1 = document.getElementById('f1Input').value || '-x + 1';
+  state.f2 = document.getElementById('f2Input').value || 'x + 1';
+  redraw();
+}
+
+var demoSteps = [
+  {
+    narration: 'Integrating with vertical slices (Type I) requires splitting the triangle into sub-regions R1 and R2 at x = 0, because the lower boundary formula abruptly changes from y = -x + 1 to y = x + 1.',
+    typeII: false
+  },
+  {
+    narration: 'Try editing the equations for the left and right boundaries. Observe how the shape of the regions and the corresponding integration limits automatically update.',
+    typeII: false
+  },
+  {
+    narration: 'Switching to horizontal slices (Type II) allows a single continuous sweep across the whole region, consolidating the problem into one double integral.',
+    typeII: true
+  }
+];
+var currentStep = 0;
+function applyStep(i) {
+  currentStep = Math.max(0, Math.min(demoSteps.length - 1, i));
+  var s = demoSteps[currentStep];
+  var narr = document.getElementById('demoNarration');
+  var lab = document.getElementById('stepLabel');
+  var chk = document.getElementById('integrationTypeInput');
+  if (narr) narr.textContent = s.narration;
+  if (lab) lab.textContent = (currentStep + 1) + '/' + demoSteps.length;
+  if (chk) chk.checked = s.typeII;
+  toggle_integrationType(s.typeII);
+}
+function prevStep() { applyStep(currentStep - 1); }
+function nextStep() { applyStep(currentStep + 1); }
+
+window.toggle_integrationType = toggle_integrationType;
+window.updateBoundaryEquations = updateBoundaryEquations;
+window.prevStep = prevStep;
+window.nextStep = nextStep;
+
+redraw();
+applyStep(0);
+window.__markRendered();
+// @FIGURE_CODE_END
+  </script>
+</body>
+
+</html>

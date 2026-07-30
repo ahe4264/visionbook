@@ -62,6 +62,12 @@ Your rationale must be comparative: explain specifically what the winner does be
 Respond ONLY with valid JSON — no explanation, no markdown:
 {"winner":"1"|"2"|"tie","confidence":0.0-1.0,"rationale":"<one sentence comparing both figures>"}`;
 
+const SHARED_PREAMBLE_2D = `You are a strict evaluator comparing two inline-interactive 2D figure implementations (SVG.js / Chart.js / Mermaid) of the same textbook figure (Figure 1 and Figure 2).
+Be critical and honest. Only call "tie" when both figures are genuinely indistinguishable on this dimension — default to picking the better one.
+Your rationale must be comparative: explain specifically what the winner does better AND what the loser does worse — not just why the winner is good in isolation.
+Respond ONLY with valid JSON — no explanation, no markdown:
+{"winner":"1"|"2"|"tie","confidence":0.0-1.0,"rationale":"<one sentence comparing both figures>"}`;
+
 const DIMENSION_PROMPTS = {
   geometry: `${SHARED_PREAMBLE}
 
@@ -101,6 +107,72 @@ You will receive the original textbook figure image, plus rendered screenshots o
 The numbered textbook lines as well as Figure 1 and Figure 2 are provided as HTML/JavaScript source code.`
 };
 
+// 2D variants. The dimension KEYS are deliberately identical — machineEval.dimensions,
+// the aggregator summary, pairwiseEvaluateConceptOnly's reconstruction, and the UI all
+// index by them. Only the prompt text differs. concept is medium-agnostic and shared.
+const DIMENSION_PROMPTS_2D = {
+  geometry: `${SHARED_PREAMBLE_2D}
+
+DIMENSION: Structural accuracy — which figure better reconstructs the 2D structure of the original.
+Evaluate: axis ranges, tick marks and gridlines, the shape and trend of the data, node-and-edge topology and counts, relative proportions and layout, and line styling (dashed vs solid, stroke weight, arrowheads, fill vs outline).
+Watch for: the wrong mark type for the concept (a scatter drawn as a connected line, a bar chart drawn as an area, a directed edge missing its arrowhead), missing series or nodes, proportions noticeably off.
+These are 2D figures: do NOT reward or penalise depth, perspective, or 3D vantage point.
+Figure 1 and Figure 2 are provided as HTML/JavaScript source code.`,
+
+  interactivity: `${SHARED_PREAMBLE_2D}
+
+DIMENSION: Interactivity and usability — which figure provides better developer-built interactions.
+CRITICAL: panning/zooming the figure does NOT count as a meaningful interaction, and a hover tooltip on its own is weak. Meaningful = sliders, toggles, buttons, demo-step players, equation inputs, or code-editor workbenches built by the developer whose handlers actually redraw the figure.
+Evaluate: number of meaningful interactions, whether they are functional, and whether they are pedagogically useful.
+Watch for: controls present in code but non-functional, handlers that never redraw, a figure that is entirely static.
+Figure 1 and Figure 2 are provided as HTML/JavaScript source code.`,
+
+  faithfulness: `${SHARED_PREAMBLE_2D}
+
+DIMENSION: Visual faithfulness — which figure's rendered output more closely matches the original textbook figure.
+Evaluate: color match, compositional similarity, proportions, overall visual resemblance at a glance.
+Judge the screenshots in their default (step-0) state — each is meant to be a drop-in replacement for the static source figure.
+Watch for: colors that don't match the original, elements present that don't appear in the original, proportions noticeably off.
+You will receive the original textbook figure image, plus rendered screenshots of Figure 1 and Figure 2.`,
+
+  labels: `${SHARED_PREAMBLE_2D}
+
+DIMENSION: Label quality — which figure has better text labels and annotations matching the original.
+Evaluate: presence of all required labels, correctness of label text, readability, size, placement, and freedom from clutter.
+2D figures are NOT screened by an automated overlap checker, so actively penalise labels that collide with each other or with the artwork, escape the plot/diagram area, are clipped at the edge, or are too small to read comfortably at inline size.
+Watch for: important annotations absent, labels not present in the original figure.
+You will receive the original textbook figure image, plus rendered screenshots of Figure 1 and Figure 2.`,
+
+  concept: DIMENSION_PROMPTS.concept,
+};
+
+const PAIRWISE_MODES = { '3d': DIMENSION_PROMPTS, '2d': DIMENSION_PROMPTS_2D };
+
+function resolvePromptSet(mode) {
+  const key = String(mode || '3d').toLowerCase();
+  if (!PAIRWISE_MODES[key]) {
+    console.warn(`[pairwise] unknown mode "${mode}" — falling back to '3d'.`);
+    return DIMENSION_PROMPTS;
+  }
+  return PAIRWISE_MODES[key];
+}
+
+/**
+ * Decide which prompt set a comparison should use, from the two result records.
+ * Keys off extra.type ('2d' is set by generate2dFigure, chapter_pipeline, and the
+ * 2D loop handler), falling back to a top-level record.type.
+ */
+function resolvePairwiseMode(recA, recB) {
+  const typeOf = rec => String(rec?.extra?.type || rec?.type || '3d').toLowerCase();
+  const a = typeOf(recA);
+  const b = typeOf(recB);
+  if (a !== b) {
+    console.warn(`[pairwise] mixed figure types in one comparison (${a} vs ${b}) — defaulting to '3d'.`);
+    return '3d';
+  }
+  return PAIRWISE_MODES[a] ? a : '3d';
+}
+
 const AGGREGATOR_PROMPT = `You receive pairwise preferences from five independent dimension agents that each compared Figure 1 vs Figure 2.
 Synthesize a final judgment. Up-weight agents with higher confidence.
 Only call "tie" if the dimension votes are genuinely split with no clear overall winner.
@@ -110,8 +182,9 @@ Respond ONLY with valid JSON — no explanation, no markdown:
 
 // ── Single dimension agent call ────────────────────────────────────────────────
 
-async function callDimensionAgent(dimension, { htmlA, htmlB, thumbA, thumbB, sourceImage }, evalModel, numberedQmd = null) {
-  const systemPrompt = DIMENSION_PROMPTS[dimension];
+// `mode` is appended LAST so the existing 4-arg concept call site keeps working.
+async function callDimensionAgent(dimension, { htmlA, htmlB, thumbA, thumbB, sourceImage }, evalModel, numberedQmd = null, mode = '3d') {
+  const systemPrompt = resolvePromptSet(mode)[dimension];
   const usesImages = dimension === 'faithfulness' || dimension === 'labels';
 
   const userContent = [];
@@ -187,7 +260,7 @@ async function callAggregator(dimensionResults, evalModel) {
  * @param {string} [opts.evalModel] - model ID from MODEL_REGISTRY
  * @returns {Promise<{dimensions, aggregator, evalModel, evaluatedAt}>}
  */
-async function pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel, qmdContent = null, chapterName = null }) {
+async function pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel, qmdContent = null, chapterName = null, mode = '3d' }) {
   const usedModel = evalModel || PAIRWISE_DEFAULT_MODEL;
 
   let resolvedQmd = qmdContent;
@@ -207,11 +280,11 @@ async function pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, th
 
   // 5 parallel dimension agents
   const [geometry, interactivity, faithfulness, labels, concept] = await Promise.all([
-    callDimensionAgent('geometry', inputs, usedModel),
-    callDimensionAgent('interactivity', inputs, usedModel),
-    callDimensionAgent('faithfulness', inputs, usedModel),
-    callDimensionAgent('labels', inputs, usedModel),
-    callDimensionAgent('concept', inputs, usedModel, numberedQmd),
+    callDimensionAgent('geometry', inputs, usedModel, null, mode),
+    callDimensionAgent('interactivity', inputs, usedModel, null, mode),
+    callDimensionAgent('faithfulness', inputs, usedModel, null, mode),
+    callDimensionAgent('labels', inputs, usedModel, null, mode),
+    callDimensionAgent('concept', inputs, usedModel, numberedQmd, mode),
   ]);
 
   // Resolve 1/2 → setup names; remap figure_1/figure_2 fields in concept richer output
@@ -253,6 +326,8 @@ async function pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, th
   return {
     figure1Setup: figure1,
     figure2Setup: figure2,
+    // Persisted so a later concept-only re-run reuses the same prompt set.
+    mode,
     dimensions: resolvedDimensions,
     aggregator: {
       winner: resolveWinner(aggRaw.winner, figure1, figure2),
@@ -289,6 +364,9 @@ async function pairwiseEvaluateConceptOnly({ htmlA, setupA, htmlB, setupB, thumb
   if (!figure1Setup || !figure2Setup) throw new Error('pairwiseEvaluateConceptOnly: existingMachineEval is missing figure1Setup/figure2Setup — cannot restore position mapping');
   const figure1 = figure1Setup;
   const figure2 = figure2Setup;
+  // Restore the prompt set too — without this a concept re-run on a 2D pair would
+  // silently use 3D prompts. Records written before this field existed are 3D.
+  const resolvedMode = existingMachineEval.mode || '3d';
   const aIsOne = figure1 === setupA;
   const inputs = {
     htmlA: aIsOne ? htmlA : htmlB,
@@ -299,7 +377,7 @@ async function pairwiseEvaluateConceptOnly({ htmlA, setupA, htmlB, setupB, thumb
   };
 
   // Run only the concept agent
-  const conceptRaw = await callDimensionAgent('concept', inputs, usedModel, numberedQmd);
+  const conceptRaw = await callDimensionAgent('concept', inputs, usedModel, numberedQmd, resolvedMode);
 
   // Resolve concept result to setup names
   const resolvedConcept = {
@@ -337,6 +415,7 @@ async function pairwiseEvaluateConceptOnly({ htmlA, setupA, htmlB, setupB, thumb
   return {
     figure1Setup: figure1,
     figure2Setup: figure2,
+    mode: resolvedMode,
     dimensions: {
       ...existingDims,
       concept: resolvedConcept,
@@ -416,6 +495,7 @@ function clearAllMachineEvals(setupA, setupB) {
 module.exports = {
   pairwiseEvaluateFigure,
   pairwiseEvaluateConceptOnly,
+  resolvePairwiseMode,
   loadPairwiseResult,
   savePairwiseResult,
   loadAllPairwiseResults,

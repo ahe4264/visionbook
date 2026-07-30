@@ -451,14 +451,15 @@ function apiFetch(input, init = {}) {
   });
 }
 
-async function runGenerationJob2d(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
-  const createRes = await apiFetch('/api/generate-2d-async', {
+// Run iterative loop-based generation (2D). Polls the async job until completion.
+async function runGenerationLoop2d(payload, { pollMs = 2000, maxPolls = 600 } = {}) {
+  const createRes = await apiFetch('/api/generate-2d-loop-async', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   const createData = await createRes.json();
-  if (!createRes.ok) throw new Error(createData.error || 'Failed to start 2D generation.');
+  if (!createRes.ok) throw new Error(createData.error || 'Failed to start 2D loop generation.');
 
   let transientPollFailures = 0;
   for (let pollCount = 0; pollCount < maxPolls; pollCount += 1) {
@@ -469,13 +470,13 @@ async function runGenerationJob2d(payload, { pollMs = 2000, maxPolls = 600 } = {
       if (!statusRes.ok) throw new Error(statusData.error || 'Failed to check status.');
       transientPollFailures = 0;
       if (statusData.status === 'done') return statusData.result;
-      if (statusData.status === 'error') throw new Error(statusData.error || '2D generation failed.');
+      if (statusData.status === 'error') throw new Error(statusData.error || '2D loop generation failed.');
     } catch (err) {
       transientPollFailures += 1;
       if (transientPollFailures >= 5) throw new Error(err.message || 'Connection error while checking status.');
     }
   }
-  throw new Error('2D generation timed out.');
+  throw new Error('2D loop generation timed out.');
 }
 
 // Run iterative loop-based generation (3D). Polls the async job until completion.
@@ -705,10 +706,10 @@ export default function App() {
     setLoading(true);
     try {
       const is2d = figureType === '2d';
-      // For 3D (non-2d) generations use the iterative loop endpoint to preserve attempts
-      const jobFn = is2d ? runGenerationJob2d : runGenerationLoop;
+      // Both tracks now use their iterative loop endpoint, so attempts are preserved either way.
+      const jobFn = is2d ? runGenerationLoop2d : runGenerationLoop;
       const payload = is2d
-        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, experiment: selectedExperiment || undefined }
+        ? { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: 'benchmark', experiment: selectedExperiment || undefined, fewShot }
         : { base64: image.base64, mediaType: image.mediaType, filename: image.filename, model: selectedModel || undefined, plannerModel: selectedPlannerModel || undefined, evalModel: selectedCriticModel || undefined, criticVersion: 'benchmark', criticPasses: 1, experiment: selectedExperiment || undefined, fewShot };
       const data = await jobFn(payload);
       const generatedEvaluationResults = data.evaluationResults || {};
@@ -1205,13 +1206,18 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
       try {
         const is2dCandidate = candidate.type === '2d';
         const loopResult = is2dCandidate
-          ? await runGenerationJob2d({
+          ? await runGenerationLoop2d({
             base64: candidate.base64,
             mediaType: candidate.mediaType,
             filename: candidate.filename,
+            figureStem: candidate.stem,
+            chapterName: candidate.chapterName,
             model: selectedModel || undefined,
             plannerModel: selectedPlannerModel || undefined,
+            evalModel: selectedCriticModel || undefined,
+            criticVersion: 'benchmark',
             experiment: selectedExperiment || undefined,
+            fewShot,
           })
           : await runGenerationLoop({
             base64: candidate.base64,
@@ -1346,13 +1352,18 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
       try {
         const is2d = item.type === '2d';
         const loopResult = is2d
-          ? await runGenerationJob2d({
+          ? await runGenerationLoop2d({
             base64: item.base64,
             mediaType: item.mediaType,
             filename: item.filename,
+            figureStem: item.stem,
+            chapterName: item.chapterName,
             model: selectedModel || undefined,
             plannerModel: selectedPlannerModel || undefined,
+            evalModel: selectedCriticModel || undefined,
+            criticVersion: 'benchmark',
             experiment: selectedExperiment || undefined,
+            fewShot,
           })
           : await runGenerationLoop({
             base64: item.base64,
@@ -1501,14 +1512,18 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
       try {
         const is2d = candidate.figureType === '2d';
         const loopResult = is2d
-          ? await runGenerationJob2d({
+          ? await runGenerationLoop2d({
               base64: candidate.base64,
               mediaType: candidate.mediaType,
               filename: candidate.filename,
               figureStem: candidate.stem,
               chapterName: candidate.chapterName,
               model: selectedModel || undefined,
+              plannerModel: selectedPlannerModel || undefined,
+              evalModel: selectedCriticModel || undefined,
+              criticVersion: 'benchmark',
               experiment: selectedExperiment || undefined,
+              fewShot,
               subject: candidate.subject || undefined,
             })
           : await runGenerationLoop({

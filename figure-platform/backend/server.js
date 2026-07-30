@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const { screenshotHtml, loadBaseScaffold } = require('./runtime-helpers');
 const { generateFigureHtml } = require('./generation');
-const { generate2dFigureHtml } = require('./generation-2d');
 const {
   buildExperimentContext,
   createResultRecord,
@@ -15,6 +14,7 @@ const {
 const { evaluateFigure } = require('./evaluator');
 const {
   pairwiseEvaluateFigure,
+  resolvePairwiseMode,
   loadPairwiseResult,
   savePairwiseResult,
   loadAllPairwiseResults,
@@ -28,6 +28,7 @@ const { getAvailableModels } = require('./models');
 const { upsertEvaluation, materializeEvaluationViews, compactEvaluationStorage, upsertAttempts } = require('./result_schema');
 const { getCriticContext } = require('./critic');
 const { runFigureLoop } = require('./figure_loop');
+const { runFigureLoop2d } = require('./figure_loop_2d');
 const { listContextExports, getContextExport, safeStem } = require('./context_exports');
 const { createContextExportLLMLogContext, runWithLLMInputLogging } = require('./llm_input_logger');
 
@@ -118,7 +119,28 @@ const {
 const {
   criticVersion: CURRENT_CRITIC_VERSION,
 } = getCriticContext();
+// Separate namespace for 2D critic scores so they never mix with 3D ones. Note
+// there is deliberately NO 2D counterpart for CURRENT_CRITIC_MODEL or FEW_SHOT:
+// mode changes the prompt, not the judge, and one judge across both tracks is
+// what makes cross-track comparison meaningful.
+const {
+  criticVersion: CURRENT_CRITIC_VERSION_2D,
+// useFewShot=false here purely to avoid a spurious "no calibration example"
+// warning at startup — this call only reads the version string.
+} = getCriticContext(false, '2d');
 console.log(`Experiment: ${CURRENT_EXPERIMENT}  (model: ${CURRENT_MODEL})`);
+
+/**
+ * Best-effort track detection for figures with no result record (static HTML in
+ * prompt_experiments/). Three.js is the unambiguous 3D marker; the 2D scaffold
+ * loads SVG.js / Chart.js / Mermaid instead.
+ */
+function sniffFigureType(html) {
+  if (!html) return '3d';
+  if (/three(\.module)?(\.min)?\.js|from ['"]three['"]|new THREE\./.test(html)) return '3d';
+  if (/svg\.min\.js|chart\.umd|mermaid|SVG\(\)\.addTo/.test(html)) return '2d';
+  return '3d';
+}
 
 // ── Helper: generate a simple unique id ───────────────────────────────────────
 function makeId() {
@@ -409,115 +431,6 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
   };
 }
 
-async function generate2dFigure({ base64, mediaType, filename, figureStem: requestedFigureStem, chapterName: requestedChapterName, plan, model: requestedModel, experiment: requestedExperiment, plannerModel: requestedPlannerModel, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
-  if (!base64 || !mediaType || !filename) {
-    const err = new Error('base64, mediaType, and filename are required.');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const modelId = requestedModel || CURRENT_MODEL;
-  const experimentName = (typeof requestedExperiment === 'string' && requestedExperiment.trim())
-    ? requestedExperiment.trim()
-    : CURRENT_EXPERIMENT;
-
-  console.log(`[generate-2d] requested="${requestedModel}" experiment="${experimentName}" -> using="${modelId}" | file=${filename}`);
-
-  // Always run the 2D planner — plan is mandatory and stored in the result record
-  const figureStem = requestedFigureStem || filename.replace(/\.[^.]+$/, '');
-  const chapterName = requestedChapterName || inferChapter(figureStem);
-  const plannerModelId = requestedPlannerModel || PLANNER_2D_MODEL;
-
-  // rawPlan is the 2D blueprint JSON that generation-2d.js expects
-  // storedPlan wraps it in the same envelope as the 3D planner so the UI plan panel works identically
-  let rawPlan = plan || null;
-  if (!rawPlan) {
-    try {
-      rawPlan = await plan2dFigure(figureStem, chapterName, base64, mediaType, plannerModelId, {
-        authoredPrompt,
-        authoredInteractions,
-        sourcePath,
-      });
-      console.log(`[generate-2d] plan produced for "${figureStem}" via ${plannerModelId}`);
-    } catch (planErr) {
-      const err = new Error(`2D planning failed for "${figureStem}": ${planErr.message}`);
-      err.statusCode = 502;
-      throw err;
-    }
-  }
-  const storedPlan = {
-    figureStem,
-    chapterName: chapterName || null,
-    contextChunk: authoredPrompt || null,
-    interactionPlan: rawPlan,
-    ...(authoredPrompt ? { authoredPrompt } : {}),
-    ...(authoredInteractions ? { authoredInteractions } : {}),
-    ...(sourcePath ? { sourcePath } : {}),
-  };
-
-  const _generationStart = Date.now();
-  const html = await withRetry(() => generate2dFigureHtml({
-    modelId,
-    base64,
-    mediaType,
-    plan: rawPlan,
-    maxTokens: 16000,
-  }));
-  const generationDurationMs = Date.now() - _generationStart;
-
-  if (!html.trimStart().startsWith('<')) {
-    const err = new Error('The model did not return a valid HTML file. Please try again.');
-    err.statusCode = 502;
-    err.raw = html.slice(0, 500);
-    throw err;
-  }
-
-  const figureId = requestedFigureId || makeId();
-  const timestamp = new Date().toISOString();
-  const shot = await screenshotHtml(html);
-  const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
-
-  const record = createResultRecord({
-    id: figureId,
-    filename,
-    html,
-    timestamp,
-    source: resultSource || 'api',
-    model: modelId,
-    experiment: experimentName,
-    plan: storedPlan,
-    previewBase64: shot ? shot.data : null,
-    previewMediaType: shot ? shot.mediaType : null,
-    fallbackBase64: base64,
-    fallbackMediaType: mediaType || 'image/png',
-    sourceBase64: base64,
-    sourceMediaType: mediaType,
-    extra: {
-      type: '2d',
-      generationDurationMs,
-      generationStartedAt: new Date(_generationStart).toISOString(),
-      ...(resultCollection ? { resultCollection } : {}),
-      ...(requestedExtra || {}),
-      ...(standaloneHtmlPath ? { standaloneHtmlPath } : {}),
-    },
-  });
-
-  saveGeneratedRecord(record, resultCollection);
-
-  return {
-    html,
-    figureId,
-    timestamp,
-    model: modelId,
-    experiment: experimentName,
-    standaloneHtmlPath,
-    plan: storedPlan,
-    evaluationResults: record.evaluationResults || {},
-    evaluationMeta: record.evaluationMeta || {},
-    evaluationVersions: record.evaluationVersions || {},
-  };
-}
-
 /**
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
@@ -649,6 +562,160 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
   };
 }
 
+/**
+ * Generate a 2D figure using the auto-iterative loop.
+ * Runs plan → generate → verify-2d → critique (mode:'2d') → decide, saving all iterations.
+ */
+async function generate2dFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
+  const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
+
+  if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
+    const err = new Error('base64, mediaType, filename, and figureStem are required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (typeof requestedExperiment !== 'string' || !requestedExperiment.trim()) {
+    const err = new Error('experiment is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // criticVersion is OPTIONAL here (unlike the 3D route) and always ends up in the
+  // 2D namespace: callers that hardcode a 3D bucket name (the frontend sends
+  // 'benchmark') get it suffixed rather than silently polluting 3D scores.
+  let resolvedCriticVersion = CURRENT_CRITIC_VERSION_2D;
+  if (typeof requestedCriticVersion === 'string' && requestedCriticVersion.trim()) {
+    const supplied = requestedCriticVersion.trim();
+    resolvedCriticVersion = supplied.endsWith('_2d') ? supplied : `${supplied}_2d`;
+    if (resolvedCriticVersion !== supplied) {
+      console.warn(`[generate-2d-loop] criticVersion "${supplied}" rewritten to "${resolvedCriticVersion}" to keep 2D scores in their own namespace.`);
+    }
+  }
+
+  const modelId = requestedModel || CURRENT_MODEL;
+  const plannerModelId = requestedPlannerModel || PLANNER_2D_MODEL;
+  const criticModelId = requestedEvalModel || CURRENT_CRITIC_MODEL;
+  const experimentName = requestedExperiment.trim();
+  // The 2D one-shot path infers the chapter; match it so QMD context is found.
+  const resolvedChapterName = chapterName || inferChapter(resolvedFigureStem);
+
+  if (!requestedModel) {
+    console.warn(`[generate-2d-loop] no model provided; falling back to default "${CURRENT_MODEL}"`);
+  }
+  console.log(`[generate-2d-loop] figureStem="${resolvedFigureStem}" chapter="${resolvedChapterName || 'unknown'}" experiment="${experimentName}" criticVersion="${resolvedCriticVersion}" maxAttempts=${maxAttempts}`);
+
+  // NOTE: no `scaffold` argument — generation-2d.js owns base_scene_2d.html.
+  // Passing BASE_SCAFFOLD here would silently hand it the Three.js scaffold.
+  const loopState = await runFigureLoop2d({
+    figureStem: resolvedFigureStem,
+    chapterName: resolvedChapterName || null,
+    imageData: { base64, mediaType },
+    sourceBase64: base64,
+    sourceMediaType: mediaType,
+    maxAttempts,
+    plannerModel: plannerModelId,
+    generatorModel: modelId,
+    criticModel: criticModelId,
+    fewShot: requestedFewShot || FEW_SHOT,
+    plannerOptions: {
+      authoredPrompt,
+      authoredInteractions,
+      sourcePath,
+    },
+  });
+
+  if (loopState.status === 'failed_planning') {
+    const err = new Error(`Failed to generate 2D plan for ${resolvedFigureStem}`);
+    err.statusCode = 502;
+    throw err;
+  }
+
+  const html = loopState.currentHtml || '';
+  if (!html.trimStart().startsWith('<')) {
+    const err = new Error('2D loop did not produce valid HTML output');
+    err.statusCode = 502;
+    throw err;
+  }
+
+  const figureId = requestedFigureId || makeId();
+  const timestamp = new Date().toISOString();
+  // Reuse the verifier's screenshot when the loop captured one; only render again
+  // if it didn't (e.g. VERIFY_GATE=off).
+  const shot = loopState.currentScreenshot
+    ? { data: loopState.currentScreenshot, mediaType: loopState.currentScreenshotMediaType || 'image/jpeg' }
+    : await screenshotHtml(html);
+  const standaloneHtmlPath = writeStandaloneHtml({ collection: resultCollection, experiment: experimentName, figureId, filename, html });
+
+  // runFigureLoop2d returns the RAW 2D blueprint, not an envelope like the 3D
+  // planner does — wrap it here or the UI plan panel renders blank for loop results.
+  const storedPlan = {
+    figureStem: resolvedFigureStem,
+    chapterName: resolvedChapterName || null,
+    contextChunk: authoredPrompt || null,
+    interactionPlan: loopState.currentPlan || null,
+    ...(authoredPrompt ? { authoredPrompt } : {}),
+    ...(authoredInteractions ? { authoredInteractions } : {}),
+    ...(sourcePath ? { sourcePath } : {}),
+  };
+
+  let record = createResultRecord({
+    id: figureId,
+    filename,
+    html,
+    timestamp,
+    source: resultSource || 'api',
+    model: modelId,
+    experiment: experimentName,
+    plan: storedPlan,
+    previewBase64: shot ? shot.data : null,
+    previewMediaType: shot ? shot.mediaType : null,
+    fallbackBase64: base64,
+    fallbackMediaType: mediaType || 'image/png',
+    sourceBase64: base64,
+    sourceMediaType: mediaType,
+    extra: {
+      // Load-bearing: drives history filtering and the pairwise mode resolver.
+      type: '2d',
+      loopStatus: loopState.status,
+      generationDurationMs: loopState.generationDurationMs ?? null,
+      generationStartedAt: loopState.generationStartedAt ?? null,
+      ...(resultCollection ? { resultCollection } : {}),
+      ...(requestedExtra || {}),
+      ...(standaloneHtmlPath ? { standaloneHtmlPath } : {}),
+    },
+  });
+
+  record = upsertAttempts(record, loopState.attempts);
+
+  if (loopState.currentEvaluation) {
+    record = upsertEvaluation(record, criticModelId, loopState.currentEvaluation, timestamp, {
+      criticVersion: resolvedCriticVersion,
+      criticModel: criticModelId,
+      source: 'loop',
+      criticMode: '2d',
+    });
+  }
+
+  saveGeneratedRecord(record, resultCollection);
+
+  return {
+    html,
+    figureId,
+    timestamp,
+    model: modelId,
+    experiment: experimentName,
+    standaloneHtmlPath,
+    loopStatus: loopState.status,
+    attempts: loopState.attempts.length,
+    bestScore: loopState.bestScore,
+    plan: storedPlan,
+    evaluationResults: record.evaluationResults || {},
+    evaluationMeta: record.evaluationMeta || {},
+    evaluationVersions: record.evaluationVersions || {},
+  };
+}
+
 function updateGenerationJob(jobId, patch) {
   const current = generationJobs.get(jobId);
   if (!current) return;
@@ -695,31 +762,6 @@ app.post('/api/generate-async', (req, res) => {
   return res.status(202).json({ jobId });
 });
 
-app.post('/api/generate-2d-async', (req, res) => {
-  const jobId = makeId();
-  generationJobs.set(jobId, {
-    id: jobId,
-    status: 'running',
-    type: '2d',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
-
-  generate2dFigure(req.body)
-    .then((result) => {
-      updateGenerationJob(jobId, { status: 'done', result });
-    })
-    .catch((err) => {
-      updateGenerationJob(jobId, {
-        status: 'error',
-        error: err?.message || 'Generation failed.',
-        ...(err?.raw ? { raw: err.raw } : {}),
-      });
-    });
-
-  return res.status(202).json({ jobId });
-});
-
 app.get('/api/generate-status/:id', (req, res) => {
   const job = generationJobs.get(req.params.id);
   if (!job) {
@@ -751,6 +793,34 @@ app.post('/api/generate-loop-async', (req, res) => {
       updateGenerationJob(jobId, {
         status: 'error',
         error: err?.message || 'Loop generation failed.',
+        ...(err?.raw ? { raw: err.raw } : {}),
+      });
+    });
+
+  return res.status(202).json({ jobId });
+});
+
+// ── POST /api/generate-2d-loop-async ─────────────────────────────────────────
+// 2D counterpart of /api/generate-loop-async (plan → generate → verify-2d →
+// critique → decide). Polling reuses GET /api/generate-status/:id unchanged.
+app.post('/api/generate-2d-loop-async', (req, res) => {
+  const jobId = makeId();
+  generationJobs.set(jobId, {
+    id: jobId,
+    status: 'running',
+    type: '2d',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  generate2dFigureWithLoop(req.body)
+    .then((result) => {
+      updateGenerationJob(jobId, { status: 'done', result });
+    })
+    .catch((err) => {
+      updateGenerationJob(jobId, {
+        status: 'error',
+        error: err?.message || '2D loop generation failed.',
         ...(err?.raw ? { raw: err.raw } : {}),
       });
     });
@@ -838,7 +908,12 @@ async function generateContextExportItem(body) {
     },
   };
 
-  if (item.figureType === '2d') return generate2dFigure(common);
+  if (item.figureType === '2d') return generate2dFigureWithLoop({
+    ...common,
+    criticVersion: body.criticVersion || 'context_export',
+    maxAttempts: body.maxAttempts || 3,
+    fewShot: body.fewShot,
+  });
 
   return generateFigureWithLoop({
     ...common,
@@ -2111,7 +2186,8 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
         const absImg = path.resolve(imagePath);
         if (fs.existsSync(absImg)) sourceImg = fs.readFileSync(absImg).toString('base64');
       }
-      return { html, thumb, sourceImg };
+      // Static HTML has no result record, so sniff the track from the libraries it loads.
+      return { html, thumb, sourceImg, type: sniffFigureType(html) };
     }
     if (resultId) {
       const rPath = path.join(RESULTS_DIR, `${resultId}.json`);
@@ -2121,6 +2197,7 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
         html: rec.html || '',
         thumb: rec.base64thumb || null,
         sourceImg: rec.source_base64 || null,
+        type: rec.extra?.type || rec.type || sniffFigureType(rec.html || ''),
       };
     }
     return null;
@@ -2163,7 +2240,9 @@ app.post('/api/pairwise/batch-evaluate', async (req, res) => {
       const thumbB = assetsB.thumb;
       const sourceImage = assetsA.sourceImg || assetsB.sourceImg;
 
-      const evalResult = await pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel, chapterName: chapter });
+      const mode = resolvePairwiseMode({ type: assetsA.type }, { type: assetsB.type });
+
+      const evalResult = await pairwiseEvaluateFigure({ htmlA, setupA, htmlB, setupB, thumbA, thumbB, sourceImage, evalModel, chapterName: chapter, mode });
 
       // Load existing record (to preserve humanEvals) or start fresh
       const existing = loadPairwiseResult(setupA, setupB, chapter, name) || { setupA, setupB, chapter, figure: name, humanEvals: [] };

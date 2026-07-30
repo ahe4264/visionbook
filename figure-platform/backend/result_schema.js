@@ -77,6 +77,9 @@ function upsertEvaluation(record, evalModel, evaluation, evaluatedAt = new Date(
     if (extraMeta.criticModel) metaEntry.criticModel = extraMeta.criticModel;
     if (extraMeta.criticPromptLabel) metaEntry.criticPromptLabel = extraMeta.criticPromptLabel;
     if (extraMeta.source) metaEntry.source = extraMeta.source;
+    // Self-describing marker for which critic prompt produced this score, so the
+    // track is recoverable independently of the criticVersion naming convention.
+    if (extraMeta.criticMode) metaEntry.criticMode = extraMeta.criticMode;
 
     normalized.evaluationResults[evalModel] = evaluation;
     normalized.evaluationMeta[evalModel] = metaEntry;

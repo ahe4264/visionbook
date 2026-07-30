@@ -98,6 +98,13 @@ Interaction requirements:
 - For standalone mode, you may include a compact side/bottom explanation panel, reset button, and 1-3 intuitive controls.
 - Default view must be a faithful visual replacement for the source figure before interaction.
 
+If the blueprint has an interaction of type "code_editor", it overrides the "1-3 compact controls" guidance above — build a trace-and-playback workbench where the student writes algorithm logic and the figure replays it:
+- TRACE API: implement each op in the interaction's "api" so it appends a frame BEFORE returning its value. A frame is { kind, state, indices, message } — kind = which op ran (drives caption and highlight style), state = a deep copy of the data at that instant, indices = the elements the op touched (highlight exactly these), message = one human-readable line. Freeze the API object, range-check indices, and expose no reference to the underlying data: mutation reachable only through an op is what makes the replay gap-free.
+- SANDBOX: run student code in a Web Worker built from a Blob URL (revoke it when done; this is still self-contained — no network asset), with a wall-clock timeout (~1-2s) AND hard caps on op and frame counts, so a runaway loop is reported as an error instead of hanging. Wrap it so a missing or misnamed "entry_point" gives a clear message. Never eval student code on the main thread. The page-level try/catch above must NOT swallow student-code failures — report syntax errors, thrown errors, timeouts and cap hits to the student inline as the final frame.
+- UI: a <textarea> seeded with "sample_code"; tabs to swap in "buggy_code" and a bare starter; an editable field for the interaction's "input"; a Run button that disables while running. Editor beside or below the figure, both readable at iframe width without horizontal overflow.
+- PLAYBACK: first / prev / play-pause / next, a speed control, an "n of N" counter, the current frame's message as a caption, and a running log. Redraw from frame[i] alone so scrubbing backwards looks identical to arriving there forwards.
+- VERDICT: test the final state against "success_check"; show a status readout distinguishing not-run / running / correct / wrong answer / error, and on a wrong answer highlight the elements that violate the property so the buggy sample is diagnosable rather than just marked wrong.
+
 Verification checks include runtime errors, blank output, overflow/clipping, visible content, and explainer affordances.`;
 }
 

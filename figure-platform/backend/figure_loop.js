@@ -16,49 +16,11 @@ const { generateCode } = require('./generation');
 const { evaluateHtmlWithCritic } = require('./critic');
 const { decideFigureRefinement } = require('./orchestrator');
 const { verifyFigure, DEFAULT_VIEWPORTS } = require('./verify');
+const { mergeVerificationIntoEvaluation, withRetry } = require('./loop_helpers');
 
 // Deterministic verification runs before the (expensive, stochastic) critic. Set
 // VERIFY_GATE=off to disable and fall back to critic-only behaviour.
 const VERIFY_GATE = process.env.VERIFY_GATE !== 'off';
-
-/**
- * Turn a failed verification report into an evaluation-shaped object so the existing
- * refinement plumbing (single-shot refine + agent summarizeEvaluation) can consume it,
- * without ever calling the LLM critic on a mechanically-broken figure.
- */
-function buildVerificationEvaluation(report) {
-  const actionItems = report.errors.map(e => `[${e.id}] ${e.message}`);
-  return {
-    geometry_accuracy: 1,
-    interactivity_usability: 1,
-    faithfulness: 1,
-    label_quality: 1,
-    concept_accuracy: 1,
-    overall_average: 1,
-    visual_aesthetics: 1,
-    failure_modes: [...new Set(report.errors.map(e => e.id))],
-    discrepancies: [],
-    notes: 'Automated verification failed before quality review — fix these mechanical/layout errors first.',
-    action_items: actionItems,
-    verification: { ok: false, errors: report.errors, warnings: report.warnings },
-    source: 'verifier',
-  };
-}
-
-async function withRetry(label, fn, { retries = 3, baseDelay = 2500 } = {}) {
-    for (let attempt = 0; ; attempt++) {
-        try {
-            return await fn();
-        } catch (err) {
-            const msg = err?.message || String(err);
-            const retryable = /fetch failed|connection error|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|timeout/i.test(msg);
-            if (!retryable || attempt >= retries) throw err;
-            const delay = baseDelay * Math.pow(2, attempt);
-            console.warn(`[${label}] retryable error (${attempt + 1}/${retries}): ${msg}. Retrying in ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-    }
-}
 
 /**
  * Main loop orchestrator.
@@ -148,6 +110,9 @@ async function runFigureLoop(opts) {
         return loopState;
     }
 
+    let prevVerifyScreenshot = null;
+    let prevVerifyScreenshotMediaType = 'image/jpeg';
+
     if (seedHtml) {
         const seedAttempt = {
             iteration: 0,
@@ -163,27 +128,26 @@ async function runFigureLoop(opts) {
         console.log(`[Seed] Evaluating existing HTML before refinement...`);
         let seedScreenshot = null;
         let seedMediaType = 'image/jpeg';
+        let seedReport = { ok: true, errors: [], warnings: [] };
         if (VERIFY_GATE) {
             try {
                 const _seedVerStart = Date.now();
-                const seedReport = await verifyFigure(seedHtml, { viewports: DEFAULT_VIEWPORTS });
+                seedReport = await verifyFigure(seedHtml, { viewports: DEFAULT_VIEWPORTS });
                 seedAttempt.timings.verifyMs = Date.now() - _seedVerStart;
-                seedAttempt.verification = { ok: seedReport.ok, errors: seedReport.errors, warnings: seedReport.warnings };
                 seedScreenshot = seedReport.screenshot;
                 seedMediaType = seedReport.mediaType || 'image/jpeg';
                 console.log(`[timing] VERIFY ${figureStem} seed: ${fmt(seedAttempt.timings.verifyMs)}`);
                 console.log(`[Seed] Verification: ${seedReport.ok ? 'PASS' : 'FAIL'} (errors=${seedReport.errors.length}, warnings=${seedReport.warnings.length})`);
-                if (!seedReport.ok) {
-                    seedAttempt.evaluation = buildVerificationEvaluation(seedReport);
-                }
             } catch (e) {
                 console.warn(`[Seed] Verification threw (${e.message}); proceeding to critic.`);
+                seedReport = { ok: true, errors: [], warnings: [] };
             }
         }
+        seedAttempt.verification = { ok: seedReport.ok, errors: seedReport.errors, warnings: seedReport.warnings };
 
-        if (!seedAttempt.evaluation) {
-            const _seedCritStart = Date.now();
-            seedAttempt.evaluation = await withRetry(`critic:${figureStem}:seed`, () => evaluateHtmlWithCritic({
+        const _seedCritStart = Date.now();
+        seedAttempt.evaluation = mergeVerificationIntoEvaluation(
+            await withRetry(`critic:${figureStem}:seed`, () => evaluateHtmlWithCritic({
                 html: seedHtml,
                 evalImage: sourceBase64,
                 evalMediaType: sourceMediaType,
@@ -191,14 +155,15 @@ async function runFigureLoop(opts) {
                 useFewShot: fewShot.critic !== false,
                 renderedScreenshot: seedScreenshot,
                 renderedMediaType: seedMediaType,
-            }));
-            seedAttempt.timings.critiqueMs = Date.now() - _seedCritStart;
-            console.log(`[timing] CRITIC ${figureStem} seed: ${fmt(seedAttempt.timings.critiqueMs)}`);
-            console.log(`[Seed] Critic scores`, {
-                overall: seedAttempt.evaluation.overall_average,
-                failures: (seedAttempt.evaluation.failure_modes || []).length,
-            });
-        }
+            })),
+            seedReport
+        );
+        seedAttempt.timings.critiqueMs = Date.now() - _seedCritStart;
+        console.log(`[timing] CRITIC ${figureStem} seed: ${fmt(seedAttempt.timings.critiqueMs)}`);
+        console.log(`[Seed] Critic scores`, {
+            overall: seedAttempt.evaluation.overall_average,
+            failures: (seedAttempt.evaluation.failure_modes || []).length,
+        });
 
         const _seedDecideStart = Date.now();
         seedAttempt.feedback = await decideFigureRefinement({
@@ -206,6 +171,10 @@ async function runFigureLoop(opts) {
             model: criticModel,
             useFewShot: fewShot.orchestrator !== false,
         });
+        if (seedReport.errors.length && seedAttempt.feedback.next_step !== 'refine_generation') {
+            seedAttempt.feedback = { ...seedAttempt.feedback, next_step: 'refine_generation', source: 'verifier-override' };
+            console.log(`[Seed][Orchestrator] overridden by verify: forcing refine_generation (${seedReport.errors.length} verify error(s))`);
+        }
         seedAttempt.timings.decideMs = Date.now() - _seedDecideStart;
         console.log(`[timing] ORCHESTRATOR ${figureStem} seed: ${fmt(seedAttempt.timings.decideMs)}`);
         console.log(`[Seed] Feedback: ${seedAttempt.feedback.next_step}`, {
@@ -220,6 +189,8 @@ async function runFigureLoop(opts) {
         loopState.bestScore = seedAttempt.evaluation.overall_average || 0;
         loopState.attempts.push(seedAttempt);
         loopState.timings.attempts.push({ iteration: 0, ...seedAttempt.timings });
+        prevVerifyScreenshot = seedScreenshot;
+        prevVerifyScreenshotMediaType = seedMediaType;
 
         if (seedAttempt.feedback.next_step === 'pass') {
             loopState.status = 'passed';
@@ -256,6 +227,8 @@ async function runFigureLoop(opts) {
                 plan: loopState.currentPlan,
                 prevHtml: previousAttempt?.html || null,
                 evaluation: previousAttempt?.evaluation || null,
+                prevScreenshot: previousAttempt ? prevVerifyScreenshot : null,
+                prevScreenshotMediaType: prevVerifyScreenshotMediaType,
                 modelId: generatorModel,
                 mediaType: imageData.mediaType,
                 base64: imageData.base64,
@@ -281,21 +254,17 @@ async function runFigureLoop(opts) {
             break;
         }
 
-        // ───── VERIFY (cheap, deterministic gate before the expensive critic) ─────
-        // The critic is a stochastic quality judge; it should never be spent on a figure
-        // that is mechanically broken (throws, blank, off-screen controls, overflow, NaN).
-        // We verify first and, on failure, skip straight to regeneration with concrete
-        // check-level feedback — cheaper and far more actionable than a fuzzy critic score.
+        // ───── VERIFY (rendered, deterministic; screenshot reused by critic below;
+        // no longer gates whether critic runs — see design doc 2026-07-29) ─────
         let verifyScreenshot = null;
         let verifyMediaType = 'image/jpeg';
+        let report = { ok: true, errors: [], warnings: [] };
         if (VERIFY_GATE) {
             loopState.status = 'verifying';
-            let report;
             try {
                 const _verStart = Date.now();
                 report = await verifyFigure(loopState.currentHtml, { viewports: DEFAULT_VIEWPORTS });
                 attempt.timings.verifyMs = Date.now() - _verStart;
-                attempt.verification = { ok: report.ok, errors: report.errors, warnings: report.warnings };
                 verifyScreenshot = report.screenshot;
                 verifyMediaType = report.mediaType || 'image/jpeg';
                 console.log(`[timing] VERIFY ${figureStem} attempt ${attemptNum}: ${fmt(attempt.timings.verifyMs)}`);
@@ -305,40 +274,10 @@ async function runFigureLoop(opts) {
                 console.warn(`Verification threw (${e.message}); proceeding to critic.`);
                 report = { ok: true, errors: [], warnings: [] };
             }
-
-            if (!report.ok) {
-                const evaluation = buildVerificationEvaluation(report);
-                loopState.currentEvaluation = evaluation;
-                attempt.evaluation = evaluation;
-                const actionItems = evaluation.action_items;
-                loopState.currentFeedback = {
-                    next_step: 'refine_generation',
-                    reasoning: 'Automated verification failed; fixing mechanical/layout errors before quality review.',
-                    action_items: actionItems,
-                    actionItems,
-                    scores: { overall: evaluation.overall_average },
-                    source: 'verifier',
-                };
-                attempt.feedback = loopState.currentFeedback;
-                attempt.refinement_type = 'generation';
-                loopState.timings.attempts.push({ iteration: attemptNum, ...attempt.timings });
-                // Keep *something* returnable if every attempt fails verification.
-                if (!loopState.bestAttempt) { loopState.bestAttempt = { ...attempt }; loopState.bestScore = evaluation.overall_average; }
-
-                console.log(`✗ Skipping critic — verification failed with ${report.errors.length} error(s): ${[...new Set(report.errors.map(e => e.id))].join(', ')}`);
-
-                if (attemptNum >= maxAttempts) {
-                    attempt.status = 'max_attempts_reached';
-                    loopState.attempts.push(attempt);
-                    loopState.status = 'failed_verification';
-                    console.log(`\n✗ Max attempts (${maxAttempts}) reached (last attempt failed verification)`);
-                    return loopState;
-                }
-                attempt.status = 'verify_failed';
-                loopState.attempts.push(attempt);
-                continue; // regenerate with verification feedback
-            }
         }
+        attempt.verification = { ok: report.ok, errors: report.errors, warnings: report.warnings };
+        prevVerifyScreenshot = verifyScreenshot;
+        prevVerifyScreenshotMediaType = verifyMediaType;
 
         // ───── CRITIQUE ─────
         console.log(`Evaluating...`);
@@ -346,16 +285,19 @@ async function runFigureLoop(opts) {
 
         try {
             const _critStart = Date.now();
-            loopState.currentEvaluation = await withRetry(`critic:${figureStem}:attempt${attemptNum}`, () => evaluateHtmlWithCritic({
-                html: loopState.currentHtml,
-                evalImage: sourceBase64,
-                evalMediaType: sourceMediaType,
-                model: criticModel,
-                useFewShot: fewShot.critic !== false,
-                // Reuse the verifier's screenshot so we don't render the figure twice.
-                renderedScreenshot: verifyScreenshot,
-                renderedMediaType: verifyMediaType,
-            }));
+            loopState.currentEvaluation = mergeVerificationIntoEvaluation(
+                await withRetry(`critic:${figureStem}:attempt${attemptNum}`, () => evaluateHtmlWithCritic({
+                    html: loopState.currentHtml,
+                    evalImage: sourceBase64,
+                    evalMediaType: sourceMediaType,
+                    model: criticModel,
+                    useFewShot: fewShot.critic !== false,
+                    // Reuse the verifier's screenshot so we don't render the figure twice.
+                    renderedScreenshot: verifyScreenshot,
+                    renderedMediaType: verifyMediaType,
+                })),
+                report
+            );
             attempt.timings.critiqueMs = Date.now() - _critStart;
             attempt.evaluation = loopState.currentEvaluation;
             console.log(`[timing] CRITIC ${figureStem} attempt ${attemptNum}: ${fmt(attempt.timings.critiqueMs)}`);
@@ -416,6 +358,15 @@ async function runFigureLoop(opts) {
             overall: overall,
             actions: actionItems.length,
         });
+
+        // Verify errors are mechanical/generation-level by construction — never let
+        // one ship as 'pass', and never route it to 'fix_plan' (that's the verifier
+        // overriding a fixable rendering bug, not evidence the PLAN is wrong).
+        if (report.errors.length && loopState.currentFeedback.next_step !== 'refine_generation') {
+            loopState.currentFeedback = { ...loopState.currentFeedback, next_step: 'refine_generation', source: 'verifier-override' };
+            attempt.feedback = loopState.currentFeedback;
+            console.log(`[Orchestrator] overridden by verify: forcing refine_generation (${report.errors.length} verify error(s))`);
+        }
 
         // ───── CHECK: PASS? ─────
         if (loopState.currentFeedback.next_step === 'pass') {

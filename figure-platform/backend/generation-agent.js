@@ -109,10 +109,10 @@ function releaseSlot() {
 }
 
 // ── Prompt construction ───────────────────────────────────────────────────────
-function buildAgentSystemPrompt(scaffold) {
+function buildAgentSystemPrompt(scaffold, plan) {
     // Reuse the exact scaffold rules the single-shot generator uses, then layer the
     // agentic contract on top so the model knows it must render-and-verify.
-    return `${buildGenerationSystemPrompt(scaffold)}
+    return `${buildGenerationSystemPrompt(scaffold, plan)}
 
 ════════════════════════════════════════════════════════════════════════════════
 AGENTIC WORKFLOW — you have a tool, use it before you are done:
@@ -351,7 +351,7 @@ async function generateCodeAgent(opts) {
                 effort: AGENT_EFFORT,
                 thinking: buildThinkingConfig(),
                 maxBudgetUsd: AGENT_MAX_BUDGET_USD,
-                systemPrompt: buildAgentSystemPrompt(scaffold),
+                systemPrompt: buildAgentSystemPrompt(scaffold, plan),
                 mcpServers: { 'figure-runtime': server },
                 allowedTools: ['mcp__figure-runtime__render_figure'],
                 // Block everything else, including the built-in ToolSearch (the model wasted

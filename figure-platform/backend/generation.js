@@ -9,14 +9,16 @@ const UI_END_MARKER = '<!-- @FIGURE_UI_END -->';
 const CODE_BEGIN_MARKER = '// @FIGURE_CODE_BEGIN';
 const CODE_END_MARKER = '// @FIGURE_CODE_END';
 // === Code Divider =============================================================
-const BASE_OUTPUT_RULES = `OUTPUT RULES - non-negotiable:
-- Your response must be only the scaffold fill-in payload, not a full HTML file.
-- It must contain these exact markers (even if sections are empty):
-        ${UI_BEGIN_MARKER} ... ${UI_END_MARKER}
-        ${CODE_BEGIN_MARKER} ... ${CODE_END_MARKER}
-- Between the UI markers: output only HTML that belongs inside <div id="ui"> (no <html>, <head>, <body>, <script>, or <style>).
-- Between the code markers: output only JavaScript that runs inside the existing <script type="module">. Do NOT add imports, importmaps, or re-declare scaffold globals.
-- Do not include any other text. No explanation, no markdown, no code fences.`;
+// The output contract is stated ONCE, here. Do not restate it in the task guide,
+// the scaffold intro, or the user text — it previously appeared 5-6 times per prompt.
+const BASE_OUTPUT_RULES = `OUTPUT RULES - non-negotiable. Return exactly this and nothing else — no prose, no markdown, no code fences:
+${UI_BEGIN_MARKER}
+...HTML that belongs inside <div id="ui"> — no <html>, <head>, <body>, <script>, or <style>...
+${UI_END_MARKER}
+${CODE_BEGIN_MARKER}
+...JavaScript for the existing <script type="module"> — no import statements, no importmap...
+${CODE_END_MARKER}
+Emit both marker pairs even if a section is empty. The backend keeps the scaffold and injects your payload at these markers, so never output the scaffold itself and never re-declare anything it already defines.`;
 
 // === Code Divider =============================================================
 function buildPromptHeader({ scaffold, roleSuffix = '', scaffoldIntro, framedScaffold = true }) {
@@ -38,175 +40,104 @@ ${scaffoldSection}`;
 }
 
 // === Code Divider =============================================================
-const GENERATION_TASK_GUIDE = `SCAFFOLD MARKERS (fill these only):
-- UI HTML: between ${UI_BEGIN_MARKER} and ${UI_END_MARKER}
-- Module JS: between ${CODE_BEGIN_MARKER} and ${CODE_END_MARKER}
+// The guide is assembled from shared blocks. The inline (default) and
+// standalone-demo profiles differ only by STANDALONE_DEMO_RULES — they used to be
+// two ~3.2k-token near-duplicate strings that had already drifted apart.
+const SCAFFOLD_API = `WHAT THE SCAFFOLD PROVIDES (already defined — use these, never re-declare them):
+- Scale guide (orthographic camera, d=3 frustum half-height): keep main geometry within ±2 units in all axes. Typical sizes: cube side 1–2 units, arrow length 1–2, plane width 2–4, sphere radius 0.05–0.15.
+- setCameraView({ projection, azimuthDeg, elevationDeg, rollDeg, axisScreenAngles, obliqueAngleDeg, depthScale, zoom, target, heightFraction, distanceScale }) — source-matched camera setup.
+  heightFraction: fraction of viewport height the content should fill (default 0.5; use 0.65–0.75 to fill more). Omit zoom — the scaffold auto-fits from projected scene bounds.
+  Call it AFTER all geometry is in the scene, or auto-fit measures the wrong bounds. Labels come afterwards and do not affect the fit.
+- setUiLayout('overlay' | 'right' | 'bottom', sizePx?) — the scaffold ALWAYS auto-docks #ui (to 'right', or 'bottom' when narrow) and grows the dock to fit its content. Normally you do not call this at all: just put controls in #ui. Never restyle #ui's position/width/max-height and never build your own side panel.
+- addLabel(htmlString, THREE.Vector3, options?) — floating HTML label system.
+- registerInteractive(object, { title, body, tooltip }), showPopup(title, body), hidePopup, showTooltip, hideTooltip — hover/click explanations.
+- compileExpr(src, vars) → f(...args); throws on a bad expression (never returns a fallback)
+- bindEquationInput(inputId, targets, { variables, onChange }) — wires an <input> to plot handles; shows parse errors inline
+- plotCurve3D(id, { expr, variables, domain, plane:'xy'|'xz', samples, color }) → handle
+- plotParametric3D(id, { x, y, z, variables, tDomain, samples, color }) → handle
+- plotSurface(id, { expr, variables, xDomain, yDomain, segments, color }) → handle
+  variables: the argument names the expression may use, in order (defaults: plotCurve3D ['x'], plotParametric3D ['t'], plotSurface ['x','y']). When a plan field declares "variables" you MUST pass that same array to BOTH the plot constructor and bindEquationInput — plotCurve3D('f', { expr: 't^2' }) without { variables: ['t'] } throws "Unknown variable t" at construction and kills the whole figure.
+  Handles re-sample on EVERY setter call, and the setters differ: plotCurve3D → .setExpr / .setFn / .setDomain · plotParametric3D → .setX / .setY / .setZ · plotSurface → .setExpr / .setFn. All handles also have .sample() and .remove().
+- Also pre-wired, do not re-declare: _labels, _syncLabels, animate, renderer, scene, camera, controls, d, aspect, setStandardView.`;
 
-What the scaffold already provides (do NOT re-declare):
-- THREE + OrbitControls imports via importmap
-- renderer + <canvas id="c">, scene, orthographic camera (d=3, the frustum half-height in world-units), OrbitControls
-  Scale guide: keep main geometry within ±2 units in all axes. Typical sizes: cube side 1–2 units, arrow length 1–2, plane width 2–4, sphere radius 0.05–0.15.
-- animate() render loop and ResizeObserver
-- setCameraView({ projection, azimuthDeg, elevationDeg, rollDeg, zoom, target, heightFraction, distanceScale }) for source-matched camera setup
-  heightFraction: fraction of viewport height the content should fill (default 0.5; use 0.65–0.75 to fill more; lower if UI controls need space). Omit zoom — the scaffold auto-fits from projected scene bounds.
-- addLabel(...) + _syncLabels() floating label system
-- showPopup(title, body), hidePopup(), showTooltip(text, event), hideTooltip()
-- registerInteractive(object, { title, body, tooltip, onClick? }) with built-in raycast hover/click handling
+const FIGURE_RULES = `FIGURE RULES:
+- Every visible element must be constructed as Three.js geometry (meshes, lines, points, sprites). Do NOT reproduce the figure as a texture, canvas drawing, or flat PlaneGeometry with the image drawn on it — pasting the original image onto a plane is never a valid solution.
+- Keep the background white (#ffffff).
+- The output should look recognizably like the source figure — same general geometry, viewpoint, labels, and proportions. It does not need to be a pixel-perfect same-size replacement.
+- CAMERA / VIEW: camera pose is a standard default per projection mechanism, and PROJECTION TYPE in the user message gives the exact setCameraView call. Do not spend effort inferring exact angles from the source — spend it on ELEMENTS, geometry, and interactions. Align key visual anchors (object center, axes, labels) to similar relative positions as the source so the first frame is recognizable. You may adjust controls.target, object scale, and projection parameters; prefer setCameraView over setting camera.zoom directly, and if you do set zoom manually call camera.updateProjectionMatrix().
+- Add ALL visible text labels with addLabel. Missing or wrong labels are a critical failure; match the source's font sizes and let placement reinforce depth.
+- Interactions can be any type that serves the concept: sliders, buttons, panels, animations, step controls, hover/click, or direct 3D manipulation. Controls, panels, and UI affordances are welcome where they genuinely aid understanding — avoid decorative or redundant ones, but do not artificially restrict the type or amount of interaction.`;
 
-Hard constraints:
-- Do not redeclare: addLabel, _labels, _syncLabels, animate, renderer, scene, camera, controls, d, aspect, setCameraView, setStandardView, showPopup, hidePopup, showTooltip, hideTooltip, registerInteractive
-- Do not add any import statements or importmaps.
-- You may change camera position, controls.target, object scale, and projection parameters to match the source figure's first-frame crop and perspective. Prefer setCameraView (which auto-fits zoom from projected bounds) over setting camera.zoom directly. If you do set camera.zoom manually, call camera.updateProjectionMatrix().
-- Keep background white (#ffffff).
-- Do NOT reproduce the figure as a texture, canvas drawing, or flat PlaneGeometry with a drawn image.
-  Every visible element must be constructed as Three.js geometry (meshes, lines, points, sprites).
-  Pasting the original image onto a plane is not a valid solution.
-- The default output should look recognizably like the source figure — same general geometry, viewpoint, labels, and proportions. It does not need to be a pixel-perfect same-size replacement.
-- Controls, panels, and UI affordances are acceptable when they genuinely aid understanding. Avoid decorative or redundant elements, but do not artificially restrict the type or amount of interaction.
-- The generated HTML itself should have an appropriate default camera, framing, and label scale.
-- CAMERA / VIEW: PROJECTION TYPE tells you which camera mechanism to use. For the pose and framing, use the plan's CAMERA VIEW parameters (azimuthDeg, elevationDeg, rollDeg, heightFraction) — pass them straight into setCameraView. Only infer these from the source image yourself when the plan omits a CAMERA VIEW block, and only override a provided value when the source plainly contradicts it.
-    - Projection cues: parallel depth edges → axonometric/orthographic; vanishing-point convergence or size shrinkage with distance → perspective; undistorted front face with fixed-angle depth edges → oblique.
-    - Implement the projection mechanism, not just the visual pose:
-        * Axonometric / isometric / dimetric / trimetric: use an off-axis orthographic camera. Do not shear geometry. Canonical angles — isometric: azimuthDeg=45, elevationDeg=35.26; dimetric: one angle differs (read from source); trimetric: both differ. When omitting zoom, the scaffold auto-computes it from the projected bounding box extent — call setCameraView after adding all geometry.
-        * Oblique / cabinet / cavalier: use a front-on orthographic camera and shear one root group so depth shifts screen position. Do not rotate the camera to fake oblique.
-        * Perspective: use the scaffold's perspective projection option so distance affects apparent size.
-  - Align key visual anchors (object center, axes, vanishing directions, labels) to similar relative positions as in the source. The first frame should be recognizable as the same figure.
-  - Call setCameraView(...) AFTER all geometry is in the scene (labels come after setCameraView and do not affect auto-fit bounds).
-    - For oblique views, add all figure geometry under a single root group, disable automatic matrix updates on that root, and apply one consistent z-to-x/y shear. Use cabinet-like depth compression for compact textbook diagrams unless the source clearly uses full cavalier depth.
+// Only emitted when the plan actually contains the interaction — these two specs
+// are ~1,100 tokens that used to ship on every generation regardless.
+const CODE_EDITOR_SPEC = `"code_editor" INTERACTION — build a trace-and-playback workbench, not a run-once box. The learner writes algorithm logic, never drawing code; every pixel the figure draws comes from a recorded frame.
+Each op in the plan's "api" appends a frame BEFORE returning its value — { kind (which op ran; drives caption wording and highlight style), state (a deep copy of the data at that instant), indices (the elements the op touched; the figure highlights exactly these), message (one human-readable line, e.g. "compare A[3]=2 with A[7]=14 → false") } — and an op is the ONLY route to mutation, which is what makes the replay gap-free. Freeze the API object, range-check every index, and hand out no reference to the underlying data. Seed a <textarea> with the plan's sample_code, add tabs for the buggy_code variant and a bare starter, an editable field for the plan's "input", and a Run button that disables while running — all inside #ui, which the scaffold docks into a real side column once it contains a textarea. Execute in a Web Worker built from a Blob URL (revoke it when done) with a ~1–2s wall-clock timeout AND hard caps on op and frame count; never eval learner code on the main thread. Surface syntax errors, thrown errors, timeouts, cap hits, and a missing or misnamed "entry_point" inline as the final frame with a clear message, never as a silent no-op. Replay with first / prev / play-pause / next, a speed control, an "n of N" counter, the current frame's message as caption, and a running log; rendering must be a pure function of frame[i], so scrubbing backwards looks identical to arriving there forwards. Finally test the final state against the plan's "success_check" and show a status readout distinguishing not-run / running / correct / wrong answer / error — on a wrong answer, highlight the elements that violate the property so the buggy sample is diagnosable rather than merely marked wrong.`;
 
-- For hover/click explanations, use the scaffold helpers: registerInteractive(object, { title, body, tooltip }) or showPopup(title, body). Visible explanation panels are also acceptable if they aid understanding.
-- Interactions can be any type that serves the concept: sliders, buttons, panels, animations, step controls, hover/click, or direct 3D manipulation. Avoid decorative animations with no conceptual purpose.
-- If a plan interaction is type "code_editor": build a trace-and-playback demo, not a run-once box.
-    1. Define the minimal operation API named in the plan's "api" so that each call AUTO-RECORDS a frame (a snapshot of the data structure/state). The student writes only algorithm logic against this API — never rendering code.
-    2. In #ui add a <textarea> seeded with the plan's sample_code, a Run button, and — when the plan supplies buggy_code — a control to load the buggy variant so students can debug it.
-    3. Execute student code in a Web Worker with a timeout (~1–2s) so an infinite loop or bad code can never hang the page. On error or timeout, show the message inline. (Only if a Worker is truly impractical, fall back to new Function on the main thread with a guard — but prefer the Worker.)
-    4. Play the recorded frames back in the figure with step / play / pause (and a scrubber if the trace is long); the figure animates from the frames, not from a single final result.
-    5. Validate the final state and tell the student whether it is correct (e.g. the array actually satisfies the heap property), not just that it ran.
-- If a plan interaction is type "equation_input": add one <input> in #ui per entry in the plan's "fields", seeded with each field's default. Parse each expression at runtime over its "variables" (new Function), catch parse errors and show them inline without crashing. On every valid edit, recompute — update BOTH the plotted curve/region/surface AND any derived answer the figure reports (e.g. the integral value), so the student sees the recalculated result, not only the redrawn shape.
+const EQUATION_INPUT_SPEC = `"equation_input" INTERACTION — the scaffold owns parsing and re-sampling; use it, do not hand-roll either.
+Add one <input> in #ui per entry in the plan's "fields", seeded with each field's default, and create a plot handle per field with plotCurve3D / plotParametric3D / plotSurface, passing the field's "variables" to the constructor as described above. plotCurve3D and plotSurface accept a bare handle: bindEquationInput('<inputId>', handle, { variables: [...] }). plotParametric3D has NO .setExpr/.setFn — only .setX/.setY/.setZ — so it must ALWAYS be bound as bindEquationInput('<inputId>', { handle, method: 'setX' }, { variables: [...] }) (or 'setY'/'setZ' for whichever component the field edits); passing it bare throws. Each <input> gets its own inline error slot, so several equation inputs may share a parent. NEVER hardcode the source figure's topology and re-solve only a few corner/scalar values — if the source shows a straight-edged region, the drawn path must STILL come from sampling the compiled function, so that typing a curved expression produces a curved result; a polygon built from a fixed list of corner points is a failure even when those corners are recomputed. NEVER wrap evaluation in a try/catch that silently restores a default expression or default geometry — bindEquationInput already keeps the last good curve and shows the parse error inline, and your own fallback is exactly what makes edits appear to do nothing. Recompute every derived answer the figure reports (e.g. an integral value) from the same compiled function, so the number and the picture can never disagree.`;
 
-Your task:
-1) Consider the given plan and what the figure is conceptually intended to illustrate.
-2) Fix the camera type and viewing angle BEFORE speccing any geometry — take the projection mechanism from PROJECTION TYPE and the pose from the plan's CAMERA VIEW (fall back to the source image only if the plan omits it). The projection type shapes every geometry decision that follows — which edges are parallel, which faces foreshorten, what angle depth lines leave at. Do NOT call setCameraView yet; fix the angle in your head first.
-   - Use the PROJECTION TYPE from the plan and the CAMERA / VIEW rules above.
-   - Axonometric: isometric starts at azimuthDeg=45, elevationDeg=35.26; adjust for dimetric/trimetric cues from the source.
-   - Perspective: locate the vanishing-point direction and estimate field of view from the source.
-   - Oblique: camera stays front-on; all depth will be applied via shear on a root group, not camera rotation.
-3) Decide the Three.js primitive for every element in the plan, informed by the camera angle you just fixed.
-   Ask: is this a line, a mesh, a point, an arrow? What geometry class? What approximate size and color?
-   Express this as brief inline comments at the top of your JS block, one line per element, e.g.:
+const STANDALONE_DEMO_RULES = `STANDALONE DEMO PROFILE:
+- This is a standalone interactive learning demo, not an inline PDF replacement. The default view should still be recognizable as the source figure, but it does not need to preserve the exact crop, whitespace, or minimal UI.
+- Use the UI marker block for learner-facing affordances where they help: a concise control strip, step controls, reset, parameter sliders/toggles, legend, or explanation panel. A compact title, explanation card, state readout, or guided-step bar is acceptable.
+- Do not hide all teaching behind click popups. Include at least one visible explanatory affordance — a short "What this shows" panel, active step narration, or compact concept readout.
+- If the figure has adjustable variables, expose visible controls for the most important 1–3. If it has a sequence/process, include step controls. If it is mostly spatial, include guided view/annotation controls.
+- Every visible control must change geometry, labels, highlighted state, camera/view, or explanation in a way that teaches something — chosen from the concept, not added generically.
+- Keep OrbitControls, hover/click highlights, and object-specific explanations for meaningful meshes/lines/points.
+- Keep the scene readable and mechanically robust: no controls covering important geometry, no off-screen panels, no horizontal page overflow, no decorative motion that distracts from the concept.
+- Define a single updateScene() entry point and wire every UI control to it. If you add a reset control, make it restore the default state.`;
+
+const TASK_STEPS = `ORDER OF WORK:
+1) Settle the projection mechanism and pose from the plan BEFORE speccing any geometry — projection decides which edges stay parallel, which faces foreshorten, and what angle depth lines leave at.
+2) Spec every element's Three.js primitive as one inline comment per element at the top of your JS block, e.g.
      // pinhole → SphereGeometry(0.07)  black
      // ray     → Line  dashed  grey
-     // plane   → PlaneGeometry(4,3)  blue opacity 0.3
-   Then build exactly those primitives — do not deviate from your own spec.
-4) Build the static geometry first. Count the visible primitives and line segments, preserve relative scale and spacing, and take note of depth ordering and occlusion. Use projection logic to decide which edges should converge, which faces should be foreshortened, and which dimensions should compress in depth.
-5) Call setCameraView(...) AFTER all geometry is in the scene so the auto-fit has correct bounds. Pass the plan's CAMERA VIEW parameters for azimuthDeg / elevationDeg / rollDeg / heightFraction (fall back to values inferred from the source only if the plan omits them). Omit zoom — the scaffold projects the bounding box to find the right fit automatically. Example:
-   setCameraView({
-     projection: 'orthographic',
-     azimuthDeg: 35,
-     elevationDeg: 18,
-     heightFraction: 0.62,
-   });
-6) Add ALL visible text labels using addLabel(htmlString, THREE.Vector3, options?).
-    Missing or incorrect labels are a critical failure.  Make sure to match the font size with the original image. Treat labels and annotations as spatial cues so their placement reinforces the geometry and depth.
-7) Render a source-matching first frame. Only after that, add interactivity:
-   - Choose interaction types based on what best teaches the concept: sliders, toggles, buttons, step panels, animations, hover/click highlights, or direct 3D manipulation — all are valid.
-   - Use registerInteractive(object, { title, body, tooltip }) or showPopup(title, body) for hover/click explanations on 3D objects; visible UI panels for explanations are also acceptable.
-   - Keep one state object + updateScene() if multiple states are needed.
-   - If demo_steps are provided, implement them as navigable steps using whatever UI best fits — visible step controls, buttons, or clicks on scene elements.
-
-Output format (return ONLY this, nothing else):
-${UI_BEGIN_MARKER}
-...UI HTML...
-${UI_END_MARKER}
-${CODE_BEGIN_MARKER}
-...JavaScript...
-${CODE_END_MARKER}`;
+   Then build exactly that spec — do not deviate from it.
+3) Build the static geometry. Preserve relative scale, spacing, depth ordering, and occlusion.
+4) VERIFY before moving on: re-check what you built against GEOMETRY NOTES and the source image, element by element — position, orientation, proportions, and shape, not just presence. Fix any mismatch now; a generic-but-plausible arrangement that skips this check is the most common way geometry ends up wrong.
+5) Then, in this order: setCameraView(...) → all labels → the plan's interactions.`;
 
 // === Code Divider =============================================================
-function getGenerationTaskGuide() {
-    if (process.env.GENERATION_PROFILE !== 'standalone-demo') return GENERATION_TASK_GUIDE;
+/** Interaction types named by the plan, or null when the plan shape is unknown. */
+function planInteractionTypes(plan) {
+    const ip = plan?.interactionPlan || plan;
+    const list = Array.isArray(ip?.interactions) ? ip.interactions : null;
+    if (!list) return null;
+    return new Set(list.map(i => i && i.type).filter(Boolean));
+}
 
-    return `SCAFFOLD MARKERS (fill these only):
-- UI HTML: between ${UI_BEGIN_MARKER} and ${UI_END_MARKER}
-- Module JS: between ${CODE_BEGIN_MARKER} and ${CODE_END_MARKER}
+function getGenerationTaskGuide(plan) {
+    const standalone = process.env.GENERATION_PROFILE === 'standalone-demo';
+    const types = planInteractionTypes(plan);
+    // With no plan (or an unrecognisable one) keep both specs, matching the old
+    // unconditional behaviour — gating only kicks in when we can see the plan.
+    const wantCodeEditor = !types || types.has('code_editor');
+    const wantEquationInput = !types || types.has('equation_input');
 
-What the scaffold already provides (do NOT re-declare):
-- THREE + OrbitControls imports via importmap
-- renderer + <canvas id="c">, scene, orthographic camera (d=3, the frustum half-height in world-units), OrbitControls
-  Scale guide: keep main geometry within ±2 units in all axes. Typical sizes: cube side 1–2 units, arrow length 1–2, plane width 2–4, sphere radius 0.05–0.15.
-- animate() render loop and ResizeObserver
-- setCameraView({ projection, azimuthDeg, elevationDeg, rollDeg, zoom, target, heightFraction, distanceScale })
-  heightFraction: fraction of viewport height the content should fill (default 0.5; use 0.65–0.75 to fill more). Omit zoom — the scaffold auto-fits from projected scene bounds.
-- addLabel(...) + _syncLabels() floating label system
-- showPopup(title, body), hidePopup(), showTooltip(text, event), hideTooltip()
-- registerInteractive(object, { title, body, tooltip, onClick? }) with built-in raycast hover/click handling
-
-Hard technical constraints:
-- Do not redeclare scaffold globals: addLabel, _labels, _syncLabels, animate, renderer, scene, camera, controls, d, aspect, setCameraView, setStandardView, showPopup, hidePopup, showTooltip, hideTooltip, registerInteractive.
-- Do not add import statements or importmaps.
-- Keep visible figure elements as real Three.js geometry (meshes, lines, points, sprites). Do NOT paste the source image onto a plane/texture/canvas.
-- Keep the scene readable and mechanically robust: no controls covering important geometry, no off-screen panels, no horizontal page overflow, no decorative motion that distracts from the concept.
-
-Standalone demo profile:
-- This is a standalone interactive learning demo, not an inline PDF replacement.
-- The default view should still be recognizable as the source figure, but it does not need to preserve the exact same crop, whitespace, or minimal UI.
-- Use the UI marker block to create learner-facing demo affordances when they help: concise control strip, step controls, reset, parameter sliders/toggles, legend, or explanation panel.
-- Do not hide all teaching behind click popups. Include at least one visible explanatory affordance in the page UI, such as a short "What this shows" panel, active step narration, or compact concept readout.
-- If the figure has adjustable variables, include visible controls for the most important 1-3 variables. If it has a sequence/process, include visible step controls. If it is mostly spatial, include guided view/annotation controls.
-- Interactions should be chosen from the concept, not added generically. Every visible control must change geometry, labels, highlighted state, camera/view, or explanation in a way that teaches something.
-- For a "code_editor" interaction: build a trace-and-playback demo. The plan's "api" functions must auto-record a frame per call (student writes only logic); seed a <textarea> with sample_code + a Run button + a load-buggy control when buggy_code is given; run student code in a Web Worker with a ~1–2s timeout (fall back to guarded new Function only if a Worker is impractical) and show errors/timeouts inline; play recorded frames back with step/play/pause; and validate the final state, reporting whether it is correct. For an "equation_input" interaction: one <input> per plan "field" seeded with its default; parse each expression over its "variables" at runtime, catch parse errors inline, and on every valid edit recompute BOTH the redrawn curve/region/surface AND any derived answer the figure reports (e.g. the integral value).
-- Direct 3D manipulation still matters: keep OrbitControls, hover/click highlights, and object-specific explanations for meaningful meshes/lines/points.
-- It is acceptable for the UI to be more demo-like than figure-like: a compact title, explanation card, state readout, or guided-step bar is allowed.
-
-Projection implementation rules:
-- Axonometric / isometric / dimetric / trimetric: use an off-axis orthographic camera and no shear. Isometric: azimuthDeg=45, elevationDeg=35.26. Omit zoom and call setCameraView after all geometry — auto-fit uses projected bounds.
-- Oblique / cabinet / cavalier: use a front-on orthographic camera and one sheared root group; keep the front face undistorted and compress depth for cabinet-style textbook diagrams.
-- Perspective: use a true perspective camera only when the source has vanishing-point convergence or distance-based size shrinkage.
-
-Your task:
-1) Consider the plan and the source figure's teaching goal.
-2) Fix the camera type and viewing angle BEFORE speccing geometry — projection mechanism from PROJECTION TYPE, pose from the plan's CAMERA VIEW (fall back to the source image only if the plan omits it). The projection type shapes every geometry decision that follows. Do NOT call setCameraView yet.
-3) Decide the Three.js primitive for every major visual element, informed by the camera angle you just fixed.
-4) Build a recognizable static 3D reconstruction. Call setCameraView(...) with the plan's CAMERA VIEW params AFTER all geometry is in the scene (labels follow setCameraView and do not affect auto-fit bounds).
-5) Add a compact standalone demo UI that helps a learner explore the concept. Prefer meaningful controls and guided states over passive screenshots.
-6) Register major explanatory objects with hover/click behavior and connect UI controls to updateScene().
-7) Make sure reset returns the demo to its default state when a reset control exists.
-
-Output format (return ONLY this, nothing else):
-${UI_BEGIN_MARKER}
-...UI HTML...
-${UI_END_MARKER}
-${CODE_BEGIN_MARKER}
-...JavaScript...
-${CODE_END_MARKER}`;
+    return [
+        SCAFFOLD_API,
+        FIGURE_RULES,
+        standalone ? STANDALONE_DEMO_RULES : null,
+        wantCodeEditor ? CODE_EDITOR_SPEC : null,
+        wantEquationInput ? EQUATION_INPUT_SPEC : null,
+        TASK_STEPS,
+    ].filter(Boolean).join('\n\n');
 }
 
 // === Code Divider =============================================================
-function buildGenerationSystemPrompt(scaffold) {
+function buildGenerationSystemPrompt(scaffold, plan) {
     if (!scaffold) throw new Error('scaffold is required.');
 
     const header = buildPromptHeader({
         scaffold,
-        scaffoldIntro: `BASE SCAFFOLD - DO NOT copy this file into your response.
-The backend will keep this scaffold and insert your payload at the markers:
-- UI:   ${UI_BEGIN_MARKER} ... ${UI_END_MARKER}
-- CODE: ${CODE_BEGIN_MARKER} ... ${CODE_END_MARKER}
-Only output the marker blocks. Do NOT modify, remove, or re-declare anything already in the scaffold.`,
+        scaffoldIntro: 'BASE SCAFFOLD — reference only. The backend injects your payload at the markers; do not copy this file into your response.',
     });
 
     return `${header}
 
-SCAFFOLD USAGE RULES:
-- Do NOT output the scaffold.
-- Output ONLY the marker-wrapped payload (UI + JS).
-- The scaffold already includes the importmap and imports for Three.js + OrbitControls.
-    Do NOT add another <script type="importmap"> or any import statements.
-- Do NOT re-declare scaffold globals; only add objects to scene and wire UI to state.
-
-${getGenerationTaskGuide()}`;
+${getGenerationTaskGuide(plan)}`;
 }
 // === Code Divider =============================================================
-function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation) {
+function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan) {
     if (!scaffold) throw new Error('scaffold is required.');
     if (!prevHtml) throw new Error('prevHtml is required.');
     if (!evaluation) throw new Error('evaluation is required.');
@@ -219,6 +150,7 @@ function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation) {
         `- label_quality: ${evaluation.label_quality}/5`,
         `- concept_accuracy: ${evaluation.concept_accuracy}/5`,
         `- notes: ${evaluation.notes || ''}`,
+        ...(evaluation.action_items || []).map(a => `- ACTION: ${a}`),
     ].join('\n');
 
     const prevPayload = extractPayloadFromHtml(prevHtml);
@@ -229,16 +161,13 @@ function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation) {
     const header = buildPromptHeader({
         scaffold,
         roleSuffix: 'improving a previous attempt based on critic feedback.',
-        scaffoldIntro: `The BASE SCAFFOLD is fixed and will be used at runtime. Do NOT output it.
-Only output an improved payload for these markers:
-- UI:   ${UI_BEGIN_MARKER} ... ${UI_END_MARKER}
-- CODE: ${CODE_BEGIN_MARKER} ... ${CODE_END_MARKER}`,
+        scaffoldIntro: 'BASE SCAFFOLD — fixed and used at runtime. Do NOT output it.',
         framedScaffold: false,
     });
 
     return `${header}
 
-${getGenerationTaskGuide()}
+${getGenerationTaskGuide(plan)}
 
 CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
 ${issues}
@@ -247,14 +176,14 @@ PREVIOUS GENERATED PAYLOAD (edit this; do NOT output full HTML):
 ${prevPayloadText}
 
 Fix all identified failure modes and improve every score. Maintain or improve what already works well.
-This includes re-checking the CAMERA / VIEW MATCHING REQUIREMENTS above even if no camera-specific failure mode was listed — a passing score on other metrics does not mean the camera/view is correct.
 Return ONLY the updated marker-wrapped payload.`;
 }
 
 const PROJECTION_GUIDELINES = {
     perspective: `Use the scaffold's true perspective projection after building all geometry. Use this only when the source has real vanishing-point convergence or distance-based size shrinkage; then depth should visibly affect apparent size.`,
-    axonometric: `Use ordinary orthographic projection with an off-axis camera/view. Canonical angles: isometric → azimuthDeg=45, elevationDeg=35.26; dimetric → one angle differs from isometric (infer from source axis foreshortening); trimetric → both azimuth and elevation differ. Parallel 3D line families must remain parallel. Do not shear geometry. Omit zoom and call setCameraView after all geometry is added — the scaffold auto-fits from the projected bounding box.`,
-    oblique: `Use an orthographic camera locked front-on, and create the 3D-looking depth by shearing one root group containing all figure geometry. Do not rotate the camera to fake oblique. Keep the front face undistorted; use cabinet-like depth compression unless the source clearly uses full cavalier depth.`,
+    axonometric: `Use ordinary orthographic projection: setCameraView({ projection: 'orthographic', axisScreenAngles, heightFraction }). If the plan gives axis_screen_angles: null (a flat 2D plot/diagram), pass axisScreenAngles: null for a front-on view. Otherwise the plan does not measure per-figure angles — use a standard isometric pose: axisScreenAngles: { x: 30, z: 30 }. The source image is a PROJECTION of a 3D object: rebuild the true object — a rectangle stays a rectangle in world space — and let the camera do the projecting. Never bake the drawn parallelogram into the geometry, and never shear geometry. Omit zoom and call setCameraView after all geometry is added — the scaffold auto-fits from the projected bounding box.`,
+    oblique: `Call setCameraView({ projection: 'oblique', obliqueAngleDeg: 45, depthScale: 0.5, heightFraction }) after all geometry is added — a standard cabinet-oblique pose; the plan does not measure per-figure oblique angles. The scaffold implements oblique as a shear of the eye-space projection matrix, so the front face stays undistorted, depth edges leave at obliqueAngleDeg, and labels track the shear automatically. Build the TRUE 3D object — the shear is the camera's job. Do NOT shear geometry, do NOT wrap the figure in a sheared parent Object3D, and do NOT disable automatic matrix updates. The scaffold also provides the reveal interaction: dragging eases the shear out to expose the real 3D shape and a toggle button returns to the printed view — do not implement either yourself.
+AXIS ASSIGNMENT: the pose is pinned, so in BoxGeometry(w, h, d) the w axis is screen-right, h is screen-up, and d is the receding diagonal. Before writing each BoxGeometry, look at the source image and decide which of the object's dimensions actually recedes there — do not assume it is the one the domain calls "depth". In feature-map / layer-stack diagrams the channel count is usually the w (horizontal) extent along the flow direction and a spatial dimension is d. Sanity-check the silhouette against the source: a block that should read as a long bar pointing at its neighbours must be long in w, not in d, or it will render as a sliver shooting into the page. If GEOMETRY NOTES assigns the axes in a way that contradicts the source image's silhouette, follow the image.`,
 };
 
 function buildPlanInjection(plan) {
@@ -282,8 +211,11 @@ function buildPlanInjection(plan) {
         if (ip.demo_steps?.length) {
             sections.push(`DEMO STEPS (tween through these using goToStep(); each step drives the controls above):\n${JSON.stringify(ip.demo_steps, null, 2)}`);
         }
+        if (ip.axis_screen_angles !== undefined) {
+            sections.push(`AXIS ANGLES: ${JSON.stringify(ip.axis_screen_angles)} — null means the source is a flat 2D figure; pass axisScreenAngles: null to setCameraView for a front-on view.`);
+        }
         if (ip.camera_view) {
-            sections.push(`CAMERA VIEW (estimated from the source so the first frame matches the original figure). Call setCameraView({ projection, ...these }) AFTER all geometry is added. Keep the projection MECHANISM from PROJECTION TYPE above (orthographic / sheared-oblique / perspective); these params set only the pose (azimuth/elevation/roll) and framing (heightFraction). Start from exactly these values — change an angle only if the source image plainly contradicts it:\n${JSON.stringify(ip.camera_view, null, 2)}`);
+            sections.push(`CAMERA VIEW (framing only). Call setCameraView({ projection, ...these }) AFTER all geometry is added. Keep the projection MECHANISM from PROJECTION TYPE above (orthographic / sheared-oblique / perspective). For perspective these params set the pose (azimuth/elevation/roll); for the two parallel projections pose is a standard default (see PROJECTION TYPE above), and these params set only roll and framing (heightFraction):\n${JSON.stringify(ip.camera_view, null, 2)}`);
         }
         if (ip.camera_suggestion) {
             sections.push(`CAMERA: ${ip.camera_suggestion}`);
@@ -296,11 +228,10 @@ function buildPlanInjection(plan) {
     return parts.join('\n\n');
 }
 
+// The output contract lives in BASE_OUTPUT_RULES — do not restate it here.
 function buildGenerationUserText(plan) {
-    if (!plan) {
-        return 'Analyse this figure carefully. Then output ONLY the scaffold fill-in payload using the required markers. No explanation, no markdown, no fences.';
-    }
-    return `${buildPlanInjection(plan)}\n\nFollow the interaction plan above. Output ONLY the scaffold fill-in payload using the required markers. No explanation, no markdown, no fences.`;
+    if (!plan) return 'Analyse this figure carefully, then return the scaffold fill-in payload.';
+    return `${buildPlanInjection(plan)}\n\nFollow the interaction plan above.`;
 }
 // Strip accidental markdown fences and return raw content.
 function stripFences(text) {
@@ -414,10 +345,15 @@ function fixGeneratedHtml(html) {
         }
     }
 
-    // Remove conflicting updateLabels helpers.
+    // Remove DUPLICATE updateLabels helpers, keeping the first.
+    // NOTE: no scaffold defines updateLabels (they use _syncLabels), so the model
+    // owns this name. Removing every definition — as this loop did while it ran to
+    // i >= 0 — deleted the only definition while leaving its call sites intact,
+    // producing "updateLabels is not defined" at runtime. Keep the first, like
+    // every other deduper below.
     const updateLabelsDupes = [...fixed.matchAll(/^[ \t]*(function updateLabels\b[^{]*\{)/gm)];
-    if (updateLabelsDupes.length > 0) {
-        for (let i = updateLabelsDupes.length - 1; i >= 0; i--) {
+    if (updateLabelsDupes.length > 1) {
+        for (let i = updateLabelsDupes.length - 1; i >= 1; i--) {
             const start = updateLabelsDupes[i].index;
             let depth = 0;
             let end = start;
@@ -494,7 +430,7 @@ async function generateFigureHtml({
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationSystemPrompt(scaffold),
+        systemPrompt: buildGenerationSystemPrompt(scaffold, plan),
         userContent,
         maxTokens,
     });
@@ -522,6 +458,9 @@ async function generateRefinedFigureHtml({
     mediaType,
     base64,
     userText,
+    plan,
+    prevScreenshot,
+    prevScreenshotMediaType,
     maxTokens = 16384,
     applyFixes = true,
 }) {
@@ -534,11 +473,17 @@ async function generateRefinedFigureHtml({
 
     const userContent = [
         { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
-        { type: 'text', text: userText },
+        ...(prevScreenshot ? [{ type: 'image_url', image_url: { url: `data:${prevScreenshotMediaType || 'image/jpeg'};base64,${prevScreenshot}` } }] : []),
+        {
+            type: 'text',
+            text: prevScreenshot
+                ? `${userText}\n\nThe second image above is a screenshot of the PREVIOUS attempt's rendered output (not the source figure) — use it to see exactly what broke.`
+                : userText,
+        },
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation),
+        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan),
         userContent,
         maxTokens,
     });
@@ -585,6 +530,8 @@ async function generateCode(opts) {
         mediaType,
         base64,
         userText,
+        prevScreenshot,
+        prevScreenshotMediaType,
         maxTokens = 16384,
         applyFixes = true,
         figureLabel,
@@ -621,7 +568,8 @@ async function generateCode(opts) {
     const runSingleShot = () => {
         if (isRefinement) {
             return generateRefinedFigureHtml({
-                modelId, scaffold, prevHtml, evaluation, mediaType, base64,
+                modelId, scaffold, prevHtml, evaluation, mediaType, base64, plan,
+                prevScreenshot, prevScreenshotMediaType,
                 userText: userText || buildGenerationUserText(plan), maxTokens, applyFixes,
             });
         }
@@ -670,6 +618,7 @@ module.exports = {
     mergePayloadIntoScaffold,
     fixGeneratedHtml,
     formatPayload,
+    looksLikeFullHtmlDocument,
     // Marker constants so the agent can instruct the model precisely.
     MARKERS: { UI_BEGIN_MARKER, UI_END_MARKER, CODE_BEGIN_MARKER, CODE_END_MARKER },
 };

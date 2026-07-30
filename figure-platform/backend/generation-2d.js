@@ -14,7 +14,13 @@
 const fs = require('fs');
 const path = require('path');
 const { generateWithModel } = require('./models');
-const { mergePayloadIntoScaffold, extractPayloadFromText } = require('./generation');
+const {
+  mergePayloadIntoScaffold,
+  extractPayloadFromText,
+  extractPayloadFromHtml,
+  formatPayload,
+  looksLikeFullHtmlDocument,
+} = require('./generation');
 
 // ── Scaffold ──────────────────────────────────────────────────────────────────
 const SCAFFOLD_2D_PATH = path.join(__dirname, 'base_scene_2d.html');
@@ -26,7 +32,16 @@ function getScaffold2d() {
 }
 
 // ── Library routing ───────────────────────────────────────────────────────────
-function getLibraryForFigureType(figureType, renderingMode) {
+function getLibraryForFigureType(figureType, renderingMode, interactions) {
+  // An equation_input interaction needs live, sampled geometry driven by an edited
+  // expression; a code_editor interaction needs per-frame redraw of an arbitrary
+  // data structure with specific elements highlighted. Neither Mermaid nor
+  // Chart.js can express either, so both win over whatever the figure type would
+  // otherwise select.
+  if (Array.isArray(interactions) &&
+      interactions.some(i => i && (i.type === 'equation_input' || i.type === 'code_editor'))) {
+    return 'svgjs';
+  }
   switch ((figureType || '').toLowerCase()) {
     case 'flow_chart':
       return 'mermaid';
@@ -42,14 +57,47 @@ function getLibraryForFigureType(figureType, renderingMode) {
 }
 
 // ── System prompt builder ─────────────────────────────────────────────────────
-function buildSystem2dPrompt(scaffold, library) {
-  const libSection = {
-    svgjs: `SVG.js v3 (global: SVG). var draw=SVG().addTo(document.getElementById('container')).size('100%','100%'); var W=600,H=Math.round(W*(3/4)); draw.viewbox(0,0,W,H). font-size in user units (no px). Hover: el.on('mousemove',e=>showTooltip('label',e)).on('mouseleave',()=>hideTooltip()).on('click',()=>showPopup('Title','body')); el.css('cursor','pointer'). window.__markRendered() synchronously at end.`,
-    chartjs: `Chart.js v4 (global: Chart). Append <canvas style="width:100%;height:100%;display:block"> to #container; options:{responsive:true,maintainAspectRatio:false}. window.__markRendered() immediately after new Chart().`,
-    mermaid: `Mermaid v11 (global: mermaid). Append div.mermaid to #container. mermaid.initialize({startOnLoad:false}); mermaid.run({nodes:[div]}).then(function(){ window.__markRendered(); /* style svg, add listeners */ }); — __markRendered() MUST be inside .then().`,
-  }[library] || `SVG.js v3 — see svgjs above.`;
+// SVG.js-only helper reference. Chart.js and Mermaid figures cannot call any of
+// it, so it ships with the svgjs library section rather than unconditionally.
+const PLOTTING_HELPERS = `
+PLOTTING HELPERS (do not re-declare, and do NOT define your own X()/Y() — use plotX/plotY):
+  setPlotFrame({ xDomain, yDomain, margin }) → call ONCE before creating plots; establishes world→screen and owns resize (do not write your own plot resize handler)
+  plotX(worldX) / plotY(worldY) → screen px
+  compileExpr(src, vars) → f(...args); throws on a bad expression and never returns a fallback
+  bindEquationInput(inputId, targets, { variables, onChange }) → wires an <input> to plot handles and shows parse errors inline
+  plotFunction(id, { expr, variables, domain, samples, stroke, width, dashed }) → handle
+  fillBetween(id, { lower, upper, variables, domain, samples, fill, opacity }) → handle
+  plotParametric(id, { x, y, variables, tDomain, samples, stroke }) → handle
+  variables: the argument names the expression may use, in order (defaults: plotFunction ['x'], fillBetween ['x'], plotParametric ['t']). When a blueprint field declares "variables" you MUST pass that same array to BOTH the plot constructor and bindEquationInput — plotFunction('f', { expr: 't^2' }) without { variables: ['t'] } throws "Unknown variable t" at construction and kills the whole figure.
+  integrateSimpson(fn, a, b, n) → number;  findRoot(fn, a, b, tol) → number | null
+  Handles re-sample on EVERY setter call, and the setters differ: plotFunction → .setExpr / .setFn / .setDomain · fillBetween → .setLower / .setUpper / .setDomain · plotParametric → .setX / .setY. All handles also have .sample() and .remove().`;
 
-  return `You are building an educational interactive figure for a textbook. The goal is a guided demo that helps students understand the concept — not just a static reconstruction.
+const LIB_SECTIONS = {
+  svgjs: `SVG.js v3 (global: SVG). var draw=SVG().addTo(document.getElementById('container')).size('100%','100%'); var W=600,H=Math.round(W*(3/4)); draw.viewbox(0,0,W,H). font-size in user units (no px). Hover: el.on('mousemove',e=>showTooltip('label',e)).on('mouseleave',()=>hideTooltip()).on('click',()=>showPopup('Title','body')); el.css('cursor','pointer'). window.__markRendered() synchronously at end.${PLOTTING_HELPERS}`,
+  chartjs: `Chart.js v4 (global: Chart). Append <canvas style="width:100%;height:100%;display:block"> to #container; options:{responsive:true,maintainAspectRatio:false}. window.__markRendered() immediately after new Chart().`,
+  mermaid: `Mermaid v11 (global: mermaid). Append div.mermaid to #container. mermaid.initialize({startOnLoad:false}); mermaid.run({nodes:[div]}).then(function(){ window.__markRendered(); /* style svg, add listeners */ }); — __markRendered() MUST be inside .then().`,
+};
+
+// Only emitted when the blueprint actually contains the interaction — these two
+// specs are ~1,150 tokens that used to ship on every 2D generation regardless.
+const EQUATION_INPUT_SPEC_2D = `EQUATION INPUTS (an interaction has type "equation_input") — the scaffold owns parsing and re-sampling; do not hand-roll either.
+Call setPlotFrame({ xDomain, yDomain, margin }) first, then use plotX / plotY for every coordinate. Create a plot handle per field with plotFunction / fillBetween / plotParametric using the field's "domain" AND its "variables" (the constructor compiles the expression immediately and throws on an undeclared variable), then wire each input with bindEquationInput('{field.id}Input', handle, { variables: field.variables }). That bare-handle form only works for plotFunction — bindEquationInput defaults to calling .setFn, and only plotFunction has it; for a fillBetween boundary pass { handle, method: 'setLower' } or { handle, method: 'setUpper' }, and for a plotParametric component pass { handle, method: 'setX' } or { handle, method: 'setY' }, or the bare handle throws. NEVER hardcode the source figure's topology and re-solve only a few corner/scalar values — if the source shows a straight-edged region the drawn path must STILL come from sampling the compiled function, so typing a curved expression produces a curved result; a polygon built from a fixed list of corner points is a failure even when those corners are recomputed. NEVER wrap evaluation in a try/catch that silently restores a default expression or geometry — bindEquationInput already keeps the last good curve and shows the parse error inline, and your own fallback is what makes edits appear to do nothing. Recompute every derived answer the figure reports (e.g. an integral value) with integrateSimpson over the same compiled function, so the number and the picture can never disagree.`;
+
+const CODE_EDITOR_SPEC_2D = `CODE EDITOR (an interaction has type "code_editor") — build a trace-and-playback workbench, not a run-once box. The student writes algorithm logic, never drawing code; every mark the figure draws comes from a recorded frame.
+Each op in the interaction's "api" appends a frame BEFORE returning its value — { kind (which op ran; drives caption wording and highlight style), state (a deep copy of the data at that instant), indices (the elements the op touched; highlight exactly these), message (one human-readable line, e.g. "compare A[3]=2 with A[7]=14 → false") } — and an op is the ONLY route to mutation, which is what makes the replay gap-free. Freeze the API object, range-check every index, and expose no reference to the underlying data. Seed a <textarea> with "sample_code", add tabs to swap in "buggy_code" and a bare starter, an editable field for the interaction's "input", and a Run button that disables while running — all inside #ui, which the scaffold docks into a real side column once it contains a textarea, shrinking #container and firing 'fig-resize' so the figure re-lays out. Execute in a Web Worker built from a Blob URL (revoke it when done) with a ~1–2s wall-clock timeout AND hard caps on op and frame count; never eval student code on the main thread. Surface syntax errors, thrown errors, timeouts, cap hits, and a missing or misnamed "entry_point" inline as the final frame with a clear message, never as a silent no-op. Replay with first / prev / play-pause / next, a speed control, an "n of N" counter, the current frame's message as caption, and a running log; draw the structure from frame[i] alone so scrubbing backwards looks identical to arriving there forwards — do not accumulate SVG elements across frames (reuse a group you clear, or update existing shapes in place). Finally test the final state against "success_check" and show a status readout distinguishing not-run / running / correct / wrong answer / error — on a wrong answer, highlight the elements that violate the property so the buggy sample is diagnosable rather than merely marked wrong.`;
+
+function buildSystem2dPrompt(scaffold, library, plan) {
+  const libSection = LIB_SECTIONS[library] || LIB_SECTIONS.svgjs;
+
+  const types = Array.isArray(plan?.interactions)
+    ? new Set(plan.interactions.map(i => i && i.type).filter(Boolean))
+    : null;
+  // With no blueprint (or an unrecognisable one) keep both specs, matching the
+  // old unconditional behaviour — gating only applies when we can see the plan.
+  const wantEquationInput = !types || types.has('equation_input');
+  const wantCodeEditor = !types || types.has('code_editor');
+
+  return [`You are building an educational interactive figure for a textbook. The goal is a guided demo that helps students understand the concept — not just a static reconstruction.
 
 OUTPUT: respond with ONLY these two marker-wrapped sections (include both even if empty):
   <!-- @FIGURE_UI_BEGIN --> ... <!-- @FIGURE_UI_END -->   ← HTML for #ui; no block-level tags
@@ -58,7 +106,8 @@ OUTPUT: respond with ONLY these two marker-wrapped sections (include both even i
 SCAFFOLD (do not reproduce — backend injects your output at the markers):
 ${scaffold}
 
-GLOBALS (do not re-declare): showPopup(title,body), showTooltip(text,event), hideTooltip(), #container (mount target), window.__markRendered() (call once when drawn), 'fig-resize' CustomEvent on document.
+GLOBALS (do not re-declare): showPopup(title,body), showTooltip(text,event), hideTooltip(), #container (mount target), window.__markRendered() (call once when drawn), 'fig-resize' CustomEvent on document, setUiLayout(mode, sizePx).
+  setUiLayout('overlay' | 'right' | 'bottom', sizePx?) — the scaffold ALWAYS auto-docks #ui (to 'right', or 'bottom' when narrow) and grows the dock to fit its content. Normally you do not call it: just put controls in #ui. Never restyle #ui's position/width/max-height and never build your own side panel. Docking resizes #container and fires 'fig-resize', so setPlotFrame re-lays the figure out at its new size.
 
 LIBRARY: ${libSection}
 
@@ -68,36 +117,36 @@ VISUAL FIDELITY: the default state must be a faithful inline replacement for the
 - Data shape: match curve trajectories, bar heights, scatter clusters, or node/edge layout — approximate magnitudes, not invented
 - Labels & annotations: every label visible in the original must appear at the same position; use blueprint.reconstructionNotes for text and color coding
 - Line styles: dashed vs solid, stroke weights, arrowhead presence — copy from the image
-- The step-0 (default) state should look indistinguishable from the original at a glance — a student replacing a static figure with this widget should see the same image they expect
-- No title bar or toolbar visible by default
+- The step-0 (default) state should look indistinguishable from the original at a glance, with no title bar or toolbar visible
 
 TEXT PLACEMENT & READABILITY: faithful labels must still be readable.
-- Treat every label, tick label, annotation, formula, and legend item as a collision-checked object with a real text box.
-- Before finalizing, check each text box against lines, arrows, curves, points, nodes, tick marks, gridlines, controls, and other text. Text must not sit on top of strokes or dense marks.
-- If the source label is visually anchored to a busy line/arrow/node, keep the semantic anchor but move the text to the nearest open whitespace and connect it with a short leader line, pointer, or subtle dot if needed.
-- Draw text and label backgrounds after geometry so labels are on top. For labels over busy regions, add a small white or translucent background rectangle, or use SVG paint-order/stroke halo: text.attr({ 'paint-order':'stroke', stroke:'#fff', 'stroke-width':3, 'stroke-linejoin':'round' }).
+- Treat every label, tick label, annotation, formula, and legend item as a collision-checked box, and check each one against lines, arrows, curves, points, nodes, tick marks, gridlines, controls, and other text before finalizing. Text must not sit on top of strokes or dense marks.
+- If the source label is anchored to a busy line/arrow/node, keep the semantic anchor but move the text to the nearest open whitespace and connect it with a short leader line, pointer, or subtle dot.
+- Draw text and label backgrounds after geometry so labels are on top. Over busy regions add a small white/translucent background rect, or a halo: text.attr({ 'paint-order':'stroke', stroke:'#fff', 'stroke-width':3, 'stroke-linejoin':'round' }).
 - Do not add extra visible explanatory text inside the figure; use hover tooltips, click popups, and the scaffold narration panel for explanation.
 
 SCALE SAFETY: figures may be stitched into chapters at different sizes.
-- If using Canvas, Chart.js custom drawing, or any pixel-based renderer, derive point radius, stroke width, arrowheads, ticks, label size, and annotation padding from min(plotWidth, plotHeight).
-- Avoid large fixed pixel minimums such as Math.max(20, scaledRadius); use only small clamps that prevent invisibility.
-- If using SVG/viewBox with naturally scaling geometry, preserve that behavior and avoid fixed px sizes that break scaling.
+- With Canvas, Chart.js custom drawing, or any pixel-based renderer, derive point radius, stroke width, arrowheads, ticks, label size, and annotation padding from min(plotWidth, plotHeight). Avoid large fixed pixel minimums such as Math.max(20, scaledRadius); use only small clamps that prevent invisibility.
+- With SVG/viewBox geometry that already scales naturally, preserve that and avoid fixed px sizes that break it.
 - If space is small, simplify or hide secondary labels instead of making marks oversized.
 
 HOVER/CLICK (on user action only): hover → showTooltip(label,event)/hideTooltip(); cursor:pointer on interactive elements. Click → showPopup('Title','2–3 sentence explanation'). Animation: fill/opacity transitions only; no scale/translate/bounce.
 
-CONTROLS (blueprint.interactions — render in UI section; add id="{id}Input" to every input):
-  slider → <label>{label}: <output id="{id}Val">{default}</output><input id="{id}Input" type="range" min="{min}" max="{max}" step="{step}" value="{default}" oninput="document.getElementById('{id}Val').value=this.value;update_{id}(+this.value)"></label>  +  function update_{id}(v){ /* teach: blueprint.interactions[].teaches */ }
+CONTROLS (blueprint.interactions — render in UI section; add id="{id}Input" to every input). Each control's handler must teach the concept described in its "teaches" field:
+  slider → <label>{label}: <output id="{id}Val">{default}</output><input id="{id}Input" type="range" min="{min}" max="{max}" step="{step}" value="{default}" oninput="document.getElementById('{id}Val').value=this.value;update_{id}(+this.value)"></label>  +  function update_{id}(v){}
   toggle → <label><input id="{id}Input" type="checkbox" onchange="toggle_{id}(this.checked)"> {label}</label>  +  function toggle_{id}(on){}
   button → <button onclick="trigger_{id}()">{label}</button>  +  function trigger_{id}(){}
-Each control's handler must teach the concept described in blueprint.interactions[].teaches.
-
-DEMO STEPS (blueprint.demo_steps): if present and non-empty, build a step player in #ui:
+  equation_input → one <label>{field.label} <input id="{field.id}Input" value="{field.default}"></label> per entry in the interaction's "fields"
+  code_editor → a <textarea id="{id}Code"> plus sample tabs, an input for the interaction's "input", a Run button, and playback controls`,
+    wantEquationInput ? EQUATION_INPUT_SPEC_2D : null,
+    wantCodeEditor ? CODE_EDITOR_SPEC_2D : null,
+    `DEMO STEPS (blueprint.demo_steps): if present and non-empty, build a step player in #ui:
   - A <p id="demoNarration" style="margin:0;font-size:10px;max-width:180px"> showing the current step's narration
   - <button onclick="prevStep()">◀</button> <span id="stepLabel"></span> <button onclick="nextStep()">▶</button>
   - Each step's .state sets matching interaction inputs to the specified values and calls their update functions
   - Step 0 is the default view (set on load); subsequent steps are one click away
-  - Omit the player entirely if demo_steps is absent or empty`;
+  - Omit the player entirely if demo_steps is absent or empty`,
+  ].filter(Boolean).join('\n\n');
 }
 
 // ── User message builder ──────────────────────────────────────────────────────
@@ -117,11 +166,9 @@ function buildUser2dMessage(plan, library, userText) {
       `\n\nFULL BLUEPRINT:\n${JSON.stringify(plan, null, 2)}`;
   }
 
-  return `Build an interactive figure using ${libName}.
-
-FAITHFULNESS FIRST: the default state must be a pixel-accurate inline replacement for the source image — same colors, same data shape, same labels, same proportions. A student who sees the static figure in the textbook should recognize it immediately.
-
-THEN ADD INTERACTIVITY: implement any controls from blueprint.interactions so a student can explore the concept hands-on. Each control's handler should teach the relationship described in its "teaches" field. Use hover tooltips and click popups to surface explanations on demand.${blueprintSection}`;
+  // VISUAL FIDELITY and CONTROLS in the system prompt already carry the
+  // faithfulness-then-interactivity contract — do not restate it here.
+  return `Build an interactive figure using ${libName}.${blueprintSection}`;
 }
 
 // ── Strip markdown fences ─────────────────────────────────────────────────────
@@ -134,101 +181,37 @@ function stripFences(text) {
     .trim();
 }
 
-// ── Legacy 3D path (full-HTML output) ────────────────────────────────────────
-const SYSTEM_2D = `You are building an interactive SVG figure as a complete self-contained HTML file for a PDF textbook page.
+// ── Post-processing shared by the fresh and refinement paths ─────────────────
+/**
+ * Turn a raw model response into final HTML.
+ *
+ * Never returns the bare scaffold. When the model forgets the markers we SALVAGE
+ * the response as the code payload rather than throwing: a throw inside the
+ * generation loop breaks out with `failed_generation` and no retry, whereas
+ * salvaged (possibly malformed) output gets caught by verify-2d, converted into
+ * concrete action items, and refined on the next pass. This matches what
+ * generation.js already does on the 3D refinement path.
+ *
+ * @param {string} scaffold - base_scene_2d.html
+ * @param {string} rawText  - unprocessed model response
+ * @param {string} label    - log prefix, e.g. 'generate-2d' | 'refine-2d'
+ * @returns {string} HTML
+ */
+function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
+  if (!scaffold) throw new Error('scaffold is required.');
 
-OUTPUT: respond with ONLY a complete HTML file — <!DOCTYPE html> … </html>. No explanation, no markdown, no truncation. Do not embed the image.
+  const out = stripFences(String(rawText || ''));
+  if (!out) throw new Error(`[${label}] Model returned an empty response.`);
 
-FIDELITY: first frame = drop-in for source image.
-- html,body: margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff
-- SVG: <svg width="100%" height="100%" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"> where W=600, H=Math.round(600/aspectRatio); never invent these numbers
-- Positions as fractions: cx=fx*W, cy=fy*H — read fractions from the image, not hardcoded pixels
-- font-size in SVG user units (no px suffix): <text font-size="11"> ✓   <text font-size="11px"> ✗
-- Use blueprint elementSizes (strokeWidth, fontSize) directly; edge count and arrowhead directions must match exactly
-- No title, toolbar, or description text visible by default
+  if (looksLikeFullHtmlDocument(out)) return out;
 
-TEXT PLACEMENT: preserve label meaning, but make text legible.
-- Treat labels/ticks/annotations/formulas/legends as collision-checked boxes. Before finalizing, check them against every line, arrow, curve, node, point, tick, gridline, and other label.
-- Text must not overlap strokes or dense marks. If the original label is anchored to a busy region, move it to nearby open whitespace and add a short leader line or pointer.
-- Draw labels after geometry and give labels over busy regions a white/translucent background or SVG halo: paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round".
-- Leave at least 4-6 SVG user units between text and nearby strokes; stagger clustered labels by at least fontSize + 4.
-- Wrap long annotations into short multi-line text instead of letting them cross the figure. Keep legends outside dense data/edge regions when possible.
-- Do not add extra visible explanatory prose inside the figure; use hover tooltips and click popups for explanation.
-
-INTERACTIONS (reveal on user action only):
-- Hover: stroke/opacity shift only; fixed tooltip div near cursor (position:fixed;background:rgba(0,0,0,.55);color:#fff;font:11px sans-serif;padding:3px 8px;border-radius:4px;pointer-events:none)
-- Click: window.parent.postMessage({type:'alex-popup',title,body},'*') — 2–3 sentence explanation; no inline popup div; Escape dismisses
-- Animation: fill transitions only (#c8e0ff/#c8f0c8); only animate if the figure shows a process or sequence; no scale/translate/bounce`;
-
-// ── Legacy 3D generation (full-HTML output) ───────────────────────────────────
-async function _generate2dFigureHtmlLegacy({ modelId, base64, mediaType, plan, userText, maxTokens = 16000 }) {
-  const renderingMode = plan?.renderingMode || 'auto';
-
-  let renderingHint = '';
-  if (renderingMode === '3d') {
-    const cam = plan?.cameraAnalysis || '';
-    renderingHint = `\nRENDERING MODE: 3D — use Three.js(see THREE.JS SECTION above).${cam ? '\nCAMERA HINT: ' + cam : ''} `;
-  } else if (renderingMode === 'mixed') {
-    const panels3d = (plan?.panels || []).filter(p => p.renderingMode === '3d');
-    renderingHint = `\nRENDERING MODE: Mixed — panels ${panels3d.map(p => p.id).join(',')} need Three.js canvas; others use SVG.` +
-      panels3d.filter(p => p.cameraAnalysis).map(p => `\nPanel ${p.id} camera: ${p.cameraAnalysis} `).join('');
-  } else if (renderingMode === '2d') {
-    renderingHint = '\nRENDERING MODE: 2D — use inline SVG. Do NOT use Three.js.';
+  const payload = extractPayloadFromText(out);
+  if (!payload) {
+    console.warn(`[${label}] No scaffold markers in model response — salvaging as code payload. Raw:`, out.slice(0, 300));
+    return mergePayloadIntoScaffold(scaffold, { uiHtml: '', codeJs: out });
   }
 
-  const aspectRatio = plan?.aspectRatio;
-  const H_from_ar = aspectRatio ? Math.round(600 / aspectRatio) : null;
-  const nodeR = plan?.elementSizes?.nodeRadiusFraction
-    ? Math.round(plan.elementSizes.nodeRadiusFraction * 600) : null;
-  const strokeW = plan?.elementSizes?.strokeWidth || null;
-  const fontSize = plan?.elementSizes?.fontSize || null;
-  const arrSize = plan?.elementSizes?.arrowheadSize || null;
-
-  const geometryConstraints = (aspectRatio || nodeR)
-    ? `\nGEOMETRY CONSTRAINTS(from blueprint measurements — use these exact values): ` +
-    (H_from_ar ? `\n  viewBox = "0 0 600 ${H_from_ar}"  ← from aspectRatio = ${aspectRatio} ` : '') +
-    (nodeR ? `\n  nodeRadius = ${nodeR} px  ← from nodeRadiusFraction = ${plan.elementSizes.nodeRadiusFraction} ` : '') +
-    (strokeW ? `\n  strokeWidth = ${strokeW} ` : '') +
-    (fontSize ? `\n  fontSize = ${fontSize} px` : '') +
-    (arrSize ? `\n  arrowheadSize = ${arrSize} ` : '')
-    : '';
-
-  const planSection = plan
-    ? `\n\nFIGURE BLUEPRINT: \n${JSON.stringify(plan, null, 2)}${renderingHint}${geometryConstraints} `
-    : renderingHint;
-
-  const has3d = renderingMode === '3d' || renderingMode === 'mixed' ||
-    plan?.panels?.some(p => p.renderingMode === '3d');
-  const threeSection = has3d ? THREEJS_BOILERPLATE : '';
-
-  const message = userText
-    ? `${userText}${planSection}${threeSection} `
-    : `Reconstruct this figure as an interactive HTML page.${planSection}${threeSection}
-
-STEP 1 — Build the SVG geometry using the viewBox and element sizes from GEOMETRY CONSTRAINTS above.Every node, every edge, every arrowhead, exact angles.
-  STEP 2 — Add hover tooltips, click postMessage popup, and signal - flow animation on top.
-No title, no description, no buttons by default. Do NOT embed the image.`;
-
-  const userContent = [
-    { type: 'image_url', image_url: { url: `data:${mediaType}; base64, ${base64} ` } },
-    { type: 'text', text: message },
-  ];
-
-  let html = await generateWithModel(modelId, {
-    systemPrompt: SYSTEM_2D,
-    userContent,
-    maxTokens,
-  });
-
-  const fenced = html.match(/```(?: html) ?\s * ([\s\S] *?)```/i);
-  if (fenced) html = fenced[1].trim();
-  html = html
-    .replace(/^```html\s */i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-
-  return html;
+  return mergePayloadIntoScaffold(scaffold, payload);
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -239,20 +222,9 @@ async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
 
-  const renderingMode = plan?.renderingMode || 'auto';
-  const has3d = renderingMode === '3d' || renderingMode === 'mixed' ||
-    (plan?.panels || []).some(p => p.renderingMode === '3d');
-
-  // 3D fallback: Three.js ESM requires type="module" which can't run in the
-  // regular <script> block of the 2D scaffold, so keep the full-HTML path.
-  if (has3d) {
-    return _generate2dFigureHtmlLegacy({ modelId, base64, mediaType, plan, userText, maxTokens });
-  }
-
-  // 2D scaffold path
   const scaffold = getScaffold2d();
-  const library = getLibraryForFigureType(plan?.figureType, renderingMode);
-  const systemPrompt = buildSystem2dPrompt(scaffold, library);
+  const library = getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
+  const systemPrompt = buildSystem2dPrompt(scaffold, library, plan);
   const message = buildUser2dMessage(plan, library, userText);
 
   const userContent = [
@@ -260,16 +232,108 @@ async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText
     { type: 'text', text: message },
   ];
 
-  let out = await generateWithModel(modelId, { systemPrompt, userContent, maxTokens });
-  out = stripFences(out);
+  const out = await generateWithModel(modelId, { systemPrompt, userContent, maxTokens });
 
-  const payload = extractPayloadFromText(out);
-  if (!payload) {
-    console.warn('[generate-2d] Could not extract payload from model response. Raw:', out.slice(0, 300));
-    return scaffold;
-  }
-
-  return mergePayloadIntoScaffold(scaffold, payload);
+  return finalize2dOutput(scaffold, out, 'generate-2d');
 }
 
-module.exports = { generate2dFigureHtml };
+// ── Refinement path ───────────────────────────────────────────────────────────
+/**
+ * Build the refinement system prompt by APPENDING critic feedback to the full
+ * fresh-generation prompt.
+ *
+ * The fresh prompt is not just the scaffold — it carries the library routing
+ * rules (svgjs/chartjs/mermaid have mutually exclusive __markRendered() timing),
+ * GLOBALS, VISUAL FIDELITY, TEXT PLACEMENT, SCALE SAFETY, CONTROLS and DEMO
+ * STEPS, plus whichever interaction specs the blueprint calls for. Slimming it
+ * down for refinement would let the model reintroduce exactly the failures those
+ * sections prevent — and the critic feedback driving the refinement is often
+ * about them.
+ */
+function buildSystem2dRefinementPrompt(scaffold, library, prevHtml, evaluation, plan) {
+  if (!scaffold) throw new Error('scaffold is required.');
+  if (!prevHtml) throw new Error('prevHtml is required.');
+  if (!evaluation) throw new Error('evaluation is required.');
+
+  const issues = [
+    ...(evaluation.failure_modes || []).map(m => `- ${m}`),
+    `- geometry_accuracy: ${evaluation.geometry_accuracy}/5`,
+    `- interactivity_usability: ${evaluation.interactivity_usability}/5`,
+    `- faithfulness: ${evaluation.faithfulness}/5`,
+    `- label_quality: ${evaluation.label_quality}/5`,
+    `- concept_accuracy: ${evaluation.concept_accuracy}/5`,
+    `- notes: ${evaluation.notes || ''}`,
+    ...(evaluation.action_items || []).map(a => `- ACTION: ${a}`),
+  ].join('\n');
+
+  const prevPayload = extractPayloadFromHtml(prevHtml);
+  const prevPayloadText = prevPayload
+    ? formatPayload(prevPayload)
+    : '(Could not find scaffold markers in the previous HTML. Output a fresh payload using the required markers.)';
+
+  return `${buildSystem2dPrompt(scaffold, library, plan)}
+
+CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
+${issues}
+
+PREVIOUS GENERATED PAYLOAD (edit this; do NOT output full HTML):
+${prevPayloadText}
+
+Fix all identified failure modes and improve every score. Maintain or improve what already works well.
+Return ONLY the updated marker-wrapped payload.`;
+}
+
+async function generate2dRefinedFigureHtml({
+  modelId, base64, mediaType, plan, prevHtml, evaluation, userText,
+  prevScreenshot, prevScreenshotMediaType, maxTokens = 16000,
+}) {
+  if (!modelId) throw new Error('modelId is required.');
+  if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
+  if (!prevHtml) throw new Error('prevHtml is required.');
+  if (!evaluation) throw new Error('evaluation is required.');
+
+  const scaffold = getScaffold2d();
+  // Route the library from the PLAN, not from the previous HTML, so the fresh and
+  // refinement passes always agree. A mid-loop library switch would invalidate the
+  // previous payload we are asking the model to edit.
+  const library = getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
+  const systemPrompt = buildSystem2dRefinementPrompt(scaffold, library, prevHtml, evaluation, plan);
+  const message = buildUser2dMessage(plan, library, userText);
+
+  const userContent = [
+    { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
+    ...(prevScreenshot ? [{ type: 'image_url', image_url: { url: `data:${prevScreenshotMediaType || 'image/jpeg'};base64,${prevScreenshot}` } }] : []),
+    {
+      type: 'text',
+      text: prevScreenshot
+        ? `${message}\n\nThe second image above is a screenshot of the PREVIOUS attempt's rendered output (not the source figure) — use it to see exactly what broke.`
+        : message,
+    },
+  ];
+
+  const out = await generateWithModel(modelId, { systemPrompt, userContent, maxTokens });
+
+  return finalize2dOutput(scaffold, out, 'refine-2d');
+}
+
+/**
+ * Unified 2D entry point — routes fresh vs refinement on whether the caller has a
+ * previous attempt AND its evaluation. Mirrors generation.js generateCode().
+ */
+async function generate2dCode(opts) {
+  const { prevHtml, evaluation } = opts || {};
+  const isRefinement = Boolean(prevHtml && evaluation);
+  return isRefinement
+    ? generate2dRefinedFigureHtml(opts)
+    : generate2dFigureHtml(opts);
+}
+
+module.exports = {
+  generate2dFigureHtml,
+  generate2dRefinedFigureHtml,
+  generate2dCode,
+  buildSystem2dPrompt,
+  buildSystem2dRefinementPrompt,
+  finalize2dOutput,
+  getLibraryForFigureType,
+};

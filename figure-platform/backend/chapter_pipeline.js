@@ -7,8 +7,7 @@ const sharp = require('sharp');
 
 const { classifyChapter } = require('./classify_figures');
 const { runFigureLoop } = require('./figure_loop');
-const { generate2dFigureHtml } = require('./generation-2d');
-const { plan2dFigure } = require('./planner-2d');
+const { runFigureLoop2d } = require('./figure_loop_2d');
 const { createResultRecord, saveRecord } = require('./figure_pipeline');
 const { upsertEvaluation, upsertAttempts } = require('./result_schema');
 const { getCriticContext } = require('./critic');
@@ -160,31 +159,50 @@ async function generateOneFigure({ fig, chapter, scaffold, resolvedModel, resolv
       });
     }
   } else {
-    const plan = await withRetry(() => plan2dFigure(fig.stem, chapter, base64, mediaType));
-    const html = await withRetry(() => generate2dFigureHtml({
-      modelId: resolvedModel,
-      base64,
-      mediaType,
-      plan,
-      maxTokens: 16000,
-    }));
+    const loopState = await runFigureLoop2d({
+      figureStem: fig.stem,
+      chapterName: chapter,
+      imageData: { base64, mediaType },
+      sourceBase64: base64,
+      sourceMediaType: mediaType,
+      plannerModel: resolvedPlannerModel,
+      generatorModel: resolvedModel,
+      criticModel: resolvedCriticModel,
+      fewShot: resolvedFewShot,
+    });
 
     record = createResultRecord({
       id: figureId,
       filename: fig.filename,
-      html,
+      html: loopState.currentHtml || '',
       timestamp,
       source: 'chapter_pipeline',
       model: resolvedModel,
       plannerModel: resolvedPlannerModel,
+      criticModel: resolvedCriticModel,
       experiment: `chapter_pipeline`,
-      plan: plan || null,
+      plan: loopState.currentPlan || null,
       fallbackBase64: base64,
       fallbackMediaType: mediaType,
       sourceBase64: base64,
       sourceMediaType: mediaType,
-      extra: { type: '2d', pipeline: 'chapter_pipeline' },
+      extra: {
+        type: '2d',
+        loopStatus: loopState.status,
+        generationDurationMs: loopState.generationDurationMs ?? null,
+        generationStartedAt: loopState.generationStartedAt ?? null,
+        pipeline: 'chapter_pipeline',
+      },
     });
+
+    record = upsertAttempts(record, loopState.attempts || []);
+    if (loopState.currentEvaluation) {
+      record = upsertEvaluation(record, resolvedCriticModel, loopState.currentEvaluation, timestamp, {
+        criticVersion,
+        criticModel: resolvedCriticModel,
+        source: 'loop',
+      });
+    }
   }
 
   saveRecord(record, path.join(runDir, `${fig.stem}.json`));
