@@ -48,7 +48,7 @@ const SCAFFOLD_API = `WHAT THE SCAFFOLD PROVIDES (already defined — use these,
 - setCameraView({ projection, azimuthDeg, elevationDeg, rollDeg, axisScreenAngles, obliqueAngleDeg, depthScale, zoom, target, heightFraction, distanceScale }) — source-matched camera setup.
   heightFraction: fraction of viewport height the content should fill (default 0.5; use 0.65–0.75 to fill more). Omit zoom — the scaffold auto-fits from projected scene bounds.
   Call it AFTER all geometry is in the scene, or auto-fit measures the wrong bounds. Labels come afterwards and do not affect the fit.
-- setUiLayout('overlay' | 'right' | 'bottom', sizePx?) — the scaffold ALWAYS auto-docks #ui (to 'right', or 'bottom' when narrow) and grows the dock to fit its content. Normally you do not call this at all: just put controls in #ui. Never restyle #ui's position/width/max-height and never build your own side panel.
+- #ui is always docked as a right-side column by the scaffold and grows to fit its content. setUiLayout(...) exists only for backwards compatibility and cannot change the side, overlay state, or size. Just put controls in #ui. Never restyle #ui's position/width/max-height and never build your own side panel.
 - addLabel(htmlString, THREE.Vector3, options?) — floating HTML label system.
 - registerInteractive(object, { title, body, tooltip }), showPopup(title, body), hidePopup, showTooltip, hideTooltip — hover/click explanations.
 - compileExpr(src, vars) → f(...args); throws on a bad expression (never returns a fallback)
