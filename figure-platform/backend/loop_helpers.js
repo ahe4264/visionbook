@@ -16,12 +16,12 @@
  * is a harmless no-op pass-through plus an empty `verification` field.
  */
 function mergeVerificationIntoEvaluation(evaluation, report) {
-  const verifyActionItems = report.errors.map(e => `[verify:${e.id}] ${e.message}`);
-  return {
-    ...evaluation,
-    action_items: [...(evaluation.action_items || []), ...verifyActionItems],
-    verification: { ok: report.ok, errors: report.errors, warnings: report.warnings },
-  };
+    const verifyActionItems = report.errors.map(e => `[verify:${e.id}] ${e.message}`);
+    return {
+        ...evaluation,
+        action_items: [...(evaluation.action_items || []), ...verifyActionItems],
+        verification: { ok: report.ok, errors: report.errors, warnings: report.warnings },
+    };
 }
 
 async function withRetry(label, fn, { retries = 3, baseDelay = 2500 } = {}) {
@@ -30,10 +30,12 @@ async function withRetry(label, fn, { retries = 3, baseDelay = 2500 } = {}) {
             return await fn();
         } catch (err) {
             const msg = err?.message || String(err);
-            const retryable = /fetch failed|connection error|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|timeout/i.test(msg);
+            const code = err?.code || err?.cause?.code || '';
+            const retryable = /UND_ERR_HEADERS_TIMEOUT|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(code) ||
+                /fetch failed|connection error|Headers Timeout|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|timeout/i.test(msg);
             if (!retryable || attempt >= retries) throw err;
             const delay = baseDelay * Math.pow(2, attempt);
-            console.warn(`[${label}] retryable error (${attempt + 1}/${retries}): ${msg}. Retrying in ${delay}ms...`);
+            console.warn(`[${label}] retryable error (${attempt + 1}/${retries}): ${code ? `${code} ` : ''}${msg}. Retrying in ${delay}ms...`);
             await new Promise(resolve => setTimeout(resolve, delay));
         }
     }

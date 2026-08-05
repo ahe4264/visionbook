@@ -1,7 +1,7 @@
 const { generateWithModel } = require('./models');
 
 const ORCHESTRATOR_DEFAULT_MODEL = 'gpt-4o';
-const ORCHESTRATOR_MAX_TOKENS = 1024;
+const ORCHESTRATOR_MAX_TOKENS = 4096;
 
 // Only the framing sentence is medium-specific. The calibration examples below are
 // deliberately SHARED: they calibrate the pass / fix_plan / refine_generation

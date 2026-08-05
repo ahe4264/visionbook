@@ -125,8 +125,8 @@ const {
 // what makes cross-track comparison meaningful.
 const {
   criticVersion: CURRENT_CRITIC_VERSION_2D,
-// useFewShot=false here purely to avoid a spurious "no calibration example"
-// warning at startup — this call only reads the version string.
+  // useFewShot=false here purely to avoid a spurious "no calibration example"
+  // warning at startup — this call only reads the version string.
 } = getCriticContext(false, '2d');
 console.log(`Experiment: ${CURRENT_EXPERIMENT}  (model: ${CURRENT_MODEL})`);
 
@@ -305,10 +305,13 @@ async function withRetry(fn, { retries = 4, baseDelay = 2500 } = {}) {
     try {
       return await fn();
     } catch (err) {
-      const isRetryable = /fetch failed|connection error|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503/i.test(err?.message || '');
+      const code = err?.code || err?.cause?.code || '';
+      const message = err?.message || '';
+      const isRetryable = /UND_ERR_HEADERS_TIMEOUT|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(code) ||
+        /fetch failed|connection error|Headers Timeout|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503/i.test(message);
       if (isRetryable && attempt < retries) {
         const delay = baseDelay * Math.pow(2, attempt);
-        console.warn(`Retryable error (attempt ${attempt + 1}/${retries}): ${err.message}. Retrying in ${delay}ms…`);
+        console.warn(`Retryable error (attempt ${attempt + 1}/${retries}): ${code ? `${code} ` : ''}${message}. Retrying in ${delay}ms…`);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
@@ -366,7 +369,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
     mediaType,
     base64,
     plan,
-    maxTokens: 16384,
+    maxTokens: 50000,
     applyFixes: true,
   }));
 

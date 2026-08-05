@@ -15,6 +15,9 @@ const sharp = require('sharp');
 const { randomUUID } = require('crypto');
 const { appendLLMInputLog, summarizeUserContent } = require('./llm_input_logger');
 
+const GEMINI_HEADERS_TIMEOUT_MS = Number(process.env.GEMINI_HEADERS_TIMEOUT_MS) || 900_000;
+const GEMINI_BODY_TIMEOUT_MS = Number(process.env.GEMINI_BODY_TIMEOUT_MS) || 0;
+
 // ── URL-routed fetch patch — Gemini-only dispatcher ─────────────────────────
 // The @google/genai SDK's ApiClient calls bare `fetch()` (globalThis.fetch)
 // directly, ignoring any `fetch` option passed to the GoogleGenAI constructor.
@@ -27,19 +30,21 @@ try {
   const undici = require('undici');
   const _geminiDispatcher = new undici.Agent({
     connect: { keepAlive: false },  // fresh TCP per request
-    headersTimeout: 300_000,        // 5 min — time to first byte
-    bodyTimeout: 0,                 // unlimited — stream large HTML responses
+    headersTimeout: GEMINI_HEADERS_TIMEOUT_MS,
+    bodyTimeout: GEMINI_BODY_TIMEOUT_MS,
   });
   const _origFetch = globalThis.fetch;
   globalThis.fetch = (url, opts = {}) => {
-    const urlStr = typeof url === 'string' ? url : (url instanceof URL ? url.href : String(url));
+    const urlStr = typeof url === 'string'
+      ? url
+      : (url instanceof URL ? url.href : (url && typeof url.url === 'string' ? url.url : String(url)));
     if (urlStr.includes('generativelanguage.googleapis.com') ||
       urlStr.includes('aiplatform.googleapis.com')) {
       return undici.fetch(url, { ...opts, dispatcher: _geminiDispatcher });
     }
     return _origFetch(url, opts);
   };
-  console.log('[models] fetch patched: Gemini URLs → undici (keepAlive=false, headersTimeout=5min), others → native');
+  console.log(`[models] fetch patched: Gemini URLs → undici (keepAlive=false, headersTimeout=${Math.round(GEMINI_HEADERS_TIMEOUT_MS / 1000)}s), others → native`);
 } catch (_) {
   // undici not available — rely on default fetch with streaming as fallback
 }
@@ -76,10 +81,12 @@ async function withRetry(label, fn, retries = 2, baseDelayMs = 1000) {
       return await fn();
     } catch (err) {
       const msg = err?.message || String(err);
-      const retryable = /fetch failed|connection error|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|overloaded|timeout/i.test(msg);
+      const code = err?.code || err?.cause?.code || '';
+      const retryable = /UND_ERR_HEADERS_TIMEOUT|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(code) ||
+        /fetch failed|connection error|Headers Timeout|ECONNRESET|ETIMEDOUT|socket hang up|EAI_AGAIN|ENOTFOUND|429|503|overloaded|timeout/i.test(msg);
       if (!retryable || attempt >= retries) throw err;
       const delay = baseDelayMs * Math.pow(2, attempt);
-      console.warn(`[models] ${label} retryable error (attempt ${attempt + 1}/${retries}): ${msg} — retrying in ${delay}ms`);
+      console.warn(`[models] ${label} retryable error (attempt ${attempt + 1}/${retries}): ${code ? `${code} ` : ''}${msg} — retrying in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -347,7 +354,7 @@ async function callGemini(apiModel, systemPrompt, userContent, maxTokens, fewSho
  * @param {number}   maxTokens    — max completion tokens (default 16384)
  * @returns {Promise<string>}     — raw text from the model
  */
-async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens = 16384, fewShotExamples = [] }) {
+async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens = 50000, fewShotExamples = [] }) {
   const entry = MODEL_REGISTRY[modelId];
   if (!entry) throw new Error(`Unknown model: "${modelId}". Available: ${Object.keys(MODEL_REGISTRY).join(', ')}`);
 
@@ -372,13 +379,15 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
   const finalize = (out, err) => {
     const finishedAt = new Date().toISOString();
     const durationMs = Date.parse(finishedAt) - Date.parse(startedAt);
+    const outputText = typeof out === 'string' ? out : '';
     appendLLMInputLog({
       ...recordBase,
       event: 'call_end',
       finishedAt,
       durationMs,
       success: !err,
-      outputChars: typeof out === 'string' ? out.length : 0,
+      outputChars: outputText.length,
+      outputText,
       ...(err ? { error: String(err?.message || err) } : {}),
     });
   };

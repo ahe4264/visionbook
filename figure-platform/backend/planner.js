@@ -19,7 +19,7 @@ const { inferChapterFromFilename, list3dCandidates } = require('./chapter-discov
 const { findQmdFile, extractFigureContext } = require('./qmd_utils');
 
 const PLANNER_MODEL = 'gemini-3.5-flash';
-const PLANNER_MAX_TOKENS = 10240;
+const PLANNER_MAX_TOKENS = 16384;
 
 // ── LLM interaction planner (fast, small-token call) ────────────────────────
 

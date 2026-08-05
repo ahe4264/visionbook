@@ -16,9 +16,9 @@ ${UI_BEGIN_MARKER}
 ...HTML that belongs inside <div id="ui"> — no <html>, <head>, <body>, <script>, or <style>...
 ${UI_END_MARKER}
 ${CODE_BEGIN_MARKER}
-...JavaScript for the existing <script type="module"> — no import statements, no importmap...
+...non-empty JavaScript for the existing <script type="module"> — no import statements, no importmap; must create visible scene content...
 ${CODE_END_MARKER}
-Emit both marker pairs even if a section is empty. The backend keeps the scaffold and injects your payload at these markers, so never output the scaffold itself and never re-declare anything it already defines.`;
+Emit both complete marker pairs. The JavaScript section must not be empty. The backend keeps the scaffold and injects your payload at these markers, so never output the scaffold itself and never re-declare anything it already defines.`;
 
 // === Code Divider =============================================================
 function buildPromptHeader({ scaffold, roleSuffix = '', scaffoldIntro, framedScaffold = true }) {
@@ -294,6 +294,47 @@ function mergePayloadIntoScaffold(scaffold, payload) {
     return merged;
 }
 
+function validateScaffoldPayloadText(text, label = 'generate') {
+    const source = String(text || '');
+    const hasUiBegin = source.includes(UI_BEGIN_MARKER);
+    const hasUiEnd = source.includes(UI_END_MARKER);
+    const hasCodeBegin = source.includes(CODE_BEGIN_MARKER);
+    const hasCodeEnd = source.includes(CODE_END_MARKER);
+    const missing = [];
+    if (!hasUiBegin) missing.push('FIGURE_UI_BEGIN');
+    if (!hasUiEnd) missing.push('FIGURE_UI_END');
+    if (!hasCodeBegin) missing.push('FIGURE_CODE_BEGIN');
+    if (!hasCodeEnd) missing.push('FIGURE_CODE_END');
+
+    function contractError(message) {
+        const err = new Error(`[${label}] ${message}`);
+        err.raw = source.slice(0, 1000);
+        return err;
+    }
+
+    if (missing.length) {
+        throw contractError(`Model response is missing required scaffold marker(s): ${missing.join(', ')}.`);
+    }
+
+    const payload = extractPayloadFromText(source);
+    if (!payload) {
+        throw contractError('Model response did not contain a valid scaffold payload.');
+    }
+    if (!payload.codeJs.trim()) {
+        throw contractError('Model response left FIGURE_CODE empty; generated 3D figures must include scene JavaScript.');
+    }
+    if (/^\s*</.test(payload.codeJs)) {
+        throw contractError('Model response placed HTML where JavaScript was expected in FIGURE_CODE.');
+    }
+    return payload;
+}
+
+function htmlHasScaffoldMarkers(html) {
+    const source = String(html || '');
+    return source.includes(UI_BEGIN_MARKER) || source.includes(UI_END_MARKER) ||
+        source.includes(CODE_BEGIN_MARKER) || source.includes(CODE_END_MARKER);
+}
+
 function looksLikeFullHtmlDocument(text) {
     const prefix = String(text || '').trimStart().slice(0, 300).toLowerCase();
     return prefix.includes('<!doctype html') || prefix.includes('<html');
@@ -414,7 +455,7 @@ async function generateFigureHtml({
     base64,
     plan,
     userText,
-    maxTokens = 16384,
+    maxTokens = 50000,
     applyFixes = true,
 }) {
     if (!modelId) throw new Error('modelId is required.');
@@ -440,9 +481,10 @@ async function generateFigureHtml({
     let html;
     if (looksLikeFullHtmlDocument(out)) {
         // Backwards-compatible: sometimes models still return a full HTML document.
+        if (htmlHasScaffoldMarkers(out)) validateScaffoldPayloadText(out, 'generate');
         html = out;
     } else {
-        const payload = extractPayloadFromText(out) || { uiHtml: '', codeJs: out };
+        const payload = validateScaffoldPayloadText(out, 'generate');
         html = mergePayloadIntoScaffold(scaffold, payload);
     }
 
@@ -461,7 +503,7 @@ async function generateRefinedFigureHtml({
     plan,
     prevScreenshot,
     prevScreenshotMediaType,
-    maxTokens = 16384,
+    maxTokens = 50000,
     applyFixes = true,
 }) {
     if (!modelId) throw new Error('modelId is required.');
@@ -492,9 +534,10 @@ async function generateRefinedFigureHtml({
 
     let html;
     if (looksLikeFullHtmlDocument(out)) {
+        if (htmlHasScaffoldMarkers(out)) validateScaffoldPayloadText(out, 'refine');
         html = out;
     } else {
-        const payload = extractPayloadFromText(out) || { uiHtml: '', codeJs: out };
+        const payload = validateScaffoldPayloadText(out, 'refine');
         html = mergePayloadIntoScaffold(scaffold, payload);
     }
 
@@ -532,7 +575,7 @@ async function generateCode(opts) {
         userText,
         prevScreenshot,
         prevScreenshotMediaType,
-        maxTokens = 16384,
+        maxTokens = 50000,
         applyFixes = true,
         figureLabel,
     } = opts;

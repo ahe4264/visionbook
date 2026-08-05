@@ -99,7 +99,7 @@ function buildSystem2dPrompt(scaffold, library, plan) {
 
   return [`You are building an educational interactive figure for a textbook. The goal is a guided demo that helps students understand the concept — not just a static reconstruction.
 
-OUTPUT: respond with ONLY these two marker-wrapped sections (include both even if empty):
+OUTPUT: respond with ONLY these two complete marker-wrapped sections. The JavaScript section must be non-empty and must draw visible graphics:
   <!-- @FIGURE_UI_BEGIN --> ... <!-- @FIGURE_UI_END -->   ← HTML for #ui; no block-level tags
   // @FIGURE_CODE_BEGIN ... // @FIGURE_CODE_END           ← JS only; no <script>, no imports
 
@@ -185,12 +185,10 @@ function stripFences(text) {
 /**
  * Turn a raw model response into final HTML.
  *
- * Never returns the bare scaffold. When the model forgets the markers we SALVAGE
- * the response as the code payload rather than throwing: a throw inside the
- * generation loop breaks out with `failed_generation` and no retry, whereas
- * salvaged (possibly malformed) output gets caught by verify-2d, converted into
- * concrete action items, and refined on the next pass. This matches what
- * generation.js already does on the 3D refinement path.
+ * Never returns the bare scaffold. Markerless or partial output is rejected
+ * instead of being salvaged as code: salvaging HTML/prose into the JS slot turns
+ * a model contract failure into a misleading blank figure and poisons later
+ * refinement attempts.
  *
  * @param {string} scaffold - base_scene_2d.html
  * @param {string} rawText  - unprocessed model response
@@ -205,10 +203,36 @@ function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
 
   if (looksLikeFullHtmlDocument(out)) return out;
 
+  function contractError(message) {
+    const err = new Error(`[${label}] ${message}`);
+    err.raw = out.slice(0, 1000);
+    return err;
+  }
+
+  const hasUiBegin = out.includes('<!-- @FIGURE_UI_BEGIN -->');
+  const hasUiEnd = out.includes('<!-- @FIGURE_UI_END -->');
+  const hasCodeBegin = out.includes('// @FIGURE_CODE_BEGIN');
+  const hasCodeEnd = out.includes('// @FIGURE_CODE_END');
+  const missing = [];
+  if (!hasUiBegin) missing.push('FIGURE_UI_BEGIN');
+  if (!hasUiEnd) missing.push('FIGURE_UI_END');
+  if (!hasCodeBegin) missing.push('FIGURE_CODE_BEGIN');
+  if (!hasCodeEnd) missing.push('FIGURE_CODE_END');
+  if (missing.length) {
+    throw contractError(`Model response is missing required scaffold marker(s): ${missing.join(', ')}.`);
+  }
+
   const payload = extractPayloadFromText(out);
   if (!payload) {
-    console.warn(`[${label}] No scaffold markers in model response — salvaging as code payload. Raw:`, out.slice(0, 300));
-    return mergePayloadIntoScaffold(scaffold, { uiHtml: '', codeJs: out });
+    throw contractError('Model response did not contain a valid scaffold payload.');
+  }
+
+  if (!payload.codeJs.trim()) {
+    throw contractError('Model response left FIGURE_CODE empty; generated 2D figures must include drawing JavaScript.');
+  }
+
+  if (/<\/?(?:div|label|input|button|span|p|select|option|textarea)\b/i.test(payload.codeJs)) {
+    throw contractError('Model response placed HTML inside FIGURE_CODE; UI HTML must stay inside FIGURE_UI.');
   }
 
   return mergePayloadIntoScaffold(scaffold, payload);
@@ -218,7 +242,7 @@ function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
 /**
  * Generate a figure-faithful interactive HTML page.
  */
-async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, maxTokens = 16000 }) {
+async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, maxTokens = 50000 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
 
@@ -285,7 +309,7 @@ Return ONLY the updated marker-wrapped payload.`;
 
 async function generate2dRefinedFigureHtml({
   modelId, base64, mediaType, plan, prevHtml, evaluation, userText,
-  prevScreenshot, prevScreenshotMediaType, maxTokens = 16000,
+  prevScreenshot, prevScreenshotMediaType, maxTokens = 32768,
 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
