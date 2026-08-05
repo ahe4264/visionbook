@@ -4,7 +4,7 @@ import BENCHMARK_FIGURES from './benchmarkFigures';
 const FALLBACK_PROMPT = '(Loading system prompt from server…)';
 // ── Context Exports Tab ───────────────────────────────────────────────────────
 function ContextExportsTab({ availableModels, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, experimentOptions, fewShot, onOpenResult }) {
-  const concurrency = 10;
+  const concurrency = 5;
   const abortRef = React.useRef(false);
   const runGuardRef = React.useRef(false);
   const [items, setItems] = React.useState([]);
@@ -1513,33 +1513,33 @@ function GeneratorTab({ image, onImageSelected, onGenerate, onError, loading, pl
         const is2d = candidate.figureType === '2d';
         const loopResult = is2d
           ? await runGenerationLoop2d({
-              base64: candidate.base64,
-              mediaType: candidate.mediaType,
-              filename: candidate.filename,
-              figureStem: candidate.stem,
-              chapterName: candidate.chapterName,
-              model: selectedModel || undefined,
-              plannerModel: selectedPlannerModel || undefined,
-              evalModel: selectedCriticModel || undefined,
-              criticVersion: 'benchmark',
-              experiment: selectedExperiment || undefined,
-              fewShot,
-              subject: candidate.subject || undefined,
-            })
+            base64: candidate.base64,
+            mediaType: candidate.mediaType,
+            filename: candidate.filename,
+            figureStem: candidate.stem,
+            chapterName: candidate.chapterName,
+            model: selectedModel || undefined,
+            plannerModel: selectedPlannerModel || undefined,
+            evalModel: selectedCriticModel || undefined,
+            criticVersion: 'benchmark',
+            experiment: selectedExperiment || undefined,
+            fewShot,
+            subject: candidate.subject || undefined,
+          })
           : await runGenerationLoop({
-              base64: candidate.base64,
-              mediaType: candidate.mediaType,
-              filename: candidate.filename,
-              figureStem: candidate.stem,
-              chapterName: candidate.chapterName,
-              model: selectedModel || undefined,
-              plannerModel: selectedPlannerModel || undefined,
-              evalModel: selectedCriticModel || undefined,
-              criticVersion: 'benchmark',
-              experiment: selectedExperiment || undefined,
-              fewShot,
-              subject: candidate.subject || undefined,
-            });
+            base64: candidate.base64,
+            mediaType: candidate.mediaType,
+            filename: candidate.filename,
+            figureStem: candidate.stem,
+            chapterName: candidate.chapterName,
+            model: selectedModel || undefined,
+            plannerModel: selectedPlannerModel || undefined,
+            evalModel: selectedCriticModel || undefined,
+            criticVersion: 'benchmark',
+            experiment: selectedExperiment || undefined,
+            fewShot,
+            subject: candidate.subject || undefined,
+          });
         if (benchmarkAbortRef.current) { activeMap.delete(candidate.stem); return; }
         results.push({ figureStem: candidate.stem, status: 'ok', figureId: loopResult.figureId });
       } catch (err) {
@@ -4016,10 +4016,21 @@ function modelFamily(name) {
   if (n.includes('claude')) return 'Claude';
   if (n.includes('gemini')) return 'Gemini';
   if (n.includes('gpt') || n.includes('codex')) return 'GPT';
+  // OpenRouter-hosted families. 'gemma' is checked after 'gemini' but the two
+  // substrings don't overlap, so order is not load-bearing here.
+  if (n.includes('kimi')) return 'Kimi';
+  if (n.includes('qwen')) return 'Qwen';
+  if (n.includes('gemma')) return 'Gemma';
   return 'Other';
 }
-const FAMILY_COLOR = { Claude: '#ede7f6', Gemini: '#e3f2fd', GPT: '#e8f5e9', Other: '#f0f0f0' };
-const FAMILY_TEXT = { Claude: '#5e35b1', Gemini: '#1565c0', GPT: '#2e7d32', Other: '#555' };
+const FAMILY_COLOR = {
+  Claude: '#ede7f6', Gemini: '#e3f2fd', GPT: '#e8f5e9',
+  Kimi: '#fff3e0', Qwen: '#fce4ec', Gemma: '#e0f2f1', Other: '#f0f0f0',
+};
+const FAMILY_TEXT = {
+  Claude: '#5e35b1', Gemini: '#1565c0', GPT: '#2e7d32',
+  Kimi: '#e65100', Qwen: '#ad1457', Gemma: '#00695c', Other: '#555',
+};
 
 function computeStats(records, groupKey, criticVersion) {
   const byGroup = {};
