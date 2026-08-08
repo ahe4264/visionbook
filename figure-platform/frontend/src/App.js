@@ -4,7 +4,7 @@ import BENCHMARK_FIGURES from './benchmarkFigures';
 const FALLBACK_PROMPT = '(Loading system prompt from server…)';
 // ── Context Exports Tab ───────────────────────────────────────────────────────
 function ContextExportsTab({ availableModels, selectedExperiment, selectedModel, selectedPlannerModel, selectedCriticModel, onExperimentChange, onGeneratorModelChange, onPlannerModelChange, onCriticModelChange, experimentOptions, fewShot, onOpenResult }) {
-  const concurrency = 5;
+  const concurrency = 10;
   const abortRef = React.useRef(false);
   const runGuardRef = React.useRef(false);
   const [items, setItems] = React.useState([]);
