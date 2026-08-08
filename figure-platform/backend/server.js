@@ -438,7 +438,7 @@ async function generateFigure({ base64, mediaType, filename, plan, model: reques
  * Generate figure using auto-iterative loop
  * Runs plan → generate → critique → decide cycle, saving all iterations
  */
-async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
+async function generateFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, noPlanner = false, fewShot: requestedFewShot, authoredContext, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -483,6 +483,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     generatorModel: modelId,
     criticModel: criticModelId,
     fewShot: requestedFewShot || FEW_SHOT,
+    noPlanner,
     plannerOptions: {
       authoredPrompt,
       authoredInteractions,
@@ -526,6 +527,15 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
     sourceBase64: base64,
     sourceMediaType: mediaType,
     extra: {
+      // Which ablation arm produced this record. Previously only `model` was
+      // persisted, so an arm's settings could not be recovered at analysis time.
+      ablation: {
+        noPlanner: Boolean(noPlanner),
+        maxAttempts,
+        plannerModel: noPlanner ? null : plannerModelId,
+        criticModel: criticModelId,
+        fewShot: requestedFewShot || FEW_SHOT,
+      },
       generationDurationMs: loopState.generationDurationMs ?? null,
       generationStartedAt: loopState.generationStartedAt ?? null,
       ...(resultCollection ? { resultCollection } : {}),
@@ -569,7 +579,7 @@ async function generateFigureWithLoop({ base64, mediaType, filename, figureStem,
  * Generate a 2D figure using the auto-iterative loop.
  * Runs plan → generate → verify-2d → critique (mode:'2d') → decide, saving all iterations.
  */
-async function generate2dFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, fewShot: requestedFewShot, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
+async function generate2dFigureWithLoop({ base64, mediaType, filename, figureStem, chapterName, model: requestedModel, plannerModel: requestedPlannerModel, evalModel: requestedEvalModel, criticVersion: requestedCriticVersion, experiment: requestedExperiment, maxAttempts = 3, noPlanner = false, fewShot: requestedFewShot, authoredPrompt, authoredInteractions, sourcePath, resultCollection, resultSource, figureId: requestedFigureId, extra: requestedExtra }) {
   const resolvedFigureStem = figureStem || (filename ? path.parse(filename).name : null);
 
   if (!base64 || !mediaType || !filename || !resolvedFigureStem) {
@@ -621,6 +631,7 @@ async function generate2dFigureWithLoop({ base64, mediaType, filename, figureSte
     generatorModel: modelId,
     criticModel: criticModelId,
     fewShot: requestedFewShot || FEW_SHOT,
+    noPlanner,
     plannerOptions: {
       authoredPrompt,
       authoredInteractions,
@@ -670,7 +681,10 @@ async function generate2dFigureWithLoop({ base64, mediaType, filename, figureSte
     source: resultSource || 'api',
     model: modelId,
     experiment: experimentName,
-    plan: storedPlan,
+    // With the planner ablated there is no blueprint to wrap, and storing the
+    // envelope anyway would leave 2D records looking planned while 3D records
+    // (which store the plan directly) correctly read null.
+    plan: noPlanner ? null : storedPlan,
     previewBase64: shot ? shot.data : null,
     previewMediaType: shot ? shot.mediaType : null,
     fallbackBase64: base64,
@@ -681,6 +695,13 @@ async function generate2dFigureWithLoop({ base64, mediaType, filename, figureSte
       // Load-bearing: drives history filtering and the pairwise mode resolver.
       type: '2d',
       loopStatus: loopState.status,
+      ablation: {
+        noPlanner: Boolean(noPlanner),
+        maxAttempts,
+        plannerModel: noPlanner ? null : plannerModelId,
+        criticModel: criticModelId,
+        fewShot: requestedFewShot || FEW_SHOT,
+      },
       generationDurationMs: loopState.generationDurationMs ?? null,
       generationStartedAt: loopState.generationStartedAt ?? null,
       ...(resultCollection ? { resultCollection } : {}),
@@ -915,6 +936,7 @@ async function generateContextExportItem(body) {
     ...common,
     criticVersion: body.criticVersion || 'context_export',
     maxAttempts: body.maxAttempts || 3,
+    noPlanner: Boolean(body.noPlanner),
     fewShot: body.fewShot,
   });
 
@@ -922,6 +944,7 @@ async function generateContextExportItem(body) {
     ...common,
     criticVersion: body.criticVersion || 'context_export',
     maxAttempts: body.maxAttempts || 3,
+    noPlanner: Boolean(body.noPlanner),
     fewShot: body.fewShot,
   });
 }

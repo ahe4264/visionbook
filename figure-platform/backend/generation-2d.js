@@ -56,6 +56,30 @@ function getLibraryForFigureType(figureType, renderingMode, interactions) {
   }
 }
 
+// ── No-planner ablation ───────────────────────────────────────────────────────
+// Without a planner there is no blueprint.figureType to route the library from,
+// so the generator picks. base_scene_2d.html loads SVG.js, Chart.js and Mermaid
+// unconditionally, so any choice works at runtime — but their __markRendered()
+// timings are mutually exclusive, so it must commit to exactly one.
+function buildLibrarySection(library) {
+  if (library) return LIB_SECTIONS[library] || LIB_SECTIONS.svgjs;
+  return [
+    'Choose EXACTLY ONE of the three libraries below — whichever best fits the source figure — and use only that library\'s globals and only its __markRendered() timing. Do not mix them. Name your choice in a one-line comment at the top of the JS block.',
+    `  [svgjs]   ${LIB_SECTIONS.svgjs}`,
+    `  [chartjs] ${LIB_SECTIONS.chartjs}`,
+    `  [mermaid] ${LIB_SECTIONS.mermaid}`,
+  ].join('\n\n');
+}
+
+/** Rewrites blueprint field references for the no-planner arm, where none exists. */
+function deBlueprint(text) {
+  return text
+    .split('blueprint.reconstructionNotes').join('the authored brief')
+    .split('blueprint.interactions').join('the REQUESTED INTERACTIONS in the user message')
+    .split('blueprint.demo_steps').join('the steps implied by the authored brief')
+    .split('if demo_steps is absent or empty').join('if the brief implies no step sequence');
+}
+
 // ── System prompt builder ─────────────────────────────────────────────────────
 // SVG.js-only helper reference. Chart.js and Mermaid figures cannot call any of
 // it, so it ships with the svgjs library section rather than unconditionally.
@@ -87,7 +111,7 @@ const CODE_EDITOR_SPEC_2D = `CODE EDITOR (an interaction has type "code_editor")
 Each op in the interaction's "api" appends a frame BEFORE returning its value — { kind (which op ran; drives caption wording and highlight style), state (a deep copy of the data at that instant), indices (the elements the op touched; highlight exactly these), message (one human-readable line, e.g. "compare A[3]=2 with A[7]=14 → false") } — and an op is the ONLY route to mutation, which is what makes the replay gap-free. Freeze the API object, range-check every index, and expose no reference to the underlying data. Seed a <textarea> with "sample_code", add tabs to swap in "buggy_code" and a bare starter, an editable field for the interaction's "input", and a Run button that disables while running — all inside #ui, which the scaffold keeps in a real right-side column, shrinking #container and firing 'fig-resize' so the figure re-lays out. Execute in a Web Worker built from a Blob URL (revoke it when done) with a ~1–2s wall-clock timeout AND hard caps on op and frame count; never eval student code on the main thread. Surface syntax errors, thrown errors, timeouts, cap hits, and a missing or misnamed "entry_point" inline as the final frame with a clear message, never as a silent no-op. Replay with first / prev / play-pause / next, a speed control, an "n of N" counter, the current frame's message as caption, and a running log; draw the structure from frame[i] alone so scrubbing backwards looks identical to arriving there forwards — do not accumulate SVG elements across frames (reuse a group you clear, or update existing shapes in place). Finally test the final state against "success_check" and show a status readout distinguishing not-run / running / correct / wrong answer / error — on a wrong answer, highlight the elements that violate the property so the buggy sample is diagnosable rather than merely marked wrong.`;
 
 function buildSystem2dPrompt(scaffold, library, plan) {
-  const libSection = LIB_SECTIONS[library] || LIB_SECTIONS.svgjs;
+  const libSection = buildLibrarySection(library);
 
   const types = Array.isArray(plan?.interactions)
     ? new Set(plan.interactions.map(i => i && i.type).filter(Boolean))
@@ -97,7 +121,7 @@ function buildSystem2dPrompt(scaffold, library, plan) {
   const wantEquationInput = !types || types.has('equation_input');
   const wantCodeEditor = !types || types.has('code_editor');
 
-  return [`You are building an educational interactive figure for a textbook. The goal is a guided demo that helps students understand the concept — not just a static reconstruction.
+  const assembled = [`You are building an educational interactive figure for a textbook. The goal is a guided demo that helps students understand the concept — not just a static reconstruction.
 
 OUTPUT: respond with ONLY these two complete marker-wrapped sections. The JavaScript section must be non-empty and must draw visible graphics:
   <!-- @FIGURE_UI_BEGIN --> ... <!-- @FIGURE_UI_END -->   ← HTML for #ui; no block-level tags
@@ -147,6 +171,8 @@ CONTROLS (blueprint.interactions — render in UI section; add id="{id}Input" to
   - Step 0 is the default view (set on load); subsequent steps are one click away
   - Omit the player entirely if demo_steps is absent or empty`,
   ].filter(Boolean).join('\n\n');
+
+  return library ? assembled : deBlueprint(assembled);
 }
 
 // ── User message builder ──────────────────────────────────────────────────────
@@ -169,6 +195,20 @@ function buildUser2dMessage(plan, library, userText) {
   // VISUAL FIDELITY and CONTROLS in the system prompt already carry the
   // faithfulness-then-interactivity contract — do not restate it here.
   return `Build an interactive figure using ${libName}.${blueprintSection}`;
+}
+
+/**
+ * User message for the no-planner ablation arm. Mirrors buildNoPlannerUserText in
+ * generation.js, minus the projection menu — 2D figures have no camera — and
+ * minus any library instruction, which the all-libraries system prompt carries.
+ */
+function buildNoPlannerUser2dMessage({ authoredPrompt, authoredInteractions, sourcePath } = {}) {
+  const parts = ['Build an interactive 2D figure from the brief below and the source image.'];
+  if (authoredPrompt) parts.push(`AUTHORED FIGURE BRIEF:\n${String(authoredPrompt).trim()}`);
+  if (authoredInteractions) parts.push(`REQUESTED INTERACTIONS:\n${String(authoredInteractions).trim()}`);
+  if (sourcePath) parts.push(`SOURCE FILE: ${String(sourcePath).trim()}`);
+  parts.push('There is no blueprint: decide the figure type, elements, labels, controls, and any step sequence yourself.');
+  return parts.join('\n\n');
 }
 
 // ── Strip markdown fences ─────────────────────────────────────────────────────
@@ -242,12 +282,12 @@ function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
 /**
  * Generate a figure-faithful interactive HTML page.
  */
-async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, maxTokens = 50000 }) {
+async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, noPlanner = false, maxTokens = 50000 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
 
   const scaffold = getScaffold2d();
-  const library = getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
+  const library = noPlanner ? null : getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
   const systemPrompt = buildSystem2dPrompt(scaffold, library, plan);
   const message = buildUser2dMessage(plan, library, userText);
 
@@ -309,7 +349,7 @@ Return ONLY the updated marker-wrapped payload.`;
 
 async function generate2dRefinedFigureHtml({
   modelId, base64, mediaType, plan, prevHtml, evaluation, userText,
-  prevScreenshot, prevScreenshotMediaType, maxTokens = 32768,
+  prevScreenshot, prevScreenshotMediaType, noPlanner = false, maxTokens = 32768,
 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
@@ -320,7 +360,7 @@ async function generate2dRefinedFigureHtml({
   // Route the library from the PLAN, not from the previous HTML, so the fresh and
   // refinement passes always agree. A mid-loop library switch would invalidate the
   // previous payload we are asking the model to edit.
-  const library = getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
+  const library = noPlanner ? null : getLibraryForFigureType(plan?.figureType, plan?.renderingMode, plan?.interactions);
   const systemPrompt = buildSystem2dRefinementPrompt(scaffold, library, prevHtml, evaluation, plan);
   const message = buildUser2dMessage(plan, library, userText);
 
@@ -353,6 +393,7 @@ async function generate2dCode(opts) {
 }
 
 module.exports = {
+  buildNoPlannerUser2dMessage,
   generate2dFigureHtml,
   generate2dRefinedFigureHtml,
   generate2dCode,

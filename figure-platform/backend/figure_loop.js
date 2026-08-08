@@ -12,7 +12,7 @@
  */
 
 const { planForFigure, refinePlan } = require('./planner');
-const { generateCode } = require('./generation');
+const { generateCode, buildNoPlannerUserText } = require('./generation');
 const { evaluateHtmlWithCritic } = require('./critic');
 const { decideFigureRefinement } = require('./orchestrator');
 const { verifyFigure, DEFAULT_VIEWPORTS } = require('./verify');
@@ -56,6 +56,7 @@ async function runFigureLoop(opts) {
         fewShot = { planner: true, critic: true, orchestrator: true },
         plannerOptions = {},
         seedHtml = null,
+        noPlanner = false,
     } = opts;
 
     if (!figureStem) throw new Error('figureStem is required');
@@ -90,24 +91,35 @@ async function runFigureLoop(opts) {
     console.log(`Starting loop for ${figureStem}`);
     loopState.status = 'planning';
 
-    try {
-        const _planStart = Date.now();
-        loopState.currentPlan = await withRetry(`plan:${figureStem}`, () =>
-            planForFigure(figureStem, chapterName, imageData, plannerModel, fewShot.planner !== false, plannerOptions)
-        );
-        loopState.timings.planMs = Date.now() - _planStart;
-        console.log(`[timing] PLAN ${figureStem}: ${fmt(loopState.timings.planMs)}`);
-        console.log(`Plan created`, { elements: loopState.currentPlan.interactionPlan?.elements?.length || 0 });
-    } catch (e) {
-        loopState.status = 'failed_planning';
-        loopState.attempts.push({
-            iteration: 0,
-            step: 'plan',
-            status: 'error',
-            error: e.message,
-        });
-        console.log(`PLAN FAILED: ${e.message}`);
-        return loopState;
+    // NO-PLANNER ABLATION: skip the planning stage outright. The author's brief and
+    // requested interactions still reach the generator verbatim via
+    // buildNoPlannerUserText, so the arm drops the planner without also dropping the
+    // task specification the planner would otherwise have carried. currentPlan stays
+    // null, which the generation prompts already handle.
+    const noPlannerUserText = noPlanner ? buildNoPlannerUserText(plannerOptions) : null;
+
+    if (noPlanner) {
+        console.log(`[no-planner] ${figureStem}: planning stage skipped; briefing the generator directly`);
+    } else {
+        try {
+            const _planStart = Date.now();
+            loopState.currentPlan = await withRetry(`plan:${figureStem}`, () =>
+                planForFigure(figureStem, chapterName, imageData, plannerModel, fewShot.planner !== false, plannerOptions)
+            );
+            loopState.timings.planMs = Date.now() - _planStart;
+            console.log(`[timing] PLAN ${figureStem}: ${fmt(loopState.timings.planMs)}`);
+            console.log(`Plan created`, { elements: loopState.currentPlan.interactionPlan?.elements?.length || 0 });
+        } catch (e) {
+            loopState.status = 'failed_planning';
+            loopState.attempts.push({
+                iteration: 0,
+                step: 'plan',
+                status: 'error',
+                error: e.message,
+            });
+            console.log(`PLAN FAILED: ${e.message}`);
+            return loopState;
+        }
     }
 
     let prevVerifyScreenshot = null;
@@ -225,6 +237,8 @@ async function runFigureLoop(opts) {
             loopState.currentHtml = await withRetry(`generate:${figureStem}:attempt${attemptNum}`, () => generateCode({
                 scaffold,
                 plan: loopState.currentPlan,
+                noPlanner,
+                userText: noPlannerUserText || undefined,
                 prevHtml: previousAttempt?.html || null,
                 evaluation: previousAttempt?.evaluation || null,
                 prevScreenshot: previousAttempt ? prevVerifyScreenshot : null,

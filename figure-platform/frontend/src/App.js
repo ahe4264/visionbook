@@ -18,6 +18,10 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
   const [running, setRunning] = React.useState(false);
   const [progress, setProgress] = React.useState(null);
   const [results, setResults] = React.useState([]);
+  // Ablation knobs. maxAttempts was previously unreachable from this tab, so every
+  // benchmark run was pinned to the server default of 3.
+  const [maxAttempts, setMaxAttempts] = React.useState(3);
+  const [noPlanner, setNoPlanner] = React.useState(false);
 
   const loadData = React.useCallback(async () => {
     setLoading(true);
@@ -129,6 +133,8 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
           evalModel: selectedCriticModel || undefined,
           experiment: selectedExperiment,
           criticVersion: 'context_export',
+          maxAttempts,
+          noPlanner,
           fewShot,
         });
         if (abortRef.current) { activeMap.delete(item.id); return; }
@@ -184,8 +190,8 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
             </select>
           </label>
           <label style={styles.modelSelector}>
-            <span style={styles.modelLabel}>Planner</span>
-            <select value={selectedPlannerModel || ''} onChange={e => onPlannerModelChange(e.target.value)} style={styles.modelSelect}>
+            <span style={styles.modelLabel}>Planner{noPlanner ? ' (ablated)' : ''}</span>
+            <select value={selectedPlannerModel || ''} onChange={e => onPlannerModelChange(e.target.value)} style={styles.modelSelect} disabled={noPlanner}>
               <option value="">Server default</option>
               {(availableModels || []).map(model => <option key={model.id || model} value={model.id || model}>{model.label || model.id || model}</option>)}
             </select>
@@ -196,6 +202,17 @@ function ContextExportsTab({ availableModels, selectedExperiment, selectedModel,
               <option value="">Server default</option>
               {(availableModels || []).map(model => <option key={model.id || model} value={model.id || model}>{model.label || model.id || model}</option>)}
             </select>
+          </label>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Max attempts</span>
+            <input type="number" min={1} max={10} value={maxAttempts} onChange={e => setMaxAttempts(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} style={styles.modelSelect} />
+          </label>
+          <label style={styles.modelSelector}>
+            <span style={styles.modelLabel}>Ablation</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '5px 0' }}>
+              <input type="checkbox" checked={noPlanner} onChange={e => setNoPlanner(e.target.checked)} />
+              No planner
+            </span>
           </label>
         </div>
 

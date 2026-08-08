@@ -28,6 +28,8 @@ const DEFAULT_EXPERIMENT = 'full-pipeline_FINAL';
 const MODEL_FAMILIES = [
   { match: /^gemini/i, folder: 'no-iteration-gemini_FINAL' },
   { match: /^gpt/i, folder: 'no-iteration-gpt_FINAL' },
+  { match: /^kimi/i, folder: 'no-iteration-kimi_FINAL' },
+  { match: /^qwen/i, folder: 'no-iteration-qwen_FINAL' },
 ];
 
 function folderForModel(model) {

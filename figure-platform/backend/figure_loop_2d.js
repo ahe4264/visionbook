@@ -18,7 +18,7 @@
  */
 
 const { plan2dFigure, refinePlan2d, PLANNER_2D_MODEL } = require('./planner-2d');
-const { generate2dCode } = require('./generation-2d');
+const { generate2dCode, buildNoPlannerUser2dMessage } = require('./generation-2d');
 const { evaluateHtmlWithCritic } = require('./critic');
 const { decideFigureRefinement } = require('./orchestrator');
 const { verify2dHtml, DEFAULT_2D_VIEWPORTS } = require('./verify-2d');
@@ -70,6 +70,7 @@ async function runFigureLoop2d(opts) {
         criticModel = 'claude-opus-4.7',
         fewShot = { planner: true, critic: true, orchestrator: true },
         plannerOptions = {},
+        noPlanner = false,
     } = opts;
 
     if (!figureStem) throw new Error('figureStem is required');
@@ -104,38 +105,47 @@ async function runFigureLoop2d(opts) {
     console.log(`Starting 2D loop for ${figureStem}`);
     loopState.status = 'planning';
 
-    try {
-        const _planStart = Date.now();
-        // Raw blueprint (not an envelope) — this is what generate2dCode expects.
-        loopState.currentPlan = await plan2dFigure(
-            figureStem,
-            chapterName,
-            imageData.base64,
-            imageData.mediaType,
-            plannerModel,
-            fewShot.planner !== false,
-            plannerOptions
-        );
-        if (isStubPlan(loopState.currentPlan)) {
-            throw new Error('planner returned an unparseable stub blueprint (no elements, no interactions)');
+    // NO-PLANNER ABLATION — see the matching block in figure_loop.js. With no
+    // blueprint there is also no figureType to route the library from, so
+    // generation-2d.js offers all three libraries and lets the generator pick.
+    const noPlannerUserText = noPlanner ? buildNoPlannerUser2dMessage(plannerOptions) : null;
+
+    if (noPlanner) {
+        console.log(`[no-planner] ${figureStem}: planning stage skipped; briefing the generator directly`);
+    } else {
+        try {
+            const _planStart = Date.now();
+            // Raw blueprint (not an envelope) — this is what generate2dCode expects.
+            loopState.currentPlan = await plan2dFigure(
+                figureStem,
+                chapterName,
+                imageData.base64,
+                imageData.mediaType,
+                plannerModel,
+                fewShot.planner !== false,
+                plannerOptions
+            );
+            if (isStubPlan(loopState.currentPlan)) {
+                throw new Error('planner returned an unparseable stub blueprint (no elements, no interactions)');
+            }
+            loopState.timings.planMs = Date.now() - _planStart;
+            console.log(`[timing] PLAN ${figureStem}: ${fmt(loopState.timings.planMs)}`);
+            console.log(`Plan created`, {
+                figureType: loopState.currentPlan.figureType,
+                elements: (loopState.currentPlan.elements || []).length,
+                interactions: (loopState.currentPlan.interactions || []).length,
+            });
+        } catch (e) {
+            loopState.status = 'failed_planning';
+            loopState.attempts.push({
+                iteration: 0,
+                step: 'plan',
+                status: 'error',
+                error: e.message,
+            });
+            console.log(`PLAN FAILED: ${e.message}`);
+            return loopState;
         }
-        loopState.timings.planMs = Date.now() - _planStart;
-        console.log(`[timing] PLAN ${figureStem}: ${fmt(loopState.timings.planMs)}`);
-        console.log(`Plan created`, {
-            figureType: loopState.currentPlan.figureType,
-            elements: (loopState.currentPlan.elements || []).length,
-            interactions: (loopState.currentPlan.interactions || []).length,
-        });
-    } catch (e) {
-        loopState.status = 'failed_planning';
-        loopState.attempts.push({
-            iteration: 0,
-            step: 'plan',
-            status: 'error',
-            error: e.message,
-        });
-        console.log(`PLAN FAILED: ${e.message}`);
-        return loopState;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -168,6 +178,8 @@ async function runFigureLoop2d(opts) {
             const previousAttempt = loopState.attempts[loopState.attempts.length - 1] || null;
             loopState.currentHtml = await generate2dCode({
                 plan: loopState.currentPlan,
+                noPlanner,
+                userText: noPlannerUserText || undefined,
                 prevHtml: previousAttempt?.html || null,
                 evaluation: previousAttempt?.evaluation || null,
                 prevScreenshot: previousAttempt ? prevVerifyScreenshot : null,

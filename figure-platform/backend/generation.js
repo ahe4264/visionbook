@@ -97,6 +97,50 @@ const TASK_STEPS = `ORDER OF WORK:
 5) Then, in this order: setCameraView(...) → all labels → the plan's interactions.`;
 
 // === Code Divider =============================================================
+// NO-PLANNER ABLATION. With the planner stage removed the generator has no plan
+// to read, so every prompt block that points at a plan field is rewritten to
+// point at the source image and the author's brief instead. The variants are
+// DERIVED from the originals rather than copied, so the two cannot drift apart,
+// and a missing anchor throws at module load rather than quietly shipping a
+// prompt that references something which does not exist.
+function requireReplace(text, find, replaceWith, label) {
+    if (!text.includes(find)) throw new Error(`no-planner prompt variant out of sync: ${label}`);
+    return text.split(find).join(replaceWith);
+}
+
+/** Rewrites blocks that only mention the plan in passing. */
+function dePlan(text) {
+    return text
+        .split("the plan's ").join("the brief's ")
+        .split('a plan field').join('a requested field');
+}
+
+const SCAFFOLD_API_NO_PLANNER = dePlan(SCAFFOLD_API);
+const CODE_EDITOR_SPEC_NO_PLANNER = dePlan(CODE_EDITOR_SPEC);
+const EQUATION_INPUT_SPEC_NO_PLANNER = dePlan(EQUATION_INPUT_SPEC);
+
+// The plan normally names one projection; without it the generator picks from
+// the menu buildNoPlannerUserText puts in the user message.
+const FIGURE_RULES_NO_PLANNER = requireReplace(
+    FIGURE_RULES,
+    ', and PROJECTION TYPE in the user message gives the exact setCameraView call.',
+    '. Pick the projection from the PROJECTION menu in the user message by looking at the source image, then make the setCameraView call that entry describes.',
+    'FIGURE_RULES camera bullet'
+);
+
+const TASK_STEPS_NO_PLANNER = requireReplace(
+    requireReplace(
+        dePlan(TASK_STEPS),
+        '1) Settle the projection mechanism and pose from the plan BEFORE speccing any geometry',
+        '1) Settle the projection mechanism and pose from the source image and the PROJECTION menu in the user message BEFORE speccing any geometry',
+        'TASK_STEPS step 1'
+    ),
+    're-check what you built against GEOMETRY NOTES and the source image',
+    're-check what you built against the source image and the authored brief',
+    'TASK_STEPS step 4'
+);
+
+// === Code Divider =============================================================
 /** Interaction types named by the plan, or null when the plan shape is unknown. */
 function planInteractionTypes(plan) {
     const ip = plan?.interactionPlan || plan;
@@ -105,7 +149,7 @@ function planInteractionTypes(plan) {
     return new Set(list.map(i => i && i.type).filter(Boolean));
 }
 
-function getGenerationTaskGuide(plan) {
+function getGenerationTaskGuide(plan, noPlanner = false) {
     const standalone = process.env.GENERATION_PROFILE === 'standalone-demo';
     const types = planInteractionTypes(plan);
     // With no plan (or an unrecognisable one) keep both specs, matching the old
@@ -114,17 +158,17 @@ function getGenerationTaskGuide(plan) {
     const wantEquationInput = !types || types.has('equation_input');
 
     return [
-        SCAFFOLD_API,
-        FIGURE_RULES,
+        noPlanner ? SCAFFOLD_API_NO_PLANNER : SCAFFOLD_API,
+        noPlanner ? FIGURE_RULES_NO_PLANNER : FIGURE_RULES,
         standalone ? STANDALONE_DEMO_RULES : null,
-        wantCodeEditor ? CODE_EDITOR_SPEC : null,
-        wantEquationInput ? EQUATION_INPUT_SPEC : null,
-        TASK_STEPS,
+        wantCodeEditor ? (noPlanner ? CODE_EDITOR_SPEC_NO_PLANNER : CODE_EDITOR_SPEC) : null,
+        wantEquationInput ? (noPlanner ? EQUATION_INPUT_SPEC_NO_PLANNER : EQUATION_INPUT_SPEC) : null,
+        noPlanner ? TASK_STEPS_NO_PLANNER : TASK_STEPS,
     ].filter(Boolean).join('\n\n');
 }
 
 // === Code Divider =============================================================
-function buildGenerationSystemPrompt(scaffold, plan) {
+function buildGenerationSystemPrompt(scaffold, plan, noPlanner = false) {
     if (!scaffold) throw new Error('scaffold is required.');
 
     const header = buildPromptHeader({
@@ -134,10 +178,10 @@ function buildGenerationSystemPrompt(scaffold, plan) {
 
     return `${header}
 
-${getGenerationTaskGuide(plan)}`;
+${getGenerationTaskGuide(plan, noPlanner)}`;
 }
 // === Code Divider =============================================================
-function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan) {
+function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan, noPlanner = false) {
     if (!scaffold) throw new Error('scaffold is required.');
     if (!prevHtml) throw new Error('prevHtml is required.');
     if (!evaluation) throw new Error('evaluation is required.');
@@ -167,7 +211,7 @@ function buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan) {
 
     return `${header}
 
-${getGenerationTaskGuide(plan)}
+${getGenerationTaskGuide(plan, noPlanner)}
 
 CRITIC FEEDBACK ON PREVIOUS ATTEMPT:
 ${issues}
@@ -228,11 +272,60 @@ function buildPlanInjection(plan) {
     return parts.join('\n\n');
 }
 
+// The projection guidelines are written for a generator that has a plan in hand:
+// they defer to axis_screen_angles and to GEOMETRY NOTES. Injected verbatim into
+// the no-planner user message those become dangling references, so rewrite them
+// to point at the source image. Derived, and throws at load if an anchor moves.
+const PROJECTION_GUIDELINES_NO_PLANNER = Object.fromEntries(
+    Object.entries(PROJECTION_GUIDELINES).map(([name, text]) => {
+        let out = text;
+        if (name === 'axonometric') {
+            out = requireReplace(out,
+                'If the plan gives axis_screen_angles: null (a flat 2D plot/diagram), pass axisScreenAngles: null for a front-on view. Otherwise the plan does not measure per-figure angles — use a standard isometric pose:',
+                'If the source is a flat 2D plot or diagram, pass axisScreenAngles: null for a front-on view. Otherwise do not try to measure per-figure angles from the image — use a standard isometric pose:',
+                'axonometric guideline');
+        }
+        if (name === 'oblique') {
+            out = requireReplace(out,
+                'a standard cabinet-oblique pose; the plan does not measure per-figure oblique angles.',
+                'a standard cabinet-oblique pose; do not try to measure per-figure oblique angles from the image.',
+                'oblique pose guideline');
+            out = requireReplace(out,
+                'If GEOMETRY NOTES assigns the axes in a way that contradicts the source image\'s silhouette, follow the image.',
+                'If your chosen axis assignment contradicts the source image\'s silhouette, follow the image.',
+                'oblique axis guideline');
+        }
+        return [name, out];
+    })
+);
+
 // The output contract lives in BASE_OUTPUT_RULES — do not restate it here.
 function buildGenerationUserText(plan) {
     if (!plan) return 'Analyse this figure carefully, then return the scaffold fill-in payload.';
     return `${buildPlanInjection(plan)}\n\nFollow the interaction plan above.`;
 }
+/**
+ * User text for the no-planner ablation arm. The author's brief and requested
+ * interactions reach the generator verbatim, with no planner in between, so the
+ * arm ablates the planning stage without also ablating the task specification.
+ * The projection menu stands in for the single PROJECTION TYPE line a plan would
+ * supply — setCameraView needs a mechanism chosen either way, so leaving it out
+ * would break the scaffold contract rather than measure the planner.
+ */
+function buildNoPlannerUserText({ authoredPrompt, authoredInteractions, sourcePath } = {}) {
+    const projectionMenu = Object.entries(PROJECTION_GUIDELINES_NO_PLANNER)
+        .map(([name, guidance]) => `  ${name}:\n    ${guidance}`)
+        .join('\n\n');
+
+    const parts = [];
+    if (authoredPrompt) parts.push(`AUTHORED FIGURE BRIEF:\n${String(authoredPrompt).trim()}`);
+    if (authoredInteractions) parts.push(`REQUESTED INTERACTIONS:\n${String(authoredInteractions).trim()}`);
+    if (sourcePath) parts.push(`SOURCE FILE: ${String(sourcePath).trim()}`);
+    parts.push(`PROJECTION (inspect the source image, choose exactly one, and call setCameraView accordingly):\n${projectionMenu}`);
+    parts.push('Build the figure directly from the brief above and the source image. There is no interaction plan: decide the elements, geometry, labels, and controls yourself.');
+    return parts.join('\n\n');
+}
+
 // Strip accidental markdown fences and return raw content.
 function stripFences(text) {
     if (typeof text !== 'string') return '';
@@ -455,6 +548,7 @@ async function generateFigureHtml({
     base64,
     plan,
     userText,
+    noPlanner = false,
     maxTokens = 50000,
     applyFixes = true,
 }) {
@@ -471,7 +565,7 @@ async function generateFigureHtml({
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationSystemPrompt(scaffold, plan),
+        systemPrompt: buildGenerationSystemPrompt(scaffold, plan, noPlanner),
         userContent,
         maxTokens,
     });
@@ -501,6 +595,7 @@ async function generateRefinedFigureHtml({
     base64,
     userText,
     plan,
+    noPlanner = false,
     prevScreenshot,
     prevScreenshotMediaType,
     maxTokens = 50000,
@@ -525,7 +620,7 @@ async function generateRefinedFigureHtml({
     ];
 
     let out = await generateWithModel(modelId, {
-        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan),
+        systemPrompt: buildGenerationRefinementPrompt(scaffold, prevHtml, evaluation, plan, noPlanner),
         userContent,
         maxTokens,
     });
@@ -573,6 +668,7 @@ async function generateCode(opts) {
         mediaType,
         base64,
         userText,
+        noPlanner = false,
         prevScreenshot,
         prevScreenshotMediaType,
         maxTokens = 50000,
@@ -611,13 +707,13 @@ async function generateCode(opts) {
     const runSingleShot = () => {
         if (isRefinement) {
             return generateRefinedFigureHtml({
-                modelId, scaffold, prevHtml, evaluation, mediaType, base64, plan,
+                modelId, scaffold, prevHtml, evaluation, mediaType, base64, plan, noPlanner,
                 prevScreenshot, prevScreenshotMediaType,
                 userText: userText || buildGenerationUserText(plan), maxTokens, applyFixes,
             });
         }
         return generateFigureHtml({
-            modelId, scaffold, mediaType, base64, plan,
+            modelId, scaffold, mediaType, base64, plan, noPlanner,
             userText: userText || buildGenerationUserText(plan), maxTokens, applyFixes,
         });
     };
@@ -652,6 +748,7 @@ async function generateCode(opts) {
 module.exports = {
     buildGenerationSystemPrompt,
     buildGenerationUserText,
+    buildNoPlannerUserText,
     buildPlanInjection,
     generateFigureHtml,
     generateRefinedFigureHtml,
