@@ -193,8 +193,25 @@ function readContextExportRows() {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+// ── Restrict the tab to the latest figure batch ──────────────────────────────
+// The 150 figures added in the most recent contexts_export.json update are all
+// tagged with a `new_*` domain (new_math / new_physics / new_chemistry / new_cs);
+// none of the original 100 benchmark rows use that prefix. Keeping only those
+// rows pins the Context Exports tab to the new batch.
+// To show everything again: delete INCLUDED_DOMAIN_PREFIX, isIncludedRow, and the
+// .filter() call in listContextExports below.
+const INCLUDED_DOMAIN_PREFIX = 'new_';
+
+function isIncludedRow(row) {
+  return String(row?.domain || '').toLowerCase().startsWith(INCLUDED_DOMAIN_PREFIX);
+}
+
 function listContextExports(options = {}) {
-  return readContextExportRows().map((row, index) => normalizeRow(row, index, options));
+  // Filter before normalizeRow so excluded rows skip image resolution / base64 reads.
+  return readContextExportRows()
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => isIncludedRow(row))
+    .map(({ row, index }) => normalizeRow(row, index, options));
 }
 
 function getContextExport(id, options = {}) {

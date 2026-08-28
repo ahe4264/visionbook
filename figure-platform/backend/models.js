@@ -345,6 +345,97 @@ function getAvailableModels() {
   }));
 }
 
+// ── Token accounting ─────────────────────────────────────────────────────────
+
+/**
+ * normalizeUsage — one token-accounting shape across four provider dialects.
+ *
+ * Each provider names the same three numbers differently and buries the
+ * extras (reasoning tokens, cache hits) at a different depth, so logs written
+ * in the provider's own shape cannot be compared or summed across models.
+ * This projects them onto a common set of keys and keeps `raw` alongside for
+ * the provider-specific fields it drops.
+ *
+ * Two accounting differences the totals have to respect:
+ *   • OpenAI/Gemini count cached prompt tokens *inside* the input count;
+ *     Anthropic reports cache reads and writes as separate buckets, so its
+ *     total is the sum of all four rather than input + output.
+ *   • Reasoning tokens are part of OpenAI's completion_tokens but sit OUTSIDE
+ *     Gemini's candidatesTokenCount, even though Google bills and totals them
+ *     as output. outputTokens therefore means billed output — reasoning
+ *     included — for every provider, with reasoningTokens as the breakdown.
+ *     Without this, a thinking Gemini call logs 1 output token next to
+ *     OpenAI's 8452 and any cross-model comparison is nonsense.
+ *
+ * Returns null when the provider sent no usage — a real outcome rather than an
+ * error, since an OpenRouter upstream may omit the usage chunk entirely.
+ */
+function normalizeUsage(provider, raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const sum = (...vals) => vals.reduce((acc, v) => acc + (v || 0), 0);
+  // Derive a total only when both halves arrived. A partial response is a real
+  // case (an upstream that reports completion_tokens alone), and adding up what
+  // happened to be present would publish a total that silently omits a side.
+  const derive = (a, b, ...extra) =>
+    (a === undefined || b === undefined) ? undefined : sum(a, b, ...extra);
+
+  let out;
+  switch (provider) {
+    case 'anthropic': {
+      const inputTokens = num(raw.input_tokens);
+      const outputTokens = num(raw.output_tokens);
+      const cachedInputTokens = num(raw.cache_read_input_tokens);
+      const cacheWriteTokens = num(raw.cache_creation_input_tokens);
+      out = {
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        cacheWriteTokens,
+        totalTokens: derive(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens),
+      };
+      break;
+    }
+    case 'google': {
+      const inputTokens = num(raw.promptTokenCount);
+      const answerTokens = num(raw.candidatesTokenCount);
+      const reasoningTokens = num(raw.thoughtsTokenCount);
+      // Fold thinking into the output count to match every other provider.
+      const outputTokens = (answerTokens === undefined && reasoningTokens === undefined)
+        ? undefined
+        : sum(answerTokens, reasoningTokens);
+      out = {
+        inputTokens,
+        outputTokens,
+        totalTokens: num(raw.totalTokenCount) ?? derive(inputTokens, outputTokens),
+        reasoningTokens,
+        cachedInputTokens: num(raw.cachedContentTokenCount),
+      };
+      break;
+    }
+    default: {
+      // openai and openrouter both speak the OpenAI usage shape. OpenRouter
+      // adds `cost`, the only place a dollar figure is available for free.
+      const inputTokens = num(raw.prompt_tokens);
+      const outputTokens = num(raw.completion_tokens);
+      out = {
+        inputTokens,
+        outputTokens,
+        totalTokens: num(raw.total_tokens) ?? derive(inputTokens, outputTokens),
+        reasoningTokens: num(raw.completion_tokens_details?.reasoning_tokens),
+        cachedInputTokens: num(raw.prompt_tokens_details?.cached_tokens),
+        costUsd: num(raw.cost),
+      };
+    }
+  }
+
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined) delete out[key];
+  }
+  if (!Object.keys(out).length) return null;
+  return { ...out, raw };
+}
+
 // ── Provider-specific call implementations ───────────────────────────────────
 
 /**
@@ -366,12 +457,17 @@ async function callOpenAI(apiModel, systemPrompt, userContent, maxTokens, fewSho
         max_completion_tokens: maxTokens,
         messages,
         stream: true,
+        // A streamed response carries no token counts unless asked for them:
+        // include_usage appends a final, choice-less chunk holding the usage.
+        stream_options: { include_usage: true },
       });
       let text = '';
+      let usage = null;
       for await (const chunk of stream) {
         text += chunk.choices?.[0]?.delta?.content || '';
+        if (chunk.usage) usage = chunk.usage;
       }
-      return text;
+      return { text, usage: normalizeUsage('openai', usage) };
     })(), `${apiModel} call`);
   };
 
@@ -406,13 +502,19 @@ async function callOpenRouter(apiModel, systemPrompt, userContent, maxTokens, fe
       max_tokens: maxTokens,
       messages,
       stream: true,
+      // As with OpenAI, usage only arrives if requested. The extra chunk lands
+      // after the finish_reason chunk and carries no choices, so it falls
+      // through the error and text handling below untouched.
+      stream_options: { include_usage: true },
       // Per-model options (provider routing, reasoning budget) travel as extra
       // body fields; the OpenAI SDK passes unknown params through untouched.
       ...(requestOptions || {}),
     });
     let text = '';
     let finishReason = null;
+    let usage = null;
     for await (const chunk of stream) {
+      if (chunk.usage) usage = chunk.usage;
       const choice = chunk.choices?.[0];
       // OpenRouter signals failure inside a 200 response in more than one shape:
       // a top-level `error` on the chunk, an `error` on the choice, or — once
@@ -432,9 +534,13 @@ async function callOpenRouter(apiModel, systemPrompt, userContent, maxTokens, fe
     }
     // Truncation at the token budget. Left undetected this returns partial code
     // that reads as a successful generation and only fails when the figure runs.
+    // These failures are billed: the tokens were generated, the response is
+    // just unusable. Carrying the usage out on the error keeps it in the log
+    // instead of dropping it on the one path where a retry re-bills it.
+    const billed = (err) => Object.assign(err, { usage: normalizeUsage('openrouter', usage) });
     if (finishReason === 'length') {
-      throw new Error(`OpenRouter ${apiModel}: output truncated at the ${maxTokens}-token budget ` +
-        `(finish_reason=length) after ${text.length} chars — raise maxTokens for this stage`);
+      throw billed(new Error(`OpenRouter ${apiModel}: output truncated at the ${maxTokens}-token budget ` +
+        `(finish_reason=length) after ${text.length} chars — raise maxTokens for this stage`));
     }
     // A stream that ends without ever reporting a finish reason did not end, it
     // was cut: the socket dropped mid-response. This is the case that used to be
@@ -445,8 +551,8 @@ async function callOpenRouter(apiModel, systemPrompt, userContent, maxTokens, fe
     }
     // An empty completion downstream becomes a blank figure with no obvious
     // cause — usually a reasoning-only response. Fail loudly instead.
-    if (!text.trim()) throw new Error(`OpenRouter ${apiModel}: stream ended with no text content`);
-    return text;
+    if (!text.trim()) throw billed(new Error(`OpenRouter ${apiModel}: stream ended with no text content`));
+    return { text, usage: normalizeUsage('openrouter', usage) };
   })(), `${apiModel} call`);
 }
 
@@ -488,10 +594,11 @@ async function callAnthropic(apiModel, systemPrompt, userContent, maxTokens, few
     const finalMessage = await stream.finalMessage();
 
     // Anthropic returns content as an array of blocks
-    return finalMessage.content
+    const text = finalMessage.content
       .filter(b => b.type === 'text')
       .map(b => b.text)
       .join('');
+    return { text, usage: normalizeUsage('anthropic', finalMessage.usage) };
   })(), `${apiModel} call`);
 }
 
@@ -531,10 +638,14 @@ async function callGemini(apiModel, systemPrompt, userContent, maxTokens, fewSho
       });
 
       let text = '';
+      let usage = null;
       for await (const chunk of stream) {
         text += chunk.text ?? '';
+        // usageMetadata repeats on every chunk with running totals, so the
+        // last one seen is the count for the whole response.
+        if (chunk.usageMetadata) usage = chunk.usageMetadata;
       }
-      return text;
+      return { text, usage: normalizeUsage('google', usage) };
     } catch (err) {
       const cause = err.cause;
       console.error(`[Gemini] ${apiModel} call failed: ${err.message}` +
@@ -583,7 +694,10 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
     fewShotExamples,
     maxTokens,
   });
-  const finalize = (out, err) => {
+  // One attempt's outcome. withRetry calls this per attempt, so a retried call
+  // writes one call_end per try — sum them for spend, do not read the last one
+  // as the cost of the step. `usage` is null when the provider sent none.
+  const finalize = (out, err, usage = null) => {
     const finishedAt = new Date().toISOString();
     const durationMs = Date.parse(finishedAt) - Date.parse(startedAt);
     const outputText = typeof out === 'string' ? out : '';
@@ -595,38 +709,42 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
       success: !err,
       outputChars: outputText.length,
       outputText,
+      usage,
       ...(err ? { error: String(err?.message || err) } : {}),
     });
   };
+  // Providers return { text, usage }; callers of generateWithModel expect the
+  // text alone, so the usage is peeled off into the log here.
+  const settle = (result) => { finalize(result.text, null, result.usage); return result.text; };
   switch (provider) {
     case 'openai':
       return withRetry(modelId, () =>
         callOpenAI(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-          .then((out) => { finalize(out); return out; })
-          .catch((e) => { finalize(null, e); throw e; })
+          .then(settle)
+          .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; })
       );
     case 'openrouter':
       return withRetry(modelId, () =>
         callOpenRouter(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples, requestOptions)
-          .then((out) => { finalize(out); return out; })
-          .catch((e) => { finalize(null, e); throw e; }),
+          .then(settle)
+          .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; }),
         OPENROUTER_MAX_RETRIES
       );
     case 'anthropic':
       return withRetry(modelId, () =>
         callAnthropic(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-          .then((out) => { finalize(out); return out; })
-          .catch((e) => { finalize(null, e); throw e; })
+          .then(settle)
+          .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; })
       );
     case 'google':
       return withRetry(modelId, () =>
         callGemini(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
-          .then((out) => { finalize(out); return out; })
-          .catch((e) => { finalize(null, e); throw e; })
+          .then(settle)
+          .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; })
       );
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
 }
 
-module.exports = { generateWithModel, getAvailableModels, MODEL_REGISTRY };
+module.exports = { generateWithModel, getAvailableModels, MODEL_REGISTRY, normalizeUsage };
