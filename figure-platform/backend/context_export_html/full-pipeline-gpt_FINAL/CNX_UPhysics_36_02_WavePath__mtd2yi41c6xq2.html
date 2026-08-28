@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span id="demoNarration" style="display:block;margin:0;font-size:10px;max-width:260px;line-height:1.35"></span>
+<span style="display:flex;gap:6px;align-items:center"><button onclick="prevStep()">◀</button><span id="stepLabel"></span><button onclick="nextStep()">▶</button></span>
+<label>Screen point height y: <output id="screenHeightVal">0.35</output><input id="screenHeightInput" type="range" min="-0.6" max="0.8" step="0.02" value="0.35" oninput="document.getElementById('screenHeightVal').value=this.value;update_screenHeight(+this.value)"></label>
+<label>Slit separation d: <output id="slitSeparationVal">0.35</output><input id="slitSeparationInput" type="range" min="0.15" max="0.6" step="0.01" value="0.35" oninput="document.getElementById('slitSeparationVal').value=this.value;update_slitSeparation(+this.value)"></label>
+<label><input id="viewModeInput" type="checkbox" onchange="toggle_viewMode(this.checked)"> View: Near-slit approximation</label>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+draw.viewbox(0, 0, 940, 564);
+
+var teal = '#007fa8';
+var tan = '#c9a16d';
+var gray = '#b6b6b6';
+var black = '#111';
+var dash = '#666';
+
+var state = {
+  screenHeight: 0.35,
+  slitSeparation: 0.35,
+  viewMode: 'Full apparatus'
+};
+
+var draggingP = false;
+var currentStep = 0;
+var steps = [
+  {
+    title: 'Start with the whole double-slit setup',
+    narration: 'The two waves leave S1 and S2 and meet at point P on the screen. The rays have different lengths, but the important quantity for interference is their path difference, not either total path by itself.',
+    state: { screenHeight: 0.35, slitSeparation: 0.35, viewMode: 'Full apparatus' }
+  },
+  {
+    title: 'Move P on the screen',
+    narration: 'Drag P or use the height slider to move the screen point upward. This increases θ, so the extracted path difference Δl grows in the linked construction.',
+    state: { screenHeight: 0.65, slitSeparation: 0.35, viewMode: 'Full apparatus' }
+  },
+  {
+    title: 'Zoom into the near-slit geometry',
+    narration: 'Switching views shows the distant rays as nearly parallel. The path difference appears as the short perpendicular-triangle segment Δl, making the relation Δl = d sin(θ) visible.',
+    state: { screenHeight: 0.65, slitSeparation: 0.35, viewMode: 'Near-slit approximation' }
+  },
+  {
+    title: 'Change the slit spacing',
+    narration: 'With θ held fixed, widening the slits increases the right triangle’s hypotenuse d, so Δl increases proportionally. Narrowing the slits shrinks the same geometric difference.',
+    state: { screenHeight: 0.65, slitSeparation: 0.55, viewMode: 'Near-slit approximation' }
+  }
+];
+
+function makeMarkers() {
+  var tealMarker = draw.marker(11, 11, function (add) {
+    add.path('M 0 0 L 11 5.5 L 0 11 z').fill(teal);
+  }).ref(10, 5.5).orient('auto');
+
+  var blackMarker = draw.marker(9, 9, function (add) {
+    add.path('M 0 0 L 9 4.5 L 0 9 z').fill(black);
+  }).ref(8, 4.5).orient('auto');
+
+  return { teal: tealMarker, black: blackMarker };
+}
+
+function label(g, text, x, y, size, anchor, fill) {
+  var t = g.text(text)
+    .font({ family: 'Arial, Helvetica, sans-serif', size: size || 18, anchor: anchor || 'start' })
+    .fill(fill || black)
+    .attr({
+      'paint-order': 'stroke',
+      stroke: '#fff',
+      'stroke-width': 4,
+      'stroke-linejoin': 'round'
+    });
+  t.move(x, y);
+  return t;
+}
+
+function line(g, x1, y1, x2, y2, opts) {
+  opts = opts || {};
+  var l = g.line(x1, y1, x2, y2).stroke({
+    color: opts.color || black,
+    width: opts.width || 1.5,
+    linecap: opts.linecap || 'butt',
+    linejoin: 'round'
+  });
+  if (opts.dashed) l.attr('stroke-dasharray', opts.dashed);
+  if (opts.markerEnd) l.marker('end', opts.markerEnd);
+  if (opts.opacity != null) l.opacity(opts.opacity);
+  return l;
+}
+
+function dimension(g, x1, y1, x2, y2, txt, lx, ly) {
+  var dx = x2 - x1, dy = y2 - y1;
+  var len = Math.sqrt(dx * dx + dy * dy) || 1;
+  var nx = -dy / len, ny = dx / len;
+  var cap = 11;
+  line(g, x1, y1, x2, y2, { color: black, width: 1.7 });
+  line(g, x1 - nx * cap, y1 - ny * cap, x1 + nx * cap, y1 + ny * cap, { color: black, width: 1.7 });
+  line(g, x2 - nx * cap, y2 - ny * cap, x2 + nx * cap, y2 + ny * cap, { color: black, width: 1.7 });
+  label(g, txt, lx, ly, 18, 'middle');
+}
+
+function angleArc(g, cx, cy, r, theta, txt, labelR, labelOffsetY) {
+  var a0 = 0;
+  var a1 = theta;
+  var x0 = cx + r * Math.cos(a0), y0 = cy - r * Math.sin(a0);
+  var x1 = cx + r * Math.cos(a1), y1 = cy - r * Math.sin(a1);
+  var sweep = theta >= 0 ? 0 : 1;
+  g.path('M ' + x0 + ' ' + y0 + ' A ' + r + ' ' + r + ' 0 0 ' + sweep + ' ' + x1 + ' ' + y1)
+    .fill('none').stroke({ color: black, width: 1.3 });
+  var mid = theta / 2;
+  label(g, txt, cx + (labelR || r + 12) * Math.cos(mid), cy - (labelR || r + 12) * Math.sin(mid) + (labelOffsetY || 0), 18, 'middle');
+}
+
+function screenAngleArc(g, cx, cy, r, a0, a1, txt, lr) {
+  var x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+  var x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+  var delta = a1 - a0;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  var sweep = delta >= 0 ? 1 : 0;
+  g.path('M ' + x0 + ' ' + y0 + ' A ' + r + ' ' + r + ' 0 0 ' + sweep + ' ' + x1 + ' ' + y1)
+    .fill('none').stroke({ color: black, width: 1.3 });
+  var mid = a0 + delta / 2;
+  label(g, txt, cx + (lr || r + 13) * Math.cos(mid) - 2, cy + (lr || r + 13) * Math.sin(mid) - 8, 18, 'middle');
+}
+
+function offsetSegmentDimension(g, A, B, offset, txt, labelsGroup) {
+  var dx = B.x - A.x, dy = B.y - A.y;
+  var len = Math.sqrt(dx * dx + dy * dy) || 1;
+  var ux = dx / len, uy = dy / len;
+  var nx = -uy, ny = ux;
+  var A2 = { x: A.x + nx * offset, y: A.y + ny * offset };
+  var B2 = { x: B.x + nx * offset, y: B.y + ny * offset };
+  line(g, A.x, A.y, A2.x, A2.y, { color: black, width: 1.2 });
+  line(g, B.x, B.y, B2.x, B2.y, { color: black, width: 1.2 });
+  line(g, A2.x, A2.y, B2.x, B2.y, { color: black, width: 1.5 });
+  var cap = 8;
+  line(g, A2.x - nx * cap, A2.y - ny * cap, A2.x + nx * cap, A2.y + ny * cap, { color: black, width: 1.5 });
+  line(g, B2.x - nx * cap, B2.y - ny * cap, B2.x + nx * cap, B2.y + ny * cap, { color: black, width: 1.5 });
+  label(labelsGroup, txt, (A2.x + B2.x) / 2 + nx * 18 - 10, (A2.y + B2.y) / 2 + ny * 18 - 10, 20, 'middle');
+}
+
+function waveTrain(g, x1, y1, x2, y2, a, b) {
+  var dx = x2 - x1, dy = y2 - y1;
+  var len = Math.sqrt(dx * dx + dy * dy) || 1;
+  var ux = dx / len, uy = dy / len;
+  var nx = -uy, ny = ux;
+  var pts = [];
+  var n = 90;
+  for (var i = 0; i <= n; i++) {
+    var q = a + (b - a) * i / n;
+    var baseX = x1 + dx * q;
+    var baseY = y1 + dy * q;
+    var amp = 13 * Math.sin(i / n * Math.PI * 6.2);
+    pts.push([baseX + nx * amp, baseY + ny * amp]);
+  }
+  return g.polyline(pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' '))
+    .fill('none').stroke({ color: teal, width: 2.2, linecap: 'round', linejoin: 'round' });
+}
+
+function drawSlitBarrier(g, x, yTop, yBot, slits, scale) {
+  scale = scale || 1;
+  var gap = 17 * scale;
+  var ys = [yTop];
+  slits.slice().sort(function (a, b) { return a - b; }).forEach(function (s) {
+    ys.push(s - gap, s + gap);
+  });
+  ys.push(yBot);
+  for (var i = 0; i < ys.length - 1; i += 2) {
+    line(g, x, ys[i], x, ys[i + 1], { color: tan, width: 4 });
+  }
+}
+
+function svgPoint(evt) {
+  var pt = draw.node.createSVGPoint();
+  pt.x = evt.clientX;
+  pt.y = evt.clientY;
+  return pt.matrixTransform(draw.node.getScreenCTM().inverse());
+}
+
+function setPFromSvgY(y) {
+  var midY = 385;
+  var pY = Math.max(41, Math.min(510, y));
+  state.screenHeight = Math.max(-0.6, Math.min(0.8, (midY - pY) / 430));
+  syncControls();
+  render();
+}
+
+document.addEventListener('mousemove', function (e) {
+  if (!draggingP) return;
+  setPFromSvgY(svgPoint(e).y);
+});
+document.addEventListener('mouseup', function () {
+  draggingP = false;
+});
+
+function render() {
+  draw.clear();
+  var markers = makeMarkers();
+
+  var full = draw.group();
+  var near = draw.group();
+  var labels = draw.group();
+
+  var nearEmph = state.viewMode === 'Near-slit approximation';
+  full.opacity(nearEmph ? 0.58 : 1);
+  near.opacity(1);
+
+  var barrierX = 56, screenX = 392, midY = 385;
+  var D = screenX - barrierX;
+  var dPx = state.slitSeparation * 315;
+  var yPx = state.screenHeight * 430;
+  var s1Y = midY - dPx / 2;
+  var s2Y = midY + dPx / 2;
+  var pY = midY - yPx;
+  pY = Math.max(41, Math.min(510, pY));
+  yPx = midY - pY;
+  var theta = Math.atan2(yPx, D);
+
+  drawSlitBarrier(full, barrierX, 193, 528, [s1Y, s2Y], 1);
+  line(full, screenX, 100, screenX, 479, { color: gray, width: 6, linecap: 'butt' });
+
+  var ray1 = line(full, barrierX, s1Y, screenX, pY, { color: teal, width: nearEmph ? 2 : 2.6, markerEnd: markers.teal });
+  var ray2 = line(full, barrierX, s2Y, screenX, pY, { color: teal, width: nearEmph ? 2 : 2.6, markerEnd: markers.teal });
+  ray1.css('cursor', 'pointer').on('mousemove', function (e) { showTooltip('Ray r₁ travels from S₁ to P.', e); }).on('mouseleave', hideTooltip).on('click', function () {
+    showPopup('Upper ray r₁', 'This is one of the two optical paths that meet at P. Interference depends on how much longer one path is than the other.');
+  });
+  ray2.css('cursor', 'pointer').on('mousemove', function (e) { showTooltip('Ray r₂ travels from S₂ to P.', e); }).on('mouseleave', hideTooltip).on('click', function () {
+    showPopup('Lower ray r₂', 'The phase difference at P is set by the difference between r₂ and r₁, not by either distance alone.');
+  });
+
+  waveTrain(full, barrierX, s1Y, screenX, pY, 0.17, 0.34);
+  waveTrain(full, barrierX, s2Y, screenX, pY, 0.24, 0.43);
+
+  line(full, barrierX, midY, screenX + 8, midY, { color: dash, width: 1.4, dashed: '8 5' });
+  line(full, barrierX, midY, screenX, pY, { color: black, width: 1.2, dashed: '8 5' });
+
+  full.circle(8).center(screenX, pY).fill(black);
+  var dragHandle = full.circle(28).center(screenX, pY).fill({ color: '#fff', opacity: 0.001 });
+  dragHandle.css('cursor', 'ns-resize')
+    .on('mousedown', function (e) { draggingP = true; e.preventDefault(); })
+    .on('mousemove', function (e) { showTooltip('Drag P up or down to change y and θ.', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () {
+      showPopup('Movable screen point P', 'Moving P changes the observation angle θ. As θ changes, the two ray lengths become more or less unequal, changing the path difference.');
+    });
+  full.circle(4).center(screenX, midY).fill(black);
+
+  dimension(full, 13, s1Y, 13, s2Y, 'd', 13, (s1Y + s2Y) / 2 - 10);
+  dimension(full, screenX + 43, pY, screenX + 43, midY, 'y', screenX + 44, (pY + midY) / 2 - 10);
+  dimension(full, barrierX, 512, screenX, 512, 'D', (barrierX + screenX) / 2, 513);
+  line(full, barrierX, 493, barrierX, 529, { color: black, width: 1.5 });
+  line(full, screenX, 493, screenX, 529, { color: black, width: 1.5 });
+  angleArc(full, barrierX, midY, 43, theta, 'θ', 61, 2);
+
+  label(labels, 'S₁', 29, s1Y - 17, 18, 'middle');
+  label(labels, 'S₂', 29, s2Y - 17, 18, 'middle');
+  label(labels, 'Screen', screenX + 10, 100, 20, 'start');
+  label(labels, 'P', screenX + 10, pY - 17, 20, 'start');
+  label(labels, 'C', screenX + 11, midY - 16, 18, 'start');
+  label(labels, 'r₁', 212, s1Y + (pY - s1Y) * 0.46 - 29, 18, 'middle');
+  label(labels, 'r₂', 254, s2Y + (pY - s2Y) * 0.52 + 3, 18, 'middle');
+  label(labels, '(a)', 224, 545, 18, 'middle');
+
+  var rx = 568, rMidY = 300;
+  var rSep = state.slitSeparation * 520;
+  rSep = Math.min(292, Math.max(80, rSep));
+  var uY = rMidY - rSep / 2;
+  var lY = rMidY + rSep / 2;
+  drawSlitBarrier(near, rx, 69, 493, [uY, lY], 0.95);
+
+  var ux = Math.cos(theta), uy = -Math.sin(theta);
+  var rayLen = 306;
+  line(near, rx, uY, rx + ux * rayLen, uY + uy * rayLen, { color: teal, width: nearEmph ? 2.8 : 2.2, markerEnd: markers.teal });
+  line(near, rx, lY, rx + ux * rayLen, lY + uy * rayLen, { color: teal, width: nearEmph ? 2.8 : 2.2, markerEnd: markers.teal });
+  line(near, rx, uY, 928, uY, { color: dash, width: 1.3, dashed: '8 5' });
+  line(near, rx, lY, 928, lY, { color: dash, width: 1.3, dashed: '8 5' });
+
+  angleArc(near, rx + 5, uY, 68, theta, 'θ', 86, 0);
+  angleArc(near, rx + 5, lY, 68, theta, 'θ', 86, 0);
+
+  var U = { x: rx, y: uY };
+  var L = { x: rx, y: lY };
+  var t = (U.x - L.x) * ux + (U.y - L.y) * uy;
+  var F = { x: L.x + t * ux, y: L.y + t * uy };
+
+  var construction = line(near, U.x, U.y, F.x, F.y, { color: black, width: 1.2, dashed: '8 5' });
+  construction.css('cursor', 'pointer').on('mousemove', function (e) {
+    showTooltip('This dashed line is perpendicular to the lower ray.', e);
+  }).on('mouseleave', hideTooltip);
+
+  screenAngleArc(near, U.x, U.y, 86, Math.PI / 2, Math.PI / 2 - theta, 'θ', 105);
+
+  var vdx = U.x - F.x, vdy = U.y - F.y;
+  var vlen = Math.sqrt(vdx * vdx + vdy * vdy) || 1;
+  var vx = vdx / vlen, vy = vdy / vlen;
+  var sq = 19;
+  near.polyline([
+    [F.x - ux * sq, F.y - uy * sq],
+    [F.x - ux * sq + vx * sq, F.y - uy * sq + vy * sq],
+    [F.x + vx * sq, F.y + vy * sq]
+  ].map(function (p) { return p[0] + ',' + p[1]; }).join(' '))
+    .fill('none').stroke({ color: black, width: 1.5, linejoin: 'round' });
+
+  var deltaSegment = line(near, L.x, L.y, F.x, F.y, { color: black, width: nearEmph ? 2.6 : 2 });
+  deltaSegment.css('cursor', 'pointer').on('mousemove', function (e) {
+    showTooltip('This short segment is the path difference Δl.', e);
+  }).on('mouseleave', hideTooltip).on('click', function () {
+    showPopup('Path difference Δl', 'Projecting the slit separation d onto the ray direction gives the extra path length. That projection is d sin(θ).');
+  });
+
+  offsetSegmentDimension(near, L, F, 43, 'Δl', labels);
+  dimension(near, 524, uY, 524, lY, 'd', 524, (uY + lY) / 2 - 10);
+
+  label(labels, 'to P', rx + ux * rayLen + 8, uY + uy * rayLen - 18, 20, 'start');
+  label(labels, 'to P', rx + ux * rayLen + 8, lY + uy * rayLen - 18, 20, 'start');
+  label(labels, '(b)', 740, 545, 18, 'middle');
+
+  if (nearEmph) {
+    var formula = label(labels, 'Δl = d sin(θ)', 706, 506, 23, 'middle', teal);
+    formula.css('cursor', 'pointer').on('mousemove', function (e) {
+      showTooltip('Projection formula for the double-slit path difference.', e);
+    }).on('mouseleave', hideTooltip).on('click', function () {
+      showPopup('Why Δl = d sin(θ)?', 'In the near-slit picture, the separation d is the hypotenuse of a small right triangle. The side parallel to the ray direction is opposite the angle θ, so its length is d sin(θ).');
+    });
+  }
+}
+
+function syncControls() {
+  var y = document.getElementById('screenHeightInput');
+  var d = document.getElementById('slitSeparationInput');
+  var v = document.getElementById('viewModeInput');
+  if (y) {
+    y.value = state.screenHeight;
+    document.getElementById('screenHeightVal').value = Number(state.screenHeight).toFixed(2);
+  }
+  if (d) {
+    d.value = state.slitSeparation;
+    document.getElementById('slitSeparationVal').value = Number(state.slitSeparation).toFixed(2);
+  }
+  if (v) v.checked = state.viewMode === 'Near-slit approximation';
+}
+
+function updateNarration() {
+  var n = document.getElementById('demoNarration');
+  var s = document.getElementById('stepLabel');
+  if (n) n.textContent = steps[currentStep].title + ': ' + steps[currentStep].narration;
+  if (s) s.textContent = (currentStep + 1) + ' / ' + steps.length;
+}
+
+function applyStep(i) {
+  currentStep = (i + steps.length) % steps.length;
+  var st = steps[currentStep].state;
+  state.screenHeight = st.screenHeight;
+  state.slitSeparation = st.slitSeparation;
+  state.viewMode = st.viewMode;
+  syncControls();
+  updateNarration();
+  render();
+}
+
+function nextStep() {
+  applyStep(currentStep + 1);
+}
+
+function prevStep() {
+  applyStep(currentStep - 1);
+}
+
+function update_screenHeight(v) {
+  state.screenHeight = v;
+  render();
+}
+
+function update_slitSeparation(v) {
+  state.slitSeparation = v;
+  render();
+}
+
+function toggle_viewMode(on) {
+  state.viewMode = on ? 'Near-slit approximation' : 'Full apparatus';
+  render();
+}
+
+syncControls();
+updateNarration();
+render();
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
