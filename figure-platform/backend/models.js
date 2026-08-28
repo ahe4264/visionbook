@@ -747,4 +747,4 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
   }
 }
 
-module.exports = { generateWithModel, getAvailableModels, MODEL_REGISTRY, normalizeUsage };
+module.exports = { generateWithModel, getAvailableModels, MODEL_REGISTRY };
