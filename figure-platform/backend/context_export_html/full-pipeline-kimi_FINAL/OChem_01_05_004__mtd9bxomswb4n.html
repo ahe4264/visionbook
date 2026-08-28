@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<p id="demoNarration" style="margin:0;font-size:11px;max-width:280px">The curve starts at its minimum: two H atoms 74 pm apart sit at the lowest energy, with the spheres just touching. This balance of attraction and repulsion is the covalent bond.</p>
+<div style="display:flex;align-items:center;gap:6px">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel">Step 1 of 4</span>
+  <button onclick="nextStep()">▶</button>
+</div>
+<label>Internuclear distance (pm): <output id="distanceSliderVal">74</output>
+<input id="distanceSliderInput" type="range" min="20" max="400" step="1" value="74"
+ oninput="document.getElementById('distanceSliderVal').value=this.value;update_distanceSlider(+this.value)"></label>
+<p style="margin:0;font-size:10px;color:#555">Click the repulsive wall, the well, or the far tail of the curve to learn why each region behaves as it does.</p>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+// ── Morse-like potential for H₂ ──────────────────────────────────────────
+function energyOf(r) {
+  var x = r / 74;
+  return 4.6 * (Math.exp(-2.1 * (x - 1)) - 2 * Math.exp(-1.05 * (x - 1)));
+}
+
+var rMin = 20, rMax = 400;
+var curveData = [];
+for (var r = rMin; r <= rMax; r += 2) curveData.push({ x: r, y: energyOf(r) });
+
+var currentR = 74;
+var highlightRegion = null; // 'close' | 'well' | 'far'
+
+// ── Custom plugin: vignettes, axis symbols, marker, annotations ──────────
+var vignettePlugin = {
+  id: 'vignettes',
+  afterDatasetsDraw: function (chart) {
+    var ctx = chart.ctx;
+    var a = chart.chartArea;
+    var yZero = chart.scales.y.getPixelForValue(0);
+    var yWell = chart.scales.y.getPixelForValue(energyOf(74));
+    var xWell = chart.scales.x.getPixelForValue(74);
+    var scale = Math.min(a.right - a.left, a.bottom - a.top) / 400;
+    var R = Math.max(6, 14 * scale + 6);
+    var fs = Math.max(10, 13 * scale + 4);
+
+    function sphere(cx, cy, r) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#2e9e4f';
+      ctx.fill();
+      ctx.strokeStyle = '#14692e';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx - r * 0.35, cy - r * 0.35, r * 0.3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fill();
+    }
+    function haloText(txt, x, y, color, size, align) {
+      ctx.save();
+      ctx.font = 'bold ' + (size || fs) + 'px sans-serif';
+      ctx.textAlign = align || 'center';
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(txt, x, y);
+      ctx.fillStyle = color;
+      ctx.fillText(txt, x, y);
+      ctx.restore();
+    }
+    function glow(cx, cy, w, h) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(255,180,0,0.9)';
+      ctx.shadowBlur = 22;
+      ctx.strokeStyle = 'rgba(230,150,0,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, w, h, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── Vignette 1: HH (too close) — ONE overlapping pair, pulled inward
+    //    so nothing clips at the left edge ──
+    var x1 = chart.scales.x.getPixelForValue(70);
+    var y1 = chart.scales.y.getPixelForValue(4.6);
+    y1 = Math.max(y1, a.top + R * 2.6);
+    if (highlightRegion === 'close') glow(x1, y1, R * 2.2, R * 1.6);
+    // magenta label ABOVE the spheres, as in the source
+    haloText('HH (too close)', x1, y1 - R * 1.6, '#d63384');
+    sphere(x1 - R * 0.55, y1, R);
+    sphere(x1 + R * 0.55, y1, R);
+
+    // ── Vignette 2: H—H touching spheres directly above the well minimum ──
+    var x2 = xWell;
+    var y2 = yWell - R * 2.4;
+    if (highlightRegion === 'well') glow(x2, y2, R * 2.4, R * 1.6);
+    sphere(x2 - R, y2, R);
+    sphere(x2 + R, y2, R);
+    haloText('H—H', x2, y2 + R * 2.3, '#1a7a3c');
+
+    // ── Vignette 3: H - - - H (too far) ──
+    var x3a = chart.scales.x.getPixelForValue(225);
+    var x3b = chart.scales.x.getPixelForValue(315);
+    var y3 = chart.scales.y.getPixelForValue(1.5);
+    if (highlightRegion === 'far') glow((x3a + x3b) / 2, y3, (x3b - x3a) / 2 + R, R * 1.6);
+    sphere(x3a, y3, R);
+    sphere(x3b, y3, R);
+    ctx.save();
+    ctx.strokeStyle = '#d63384';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(x3a + R, y3);
+    ctx.lineTo(x3b - R, y3);
+    ctx.stroke();
+    ctx.restore();
+    haloText('H - - - H (too far)', (x3a + x3b) / 2, y3 - R * 1.6, '#d63384');
+
+    // ── Vertical dashed line at minimum + '74 pm' label ──
+    ctx.save();
+    ctx.strokeStyle = '#1a7a3c';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xWell, yWell);
+    ctx.lineTo(xWell, a.bottom - 2);
+    ctx.stroke();
+    ctx.restore();
+    haloText('74 pm', xWell + R * 2.4, a.bottom - 6, '#1a7a3c');
+
+    // ── Green 'Bond length' arrow → minimum ──
+    var ax0 = xWell + (a.right - a.left) * 0.17;
+    var ay0 = yWell - 4;
+    ctx.save();
+    ctx.strokeStyle = '#1a7a3c';
+    ctx.fillStyle = '#1a7a3c';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ax0, ay0);
+    ctx.lineTo(xWell + 6, yWell - 4);
+    ctx.stroke();
+    var ang = Math.atan2((yWell - 4) - ay0, (xWell + 6) - ax0);
+    ctx.beginPath();
+    ctx.moveTo(xWell + 6, yWell - 4);
+    ctx.lineTo(xWell + 6 - 9 * Math.cos(ang - 0.4), yWell - 4 - 9 * Math.sin(ang - 0.4));
+    ctx.lineTo(xWell + 6 - 9 * Math.cos(ang + 0.4), yWell - 4 - 9 * Math.sin(ang + 0.4));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    haloText('Bond length', ax0 + 8, ay0 + 4, '#1a7a3c', fs, 'left');
+
+    // ── + / 0 / − symbols: large and bold, just inside the left axis ──
+    var symFs = Math.max(16, fs + 8);
+    ctx.save();
+    ctx.font = 'bold ' + symFs + 'px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#333';
+    ctx.fillText('+', a.left + 8, a.top + (yZero - a.top) * 0.45);
+    ctx.fillText('0', a.left + 8, yZero + symFs * 0.35);
+    ctx.fillText('−', a.left + 8, yZero + (a.bottom - yZero) * 0.55);
+    ctx.restore();
+
+    // ── Movable marker on the curve (no extra dynamic spheres — the
+    //    static vignettes carry the atom pictures) ──
+    var px = chart.scales.x.getPixelForValue(currentR);
+    var py = chart.scales.y.getPixelForValue(energyOf(currentR));
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(px, py, 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#d63384';
+    ctx.stroke();
+    ctx.restore();
+    // small floating label with the current distance, kept inside the plot
+    var labY = py - 14;
+    if (labY - fs < a.top) labY = py + 20;
+    haloText(currentR + ' pm', px, labY, '#d63384', fs - 1);
+
+    // ── Energy arrow at far left: tall, wide, prominent ──
+    var gx = Math.max(26, a.left * 0.45);
+    var aw = Math.max(18, 34 * scale + 10);
+    var grd = ctx.createLinearGradient(0, a.bottom, 0, a.top);
+    grd.addColorStop(0, '#fdf3d0');
+    grd.addColorStop(1, '#f2701d');
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(gx, a.top - 18);
+    ctx.lineTo(gx + aw / 2, a.top + 2);
+    ctx.lineTo(gx + aw / 5, a.top + 2);
+    ctx.lineTo(gx + aw / 5, a.bottom);
+    ctx.lineTo(gx - aw / 5, a.bottom);
+    ctx.lineTo(gx - aw / 5, a.top + 2);
+    ctx.lineTo(gx - aw / 2, a.top + 2);
+    ctx.closePath();
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.translate(gx, (a.top + a.bottom) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.font = 'bold ' + Math.max(14, fs + 3) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#333';
+    ctx.fillText('Energy', 0, 5);
+    ctx.restore();
+
+    // ── Axis caption below the plot ──
+    ctx.save();
+    ctx.font = 'bold ' + fs + 'px sans-serif';
+    ctx.fillStyle = '#333';
+    ctx.textAlign = 'center';
+    var capY = a.bottom + 38;
+    ctx.fillText('Internuclear distance', (a.left + a.right) / 2, capY);
+    var ax = (a.left + a.right) / 2 + ctx.measureText('Internuclear distance').width / 2 + 12;
+    ctx.strokeStyle = '#d63384';
+    ctx.fillStyle = '#d63384';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ax, capY - 4);
+    ctx.lineTo(ax + 22, capY - 4);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ax + 28, capY - 4);
+    ctx.lineTo(ax + 18, capY - 8);
+    ctx.lineTo(ax + 18, capY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+};
+
+// ── Chart ────────────────────────────────────────────────────────────────
+var canvas = document.createElement('canvas');
+canvas.style.cssText = 'width:100%;height:100%;display:block';
+document.getElementById('container').appendChild(canvas);
+
+var chart = new Chart(canvas.getContext('2d'), {
+  type: 'line',
+  data: {
+    datasets: [{
+      data: curveData,
+      borderColor: '#d63384',
+      borderWidth: 3,
+      pointRadius: 0,
+      tension: 0.25
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    layout: { padding: { left: 56, top: 24, bottom: 48, right: 16 } },
+    events: ['click'],
+    onClick: function (e) {
+      var rect = canvas.getBoundingClientRect();
+      var x = e.clientX - rect.left;
+      var r = chart.scales.x.getValueForPixel(x);
+      if (r < 62) {
+        highlightRegion = 'close';
+        showPopup('Too close: the repulsive wall',
+          'Below about 60 pm the two positively charged nuclei repel strongly and the energy shoots almost vertically upward. This is why a bond cannot be shorter than its equilibrium length.');
+      } else if (r < 130) {
+        highlightRegion = 'well';
+        showPopup('The energy well: the bond',
+          'At 74 pm attraction between each electron and the opposite nucleus exactly balances nuclear repulsion, giving the lowest energy. This separation is the covalent bond length of H₂.');
+      } else {
+        highlightRegion = 'far';
+        showPopup('Too far: the atoms no longer interact',
+          'Beyond a few hundred pm the atoms barely influence each other, so the energy climbs back toward zero — the energy of two isolated hydrogen atoms. No bond survives here.');
+      }
+      chart.update();
+    },
+    onHover: function (e) {
+      canvas.style.cursor = 'pointer';
+      var rect = canvas.getBoundingClientRect();
+      var x = e.clientX - rect.left;
+      var a = chart.chartArea;
+      if (x >= a.left && x <= a.right) {
+        var r = chart.scales.x.getValueForPixel(x);
+        showTooltip('r ≈ ' + Math.round(r) + ' pm,  E ≈ ' + energyOf(r).toFixed(2) + ' (arb. units) — click to learn about this region', e);
+      } else hideTooltip();
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: { enabled: false }
+    },
+    scales: {
+      x: {
+        type: 'linear', min: rMin, max: rMax,
+        grid: { display: false },
+        ticks: { display: false },
+        border: { color: '#333', width: 1.5 }
+      },
+      y: {
+        min: -5.4, max: 6.4,
+        grid: {
+          display: true,
+          color: function (c) { return Math.abs(c.tick.value) < 0.01 ? '#555' : 'transparent'; },
+          lineWidth: 1.5,
+          drawTicks: false,
+          borderDash: [6, 5]
+        },
+        ticks: { display: false },
+        border: { color: '#333', width: 1.5 }
+      }
+    }
+  },
+  plugins: [vignettePlugin]
+});
+
+canvas.parentElement.style.background = '#e8f4fb';
+chart.update();
+
+window.__markRendered();
+
+// ── Interactions ─────────────────────────────────────────────────────────
+function update_distanceSlider(v) {
+  currentR = v;
+  highlightRegion = null;
+  chart.update();
+}
+
+// ── Demo step player ─────────────────────────────────────────────────────
+var steps = [
+  { title: 'The energy well', d: 74, n: 'The curve starts at its minimum: two H atoms 74 pm apart sit at the lowest energy, with the spheres just touching. This balance of attraction and repulsion is the covalent bond.' },
+  { title: 'Push the atoms together', d: 35, n: "The atoms overlap and the energy climbs the steep repulsive wall — 'HH (too close)'. Nuclear repulsion makes very short distances strongly unfavorable." },
+  { title: 'Pull the atoms apart', d: 300, n: "The atoms separate, the energy rises back toward the zero dashed line, and the sketch shows 'H - - - H (too far)' — beyond a certain distance the atoms behave as if unbound." },
+  { title: 'Find the minimum again', d: 74, n: "Return to 74 pm: the single lowest point on the curve, marked by the green 'Bond length' arrow, is the separation nature settles on for an H–H bond." }
+];
+var stepIdx = 0;
+function applyStep(i) {
+  stepIdx = Math.max(0, Math.min(steps.length - 1, i));
+  var s = steps[stepIdx];
+  document.getElementById('demoNarration').textContent = s.n;
+  document.getElementById('stepLabel').textContent = 'Step ' + (stepIdx + 1) + ' of ' + steps.length;
+  var inp = document.getElementById('distanceSliderInput');
+  inp.value = s.d;
+  document.getElementById('distanceSliderVal').value = s.d;
+  update_distanceSlider(s.d);
+}
+function nextStep() { applyStep(stepIdx + 1); }
+function prevStep() { applyStep(stepIdx - 1); }
+applyStep(0);
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
