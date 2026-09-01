@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<div style="padding-bottom:12px; border-bottom:1px solid #ccc; margin-bottom:12px;">
+  <label style="display:flex; flex-direction:row; align-items:center; gap:6px; cursor:pointer;">
+    <input type="checkbox" id="chkLabels" onchange="window.toggleLabels(this.checked)">
+    <span>Show Node Labels (a–f)</span>
+  </label>
+</div>
+
+<div style="margin-bottom:12px;">
+  <div style="font-weight:600; margin-bottom:6px; color:#e65100;">Kirchhoff's Junction Rule (KCL)</div>
+  <div style="display:flex; gap:6px;">
+    <button id="btnKclB" onclick="window.setMode('kcl_b')">Junction b</button>
+    <button id="btnKclE" onclick="window.setMode('kcl_e')">Junction e</button>
+  </div>
+</div>
+
+<div style="margin-bottom:12px;">
+  <div style="font-weight:600; margin-bottom:6px; color:#8e24aa;">Kirchhoff's Loop Rule (KVL)</div>
+  <div style="display:flex; gap:6px;">
+    <button id="btnKvlLeft" onclick="window.setMode('kvl_left')">Left Loop</button>
+    <button id="btnKvlRight" onclick="window.setMode('kvl_right')">Right Loop</button>
+  </div>
+</div>
+
+<button onclick="window.setMode('explore')" style="margin-bottom:12px; width:100%;">Clear Highlights</button>
+
+<div id="infoPanel" style="display:none; padding:10px 12px; background:#fff3e0; border-left:3px solid #e65100; border-radius:3px;">
+  <div id="infoTitle" style="font-weight:bold; margin-bottom:4px;"></div>
+  <div id="infoDesc" style="margin-bottom:8px; color:#555;"></div>
+  <div id="infoEq" style="font-family:ui-monospace, monospace; font-size:13px; font-weight:bold; background:#fff; padding:6px 10px; border:1px solid #ffcc80; border-radius:4px; display:inline-block;"></div>
+</div>
+
+<div id="stepPanel" style="display:none; padding:10px 12px; background:#f3e5f5; border-left:3px solid #8e24aa; border-radius:3px;">
+  <div id="stepTitle" style="font-weight:bold; margin-bottom:6px;"></div>
+  <div id="stepDesc" style="margin-bottom:10px; color:#555; min-height:42px; line-height:1.45;"></div>
+  <div id="stepEq" style="font-family:ui-monospace, monospace; font-size:13px; font-weight:bold; background:#fff; padding:6px 10px; border:1px solid #ce93d8; border-radius:4px; margin-bottom:10px; display:inline-block;"></div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <button id="btnPrev" onclick="window.prevStep()">◀ Prev</button>
+    <span id="stepCount" style="font-weight:bold; min-width:40px; text-align:center; color:#666;"></span>
+    <button id="btnNext" onclick="window.nextStep()">Next ▶</button>
+  </div>
+</div>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+// [svgjs]
+(function() {
+    const draw = SVG().addTo('#container').size('100%', '100%').viewbox(50, 0, 700, 500);
+
+    const nodes = {
+        a: [200, 100], b: [400, 100], c: [600, 100],
+        f: [200, 400], e: [400, 400], d: [600, 400]
+    };
+
+    const branches = {
+        b1: { p1: [200, 100], p2: [400, 100], type: 'resistor', val: 'R1 = 3.00 Ω' },
+        b2: { p1: [400, 100], p2: [600, 100], type: 'resistor', val: 'R3 = 3.00 Ω' },
+        b3: { p1: [600, 100], p2: [600, 400], type: 'resistor', val: 'R4 = 4.00 Ω' },
+        b4: { p1: [600, 400], p2: [400, 400], type: 'battery', val: 'V2 = 29.00 V', plusLeft: false },
+        b5: { p1: [400, 400], p2: [200, 400], type: 'battery', val: 'V1 = 24.00 V', plusLeft: true },
+        b6: { p1: [200, 400], p2: [200, 100], type: 'wire' },
+        b7: { p1: [400, 100], p2: [400, 400], type: 'resistor', val: 'R2 = 3.00 Ω' }
+    };
+
+    let uiMode = 'explore';
+    let currentStep = 0;
+    let activeSequence = null;
+
+    let circuitGroup = draw.group();
+    let arrowsGroup = draw.group();
+    let highlightNodeCircle = draw.circle(30).fill('none').stroke({ width: 4 }).hide();
+    let nodesGroup = draw.group();
+
+    function formatText(txtObj, str) {
+        let match = str.match(/^([a-zA-Z]+)(\d+)(.*)$/);
+        if (match) {
+            txtObj.text(function(add) {
+                add.tspan(match[1]).font({ style: 'italic' });
+                add.tspan(match[2]).dy(4).font({ size: 11 });
+                if (match[3].trim().length > 0) {
+                    add.tspan(match[3]).dy(-4);
+                }
+            });
+        } else {
+            txtObj.text(str);
+        }
+    }
+
+    function formatEqHtml(text) {
+        let s = text.replace(/I(\d)/g, "<i>I</i><sub>// @FIGURE_CODE_BEGIN</sub>");
+        s = s.replace(/R(\d)/g, "<i>R</i><sub>// @FIGURE_CODE_BEGIN</sub>");
+        s = s.replace(/V(\d)/g, "<i>V</i><sub>// @FIGURE_CODE_BEGIN</sub>");
+        return s;
+    }
+
+    function drawResistor(drawCtx, cx, cy, angle, color) {
+        let g = drawCtx.group();
+        let pathStr = "M -24 0 L -16 0 L -12 -10 L -4 10 L 4 -10 L 12 10 L 16 0 L 24 0";
+        g.path(pathStr).fill('none').stroke({ width: 2, color: color, linejoin: 'miter' });
+        g.transform({ translate: [cx, cy], rotate: angle });
+        return g;
+    }
+
+    function drawBattery(drawCtx, cx, cy, plusLeft, color) {
+        let g = drawCtx.group();
+        g.line(-30, 0, -12, 0).stroke({ width: 2, color: color });
+        g.line(12, 0, 30, 0).stroke({ width: 2, color: color });
+        
+        if (plusLeft) {
+            g.line(-12, -15, -12, 15).stroke({ width: 2, color: color });
+            g.line(-4, -8, -4, 8).stroke({ width: 4, color: color });
+            g.line(4, -15, 4, 15).stroke({ width: 2, color: color });
+            g.line(12, -8, 12, 8).stroke({ width: 4, color: color });
+            g.text('+').center(-20, 22).font({ size: 16, weight: 'bold', family: 'sans-serif' }).fill(color);
+            g.text('–').center(20, 22).font({ size: 16, weight: 'bold', family: 'sans-serif' }).fill(color);
+        } else {
+            g.line(-12, -8, -12, 8).stroke({ width: 4, color: color });
+            g.line(-4, -15, -4, 15).stroke({ width: 2, color: color });
+            g.line(4, -8, 4, 8).stroke({ width: 4, color: color });
+            g.line(12, -15, 12, 15).stroke({ width: 2, color: color });
+            g.text('–').center(-20, 22).font({ size: 16, weight: 'bold', family: 'sans-serif' }).fill(color);
+            g.text('+').center(20, 22).font({ size: 16, weight: 'bold', family: 'sans-serif' }).fill(color);
+        }
+        g.transform({ translate: [cx, cy] });
+        return g;
+    }
+
+    function buildBranch(id, b) {
+        let g = circuitGroup.group();
+        let [x1, y1] = b.p1;
+        let [x2, y2] = b.p2;
+        let cx = (x1 + x2) / 2;
+        let cy = (y1 + y2) / 2;
+        let angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+        
+        let len = Math.hypot(x2 - x1, y2 - y1);
+        let gap = 0;
+        if (b.type === 'resistor') gap = 48;
+        if (b.type === 'battery') gap = 60;
+        
+        let wires = g.group();
+        if (gap > 0) {
+            let r1 = (len - gap) / 2 / len;
+            let mx1 = x1 + (x2 - x1) * r1;
+            let my1 = y1 + (y2 - y1) * r1;
+            let r2 = (len + gap) / 2 / len;
+            let mx2 = x1 + (x2 - x1) * r2;
+            let my2 = y1 + (y2 - y1) * r2;
+            wires.line(x1, y1, mx1, my1).stroke({ width: 2, color: '#000' });
+            wires.line(mx2, my2, x2, y2).stroke({ width: 2, color: '#000' });
+        } else {
+            wires.line(x1, y1, x2, y2).stroke({ width: 2, color: '#000' });
+        }
+        
+        let comp = g.group();
+        if (b.type === 'resistor') {
+            comp.add(drawResistor(g, cx, cy, angle, '#005288'));
+        } else if (b.type === 'battery') {
+            comp.add(drawBattery(g, cx, cy, b.plusLeft, '#000'));
+        }
+        
+        if (b.val) {
+            let txt = g.text('');
+            formatText(txt, b.val);
+            txt.font({ family: 'sans-serif', size: 15 });
+            txt.font({ anchor: 'middle' });
+            if (id === 'b1') txt.move(cx, cy - 36);
+            if (id === 'b2') txt.move(cx, cy - 36);
+            if (id === 'b3') { txt.font({ anchor: 'end' }); txt.move(cx - 15, cy - 10); }
+            if (id === 'b4') txt.move(cx, cy - 44);
+            if (id === 'b5') txt.move(cx, cy - 44);
+            if (id === 'b7') { txt.font({ anchor: 'end' }); txt.move(cx - 18, cy - 10); }
+        }
+        
+        let hoverArea = g.rect(len, Math.max(gap, 40)).center(cx, cy).rotate(angle).fill('transparent');
+        hoverArea.style('cursor', 'pointer');
+        hoverArea.on('mousemove', e => {
+            if (uiMode === 'explore' && b.val) showTooltip(b.val, e);
+        });
+        hoverArea.on('mouseleave', () => hideTooltip());
+        
+        b.g = g;
+        b.wires = wires;
+        b.comp = comp;
+        
+        b.highlight = function(active, color = '#e85c00') {
+            wires.children().forEach(l => l.stroke({ color: active ? color : '#000', width: active ? 4 : 2 }));
+            if (active) {
+                if (b.type === 'resistor') {
+                    comp.children()[0].children()[0].stroke({ color: color, width: 3 });
+                } else if (b.type === 'battery') {
+                    comp.children()[0].children().forEach(c => {
+                        if (c.type === 'line') {
+                            let w = c.data('orig-w') || c.attr('stroke-width');
+                            c.data('orig-w', w);
+                            c.stroke({ color: color, width: w * 1.5 });
+                        }
+                        if (c.type === 'text') c.fill(color);
+                    });
+                }
+            } else {
+                if (b.type === 'resistor') {
+                    comp.children()[0].children()[0].stroke({ color: '#005288', width: 2 });
+                } else if (b.type === 'battery') {
+                    comp.children()[0].children().forEach(c => {
+                        if (c.type === 'line') {
+                            let w = c.data('orig-w') || c.attr('stroke-width');
+                            c.stroke({ color: '#000', width: w });
+                        }
+                        if (c.type === 'text') c.fill('#000');
+                    });
+                }
+            }
+        };
+    }
+
+    for (let id in branches) buildBranch(id, branches[id]);
+
+    for (let [id, pos] of Object.entries(nodes)) {
+        let [x, y] = pos;
+        nodesGroup.circle(10).center(x, y).fill('#00a19c');
+        let label = nodesGroup.text(id).font({ size: 18, style: 'italic', weight: 'bold', family: 'serif' }).fill('#000');
+        if (['a','b','c'].includes(id)) label.center(x, y - 22);
+        else label.center(x, y + 22);
+    }
+
+    function createCurrentArrow(branch, labelStr, isReversed, color) {
+        let [x1, y1] = branch.p1;
+        let [x2, y2] = branch.p2;
+        if (isReversed) [x1, y1, x2, y2] = [x2, y2, x1, y1];
+        
+        let cx = (x1 * 0.8 + x2 * 0.2);
+        let cy = (y1 * 0.8 + y2 * 0.2);
+        
+        let g = draw.group();
+        let angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
+        
+        let head = g.polygon("0,0 -12,-6 -12,6").fill(color);
+        head.transform({ translate: [cx, cy], rotate: angle });
+        
+        let label = g.text('');
+        formatText(label, labelStr);
+        label.fill(color).font({ weight: 'bold', family: 'sans-serif' });
+        
+        if (Math.abs(angle) === 0 || Math.abs(angle) === 180) {
+            label.font({ anchor: 'middle' });
+            if (cy < 250) label.move(cx, cy + 12);
+            else label.move(cx, cy - 26);
+        } else {
+            if (cx <= 200) { label.font({ anchor: 'start' }); label.move(cx + 12, cy - 10); }
+            else if (cx >= 600) { label.font({ anchor: 'end' }); label.move(cx - 12, cy - 10); }
+            else { label.font({ anchor: 'start' }); label.move(cx + 14, cy - 10); }
+        }
+        return g;
+    }
+
+    const leftLoopSteps = [
+        { desc: "Start at junction <b>a</b>.", eq: "0", hBranches: [], node: 'a', arrows: [] },
+        { desc: "Move a → b <b>with</b> I1.<br>Voltage <b style='color:#d32f2f'>drops</b> across R1.", eq: "−I1 R1", hBranches: ['b1'], node: 'b', arrows: [{ b: 'b1', a: 'I1', f: true }] },
+        { desc: "Move b → e <b>with</b> I2.<br>Voltage <b style='color:#d32f2f'>drops</b> across R2.", eq: "−I1 R1 − I2 R2", hBranches: ['b7'], node: 'e', arrows: [{ b: 'b7', a: 'I2', f: true }] },
+        { desc: "Move e → f along the lower wire.<br>Pass V1 from <b>−</b> to <b>+</b>. Voltage <b style='color:#388e3c'>rises</b>.", eq: "−I1 R1 − I2 R2 + V1", hBranches: ['b5'], node: 'f', arrows: [{ b: 'b5', a: 'I1', f: true }] },
+        { desc: "Move f → a back to start.<br>The loop is closed.", eq: "−I1 R1 − I2 R2 + V1 = 0", hBranches: ['b6'], node: 'a', arrows: [{ b: 'b6', a: 'I1', f: true }] },
+        { desc: "Left loop equation complete.", eq: "−I1 R1 − I2 R2 + V1 = 0", hBranches: ['b1','b7','b5','b6'], node: null, arrows: [] }
+    ];
+
+    const rightLoopSteps = [
+        { desc: "Start at junction <b>b</b>.", eq: "0", hBranches: [], node: 'b', arrows: [] },
+        { desc: "Move b → c <b>with</b> I3.<br>Voltage <b style='color:#d32f2f'>drops</b> across R3.", eq: "−I3 R3", hBranches: ['b2'], node: 'c', arrows: [{ b: 'b2', a: 'I3', f: true }] },
+        { desc: "Move c → d <b>with</b> I3.<br>Voltage <b style='color:#d32f2f'>drops</b> across R4.", eq: "−I3 R3 − I3 R4", hBranches: ['b3'], node: 'd', arrows: [{ b: 'b3', a: 'I3', f: true }] },
+        { desc: "Move d → e.<br>Pass V2 from <b>+</b> to <b>−</b>. Voltage <b style='color:#d32f2f'>drops</b>.", eq: "−I3 R3 − I3 R4 − V2", hBranches: ['b4'], node: 'e', arrows: [{ b: 'b4', a: 'I3', f: true }] },
+        { desc: "Move e → b <b>against</b> I2.<br>Voltage <b style='color:#388e3c'>rises</b> across R2.", eq: "−I3 R3 − I3 R4 − V2 + I2 R2", hBranches: ['b7'], node: 'b', arrows: [{ b: 'b7', a: 'I2', f: true }] },
+        { desc: "Right loop equation complete.", eq: "−I3 R3 − I3 R4 − V2 + I2 R2 = 0", hBranches: ['b2','b3','b4','b7'], node: null, arrows: [] }
+    ];
+
+    function resetHighlight() {
+        for (let key in branches) branches[key].highlight(false);
+        arrowsGroup.clear();
+        highlightNodeCircle.hide();
+    }
+
+    function updateView() {
+        resetHighlight();
+        document.getElementById('stepPanel').style.display = 'none';
+        document.getElementById('infoPanel').style.display = 'none';
+        
+        ['btnKclB', 'btnKclE', 'btnKvlLeft', 'btnKvlRight'].forEach(id => {
+            document.getElementById(id).classList.remove('active');
+        });
+
+        if (uiMode === 'kcl_b') {
+            document.getElementById('btnKclB').classList.add('active');
+            document.getElementById('infoPanel').style.display = 'block';
+            document.getElementById('infoTitle').innerHTML = "Junction b";
+            document.getElementById('infoDesc').innerHTML = "Sum of currents entering = Sum of currents leaving";
+            document.getElementById('infoEq').innerHTML = formatEqHtml("I1 = I2 + I3");
+            
+            branches.b1.highlight(true, '#e85c00');
+            branches.b2.highlight(true, '#e85c00');
+            branches.b7.highlight(true, '#e85c00');
+            
+            arrowsGroup.add(createCurrentArrow(branches.b1, 'I1', false, '#e85c00'));
+            arrowsGroup.add(createCurrentArrow(branches.b2, 'I3', false, '#e85c00'));
+            arrowsGroup.add(createCurrentArrow(branches.b7, 'I2', false, '#e85c00'));
+            highlightNodeCircle.stroke({ color: '#e65100' }).center(...nodes.b).show();
+        }
+        else if (uiMode === 'kcl_e') {
+            document.getElementById('btnKclE').classList.add('active');
+            document.getElementById('infoPanel').style.display = 'block';
+            document.getElementById('infoTitle').innerHTML = "Junction e";
+            document.getElementById('infoDesc').innerHTML = "Sum of currents entering = Sum of currents leaving";
+            document.getElementById('infoEq').innerHTML = formatEqHtml("I2 + I3 = I1");
+            
+            branches.b4.highlight(true, '#e85c00');
+            branches.b5.highlight(true, '#e85c00');
+            branches.b7.highlight(true, '#e85c00');
+            
+            arrowsGroup.add(createCurrentArrow(branches.b4, 'I3', false, '#e85c00'));
+            arrowsGroup.add(createCurrentArrow(branches.b5, 'I1', false, '#e85c00'));
+            arrowsGroup.add(createCurrentArrow(branches.b7, 'I2', false, '#e85c00'));
+            highlightNodeCircle.stroke({ color: '#e65100' }).center(...nodes.e).show();
+        }
+        else if (uiMode === 'kvl') {
+            let stepData = activeSequence[currentStep];
+            let btnId = activeSequence === leftLoopSteps ? 'btnKvlLeft' : 'btnKvlRight';
+            document.getElementById(btnId).classList.add('active');
+            
+            document.getElementById('stepPanel').style.display = 'block';
+            document.getElementById('stepTitle').innerHTML = activeSequence === leftLoopSteps ? "Left Loop KVL (Clockwise)" : "Right Loop KVL (Clockwise)";
+            document.getElementById('stepDesc').innerHTML = formatEqHtml(stepData.desc);
+            document.getElementById('stepEq').innerHTML = formatEqHtml(stepData.eq);
+            document.getElementById('stepCount').innerText = `${currentStep} / ${activeSequence.length - 1}`;
+            
+            document.getElementById('btnPrev').disabled = (currentStep === 0);
+            document.getElementById('btnNext').disabled = (currentStep === activeSequence.length - 1);
+            
+            stepData.hBranches.forEach(b => branches[b].highlight(true, '#9c27b0'));
+            stepData.arrows.forEach(arr => {
+                arrowsGroup.add(createCurrentArrow(branches[arr.b], arr.a, !arr.f, '#9c27b0'));
+            });
+            if (stepData.node) {
+                highlightNodeCircle.stroke({ color: '#9c27b0' }).center(...nodes[stepData.node]).show();
+            }
+        }
+    }
+
+    window.toggleLabels = function(show) {
+        if (show) nodesGroup.show();
+        else nodesGroup.hide();
+    };
+
+    window.setMode = function(mode) {
+        uiMode = mode;
+        if (mode !== 'explore') {
+            let chk = document.getElementById('chkLabels');
+            if (chk && !chk.checked) {
+                chk.checked = true;
+                window.toggleLabels(true);
+            }
+        }
+        if (mode === 'kvl_left') {
+            uiMode = 'kvl';
+            activeSequence = leftLoopSteps;
+            currentStep = 0;
+        } else if (mode === 'kvl_right') {
+            uiMode = 'kvl';
+            activeSequence = rightLoopSteps;
+            currentStep = 0;
+        }
+        updateView();
+    };
+
+    window.nextStep = function() {
+        if (activeSequence && currentStep < activeSequence.length - 1) {
+            currentStep++;
+            updateView();
+        }
+    };
+
+    window.prevStep = function() {
+        if (activeSequence && currentStep > 0) {
+            currentStep--;
+            updateView();
+        }
+    };
+
+    let chk = document.getElementById('chkLabels');
+    if (chk) chk.checked = false;
+    window.toggleLabels(false);
+    updateView();
+
+    window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
