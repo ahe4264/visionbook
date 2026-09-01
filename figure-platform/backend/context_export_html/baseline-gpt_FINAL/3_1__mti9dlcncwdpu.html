@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<label>n₀: <output id="n0Val">0.30</output><input id="n0Input" type="range" min="0.05" max="0.75" step="0.01" value="0.30" oninput="document.getElementById('n0Val').value=(+this.value).toFixed(2);update_n0(+this.value)"></label>
+<label>constant c: <output id="scaleVal">1.00</output><input id="scaleInput" type="range" min="0.60" max="1.45" step="0.05" value="1.00" oninput="document.getElementById('scaleVal').value=(+this.value).toFixed(2);update_scale(+this.value)"></label>
+<input id="viewInput" type="hidden" value="theta">
+<span style="font-weight:600">Highlight view</span>
+<button id="thetaBtn" class="active" onclick="trigger_view('theta')">Θ: both sides</button>
+<button id="oBtn" onclick="trigger_view('o')">O: upper only</button>
+<button id="omegaBtn" onclick="trigger_view('omega')">Ω: lower only</button>
+<span id="statusText" style="font-size:11px;line-height:1.35">No violations to the right of n₀.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+// Library: svgjs
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+draw.viewbox(0, 0, 960, 365);
+
+var state = { n0: 0.30, scale: 1.00, view: 'theta' };
+var YMAX = 1.05;
+
+var panels = {
+  theta: { key: 'theta', x: 14, y: 13, w: 270, h: 255, caption: 'f(n) = Θ(g(n))', tag: '(a)' },
+  o:     { key: 'o',     x: 347, y: 13, w: 270, h: 255, caption: 'f(n) = O(g(n))', tag: '(b)' },
+  omega: { key: 'omega', x: 680, y: 13, w: 270, h: 255, caption: 'f(n) = Ω(g(n))', tag: '(c)' }
+};
+
+function sx(p, n) { return p.x + n * p.w; }
+function sy(p, y) { return p.y + p.h - (Math.max(0, Math.min(YMAX, y)) / YMAX) * p.h; }
+function pts(p, fn, a, b, samples) {
+  var arr = [];
+  for (var i = 0; i < samples; i++) {
+    var n = a + (b - a) * i / (samples - 1);
+    arr.push([sx(p, n), sy(p, fn(n))]);
+  }
+  return arr.map(function(q){ return q[0] + ',' + q[1]; }).join(' ');
+}
+function clamp01(y) { return Math.max(0, Math.min(YMAX, y)); }
+
+function gA(n) { return 0.055 + 0.55 * (1 - Math.exp(-2.05 * n)) + 0.10 * n; }
+function upperA(n) { return clamp01(1.34 * state.scale * gA(n)); }
+function lowerA(n) { return clamp01(0.66 * state.scale * gA(n)); }
+function fA(n) {
+  return clamp01(
+    0.055 + 0.45 * (1 - Math.exp(-1.65 * n)) + 0.10 * n +
+    0.105 * Math.sin(6.7 * Math.PI * n - 0.35) * Math.exp(-5.0 * n) -
+    0.072 * Math.exp(-Math.pow((n - 0.18) / 0.055, 2)) +
+    0.030 * Math.exp(-Math.pow((n - 0.40) / 0.065, 2))
+  );
+}
+
+function baseB(n) { return 0.22 + 0.56 * Math.pow(n, 1.42); }
+function upperB(n) { return clamp01(state.scale * baseB(n)); }
+function fB(n) {
+  return clamp01(
+    0.17 + 0.47 * (1 - Math.exp(-1.85 * n)) + 0.035 * n +
+    0.27 * Math.sin(8.7 * Math.PI * n + 1.20) * Math.exp(-6.5 * n) -
+    0.075 * Math.exp(-Math.pow((n - 0.40) / 0.12, 2))
+  );
+}
+
+function lowerC(n) { return clamp01(state.scale * (0.30 + 0.34 * Math.pow(n, 1.12))); }
+function fC(n) {
+  return clamp01(
+    0.32 + 0.44 * Math.pow(n, 0.78) +
+    0.22 * Math.sin(8.2 * Math.PI * n - 0.85) * Math.exp(-6.2 * n) -
+    0.16 * Math.exp(-Math.pow((n - 0.21) / 0.065, 2)) +
+    0.03 * Math.exp(-Math.pow((n - 0.42) / 0.12, 2))
+  );
+}
+
+function textLabel(str, x, y, size, anchor) {
+  return draw.text(str)
+    .font({ family: 'Times New Roman, serif', size: size || 20, style: 'italic', anchor: anchor || 'middle' })
+    .fill('#000')
+    .attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+}
+
+function plainText(str, x, y, size, anchor) {
+  return draw.text(str)
+    .font({ family: 'Times New Roman, serif', size: size || 18, anchor: anchor || 'middle' })
+    .fill('#000')
+    .attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+}
+
+function drawAllowedRegion(p) {
+  var samples = 95, poly = [];
+  if (p.key === 'theta') {
+    for (var i = 0; i < samples; i++) {
+      var n1 = state.n0 + (1 - state.n0) * i / (samples - 1);
+      poly.push([sx(p, n1), sy(p, upperA(n1))]);
+    }
+    for (var j = samples - 1; j >= 0; j--) {
+      var n2 = state.n0 + (1 - state.n0) * j / (samples - 1);
+      poly.push([sx(p, n2), sy(p, lowerA(n2))]);
+    }
+  } else if (p.key === 'o') {
+    for (var k = 0; k < samples; k++) {
+      var n3 = state.n0 + (1 - state.n0) * k / (samples - 1);
+      poly.push([sx(p, n3), sy(p, upperB(n3))]);
+    }
+    poly.push([sx(p, 1), sy(p, 0)]);
+    poly.push([sx(p, state.n0), sy(p, 0)]);
+  } else {
+    poly.push([sx(p, state.n0), sy(p, YMAX)]);
+    poly.push([sx(p, 1), sy(p, YMAX)]);
+    for (var m = samples - 1; m >= 0; m--) {
+      var n4 = state.n0 + (1 - state.n0) * m / (samples - 1);
+      poly.push([sx(p, n4), sy(p, lowerC(n4))]);
+    }
+  }
+  draw.polygon(poly.map(function(q){ return q[0] + ',' + q[1]; }).join(' '))
+    .fill({ color: '#d9ecff', opacity: 0.78 })
+    .stroke('none')
+    .on('mousemove', function(e) { showTooltip('Highlighted blue region: values of f(n) allowed after n₀ for this asymptotic relation.', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function() {
+      showPopup('Permitted region', 'The blue region shows where f(n) may lie once n is at least n₀. Moving n₀ changes where the eventual comparison begins.');
+    })
+    .css('cursor', 'pointer');
+}
+
+function drawAxes(p) {
+  draw.line(p.x, p.y, p.x, p.y + p.h).stroke({ color: '#000', width: 1.05 });
+  draw.line(p.x, p.y + p.h, p.x + p.w, p.y + p.h).stroke({ color: '#000', width: 1.05 });
+  textLabel('n', p.x + p.w + 10, p.y + p.h + 7, 22, 'middle');
+}
+
+function interactiveCurve(poly, label, title, body) {
+  poly.on('mousemove', function(e) { showTooltip(label, e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function() { showPopup(title, body); })
+    .css('cursor', 'pointer');
+  return poly;
+}
+
+function drawPanelTheta() {
+  var p = panels.theta;
+  if (state.view === 'theta') drawAllowedRegion(p);
+  drawAxes(p);
+
+  interactiveCurve(draw.polyline(pts(p, upperA, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Upper comparison curve: c₂g(n)', 'Upper bound in Θ',
+    'For Θ(g(n)), f(n) must eventually stay below a constant multiple c₂g(n). The constant slider moves this comparison curve.');
+  interactiveCurve(draw.polyline(pts(p, fA, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Target function f(n)', 'The function f(n)',
+    'In the Θ panel, f(n) may wiggle for small n, but after n₀ it must remain between the two scaled copies of g(n).');
+  interactiveCurve(draw.polyline(pts(p, lowerA, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Lower comparison curve: c₁g(n)', 'Lower bound in Θ',
+    'For Θ(g(n)), f(n) must also eventually stay above a positive constant multiple c₁g(n).');
+
+  var xn = sx(p, state.n0), yh = sy(p, fA(state.n0));
+  draw.line(xn, p.y + p.h, xn, yh).stroke({ color: '#333', width: 1.0, dasharray: '7,6' });
+  draw.line(xn, p.y + p.h - 5, xn, p.y + p.h + 5).stroke({ color: '#000', width: 1.0 });
+  textLabel('n₀', xn, p.y + p.h + 25, 21, 'middle');
+
+  textLabel('c₂g(n)', sx(p, 0.88), sy(p, upperA(0.88)) - 28, 21, 'middle');
+  textLabel('f(n)', sx(p, 0.93), sy(p, fA(0.93)) - 30, 21, 'middle');
+  textLabel('c₁g(n)', sx(p, 0.88), sy(p, lowerA(0.88)) - 18, 21, 'middle');
+  textLabel(p.caption, p.x + p.w / 2 + 8, p.y + p.h + 40, 24, 'middle');
+  plainText(p.tag, p.x + p.w / 2, p.y + p.h + 76, 22, 'middle');
+}
+
+function drawPanelO() {
+  var p = panels.o;
+  if (state.view === 'o') drawAllowedRegion(p);
+  drawAxes(p);
+
+  interactiveCurve(draw.polyline(pts(p, upperB, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Upper comparison curve: cg(n)', 'Big-O upper bound',
+    'For O(g(n)), only an eventual upper bound is required: f(n) must lie at or below cg(n) for n ≥ n₀.');
+  interactiveCurve(draw.polyline(pts(p, fB, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Target function f(n)', 'The function f(n)',
+    'The early oscillations do not matter to Big-O if a sufficiently large n₀ is chosen.');
+
+  var xn = sx(p, state.n0), yh = sy(p, upperB(state.n0));
+  draw.line(xn, p.y + p.h, xn, yh).stroke({ color: '#333', width: 1.0, dasharray: '7,6' });
+  draw.line(xn, p.y + p.h - 5, xn, p.y + p.h + 5).stroke({ color: '#000', width: 1.0 });
+  textLabel('n₀', xn, p.y + p.h + 25, 21, 'middle');
+
+  textLabel('cg(n)', sx(p, 0.95), sy(p, upperB(0.95)) - 30, 21, 'middle');
+  textLabel('f(n)', sx(p, 0.96), sy(p, fB(0.96)) - 24, 21, 'middle');
+  textLabel(p.caption, p.x + p.w / 2 + 6, p.y + p.h + 40, 24, 'middle');
+  plainText(p.tag, p.x + p.w / 2, p.y + p.h + 76, 22, 'middle');
+}
+
+function drawPanelOmega() {
+  var p = panels.omega;
+  if (state.view === 'omega') drawAllowedRegion(p);
+  drawAxes(p);
+
+  interactiveCurve(draw.polyline(pts(p, fC, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Target function f(n)', 'The function f(n)',
+    'In the Ω panel, f(n) is eventually at least as large as a constant multiple of g(n).');
+  interactiveCurve(draw.polyline(pts(p, lowerC, 0, 1, 160)).fill('none').stroke({ color: '#111', width: 1.15, linecap: 'round', linejoin: 'round' }),
+    'Lower comparison curve: cg(n)', 'Big-Ω lower bound',
+    'For Ω(g(n)), only an eventual lower bound is required: f(n) must lie at or above cg(n) for n ≥ n₀.');
+
+  var xn = sx(p, state.n0), yh = sy(p, lowerC(state.n0));
+  draw.line(xn, p.y + p.h, xn, yh).stroke({ color: '#333', width: 1.0, dasharray: '7,6' });
+  draw.line(xn, p.y + p.h - 5, xn, p.y + p.h + 5).stroke({ color: '#000', width: 1.0 });
+  textLabel('n₀', xn, p.y + p.h + 25, 21, 'middle');
+
+  textLabel('f(n)', sx(p, 0.96), sy(p, fC(0.96)) - 18, 21, 'middle');
+  textLabel('cg(n)', sx(p, 0.96), sy(p, lowerC(0.96)) - 18, 21, 'middle');
+  textLabel(p.caption, p.x + p.w / 2 + 8, p.y + p.h + 40, 24, 'middle');
+  plainText(p.tag, p.x + p.w / 2, p.y + p.h + 76, 22, 'middle');
+}
+
+function violationAt(panelKey, n) {
+  if (panelKey === 'theta') return fA(n) < lowerA(n) || fA(n) > upperA(n);
+  if (panelKey === 'o') return fB(n) > upperB(n);
+  return fC(n) < lowerC(n);
+}
+function fVal(panelKey, n) {
+  if (panelKey === 'theta') return fA(n);
+  if (panelKey === 'o') return fB(n);
+  return fC(n);
+}
+function drawViolationMark(p, n) {
+  var x = sx(p, n), y = sy(p, fVal(p.key, n)), r = 4.0;
+  var g = draw.group();
+  g.line(x - r, y - r, x + r, y + r).stroke({ color: '#c92626', width: 1.5, linecap: 'round' });
+  g.line(x - r, y + r, x + r, y - r).stroke({ color: '#c92626', width: 1.5, linecap: 'round' });
+  g.circle(2.2).center(x, y).fill('#c92626');
+  g.on('mousemove', function(e) { showTooltip('Violation to the right of n₀: f(n) is outside the required bound here.', e); })
+   .on('mouseleave', hideTooltip)
+   .on('click', function() {
+      showPopup('Violation after n₀', 'A red mark means the chosen relation is false at that sampled n value even though it lies to the right of n₀. Increase n₀ or adjust the constant until the eventual bound holds.');
+   })
+   .css('cursor', 'pointer');
+}
+
+function drawViolations() {
+  var total = 0, names = [];
+  ['theta', 'o', 'omega'].forEach(function(key) {
+    var p = panels[key], count = 0, lastDrawn = -1;
+    for (var i = 0; i < 90; i++) {
+      var n = state.n0 + (1 - state.n0) * i / 89;
+      if (violationAt(key, n)) {
+        count++;
+        if (i - lastDrawn >= 5) {
+          drawViolationMark(p, n);
+          lastDrawn = i;
+        }
+      }
+    }
+    if (count) {
+      total += count;
+      names.push(key === 'theta' ? 'Θ' : (key === 'o' ? 'O' : 'Ω'));
+    }
+  });
+  var s = document.getElementById('statusText');
+  if (s) {
+    s.textContent = total ? ('Red × marks violations after n₀ in: ' + names.join(', ') + '.') :
+      'No violations to the right of n₀.';
+  }
+}
+
+function updateButtons() {
+  var ids = { theta: 'thetaBtn', o: 'oBtn', omega: 'omegaBtn' };
+  for (var k in ids) {
+    var b = document.getElementById(ids[k]);
+    if (b) b.className = (k === state.view) ? 'active' : '';
+  }
+  var hidden = document.getElementById('viewInput');
+  if (hidden) hidden.value = state.view;
+}
+
+function render() {
+  draw.clear();
+  draw.rect(960, 365).fill('#fff');
+  drawPanelTheta();
+  drawPanelO();
+  drawPanelOmega();
+  drawViolations();
+  updateButtons();
+}
+
+function update_n0(v) {
+  state.n0 = v;
+  render();
+}
+function update_scale(v) {
+  state.scale = v;
+  render();
+}
+function trigger_view(mode) {
+  state.view = mode;
+  render();
+}
+function toggle_view(mode) {
+  trigger_view(mode);
+}
+
+render();
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
