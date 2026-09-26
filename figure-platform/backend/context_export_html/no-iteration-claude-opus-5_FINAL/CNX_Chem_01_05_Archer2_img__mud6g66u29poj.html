@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<p id="demoNarration" style="margin:0 0 2px 0;font-size:12px;line-height:1.45;color:#222"></p>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;color:#555"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<label style="flex-direction:row;align-items:center;gap:6px;margin-top:4px">
+  <input id="overlayTargetsInput" type="checkbox" onchange="toggle_overlayTargets(this.checked)"> View: all shots overlaid on one target
+</label>
+<label style="flex-direction:row;align-items:center;gap:6px">
+  <input id="showMetricsInput" type="checkbox" onchange="toggle_showMetrics(this.checked)"> Show centroid, spread circle &amp; bias arrow
+</label>
+<span style="font-size:11px;color:#555;margin-top:4px">Select an archer:</span>
+<span style="display:flex;gap:4px;flex-wrap:wrap">
+  <button id="btnA0" onclick="trigger_selectArcher(0)">W</button>
+  <button id="btnA1" onclick="trigger_selectArcher(1)">X</button>
+  <button id="btnA2" onclick="trigger_selectArcher(2)">Y</button>
+  <button id="btnA3" onclick="trigger_selectArcher(3)">Z</button>
+  <button id="btnAn" onclick="trigger_selectArcher(-1)">none</button>
+</span>
+<span style="font-size:11px;color:#555;margin-top:4px">Drag the black “new shot” dot from the tray in the figure onto any target to change that archer's ratings.</span>
+<button onclick="trigger_resetShots()" style="margin-top:2px">↺ Reset all shots</button>
+<span style="font-size:10.5px;color:#777;line-height:1.4;margin-top:4px">Precision = RMS scatter of an archer's shots about their own centroid. Accuracy = mean distance of shots from the bullseye. Both reported in units of the outer target radius R.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+(function () {
+  var BLUE = '#8E9BD4';
+  var VW = 1200, VH = 620;
+  var R0 = 94;                       // outer target radius (world units)
+  var PREC_T = 45, ACC_T = 55;       // thresholds in world units
+
+  var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+  draw.viewbox(0, 0, VW, VH);
+
+  var gMain = draw.group();
+  var gExtras = draw.group();
+  var gCallout = draw.group();
+  var gDrag = draw.group();
+
+  var ORIG = {
+    W: [[-28, -18], [20, -12], [-14, 38], [20, 35]],
+    X: [[46, 140], [67, 132], [76, 147], [73, 169]],
+    Y: [[94, -173], [-69, -91], [-108, 85], [81, 158]],
+    Z: [[57, -160], [-59, -29], [45, 35], [40, 163]]
+  };
+
+  var archers = [
+    { key: 'W', name: 'Archer W', color: '#1f77b4', shots: [] },
+    { key: 'X', name: 'Archer X', color: '#ff7f0e', shots: [] },
+    { key: 'Y', name: 'Archer Y', color: '#2ca02c', shots: [] },
+    { key: 'Z', name: 'Archer Z', color: '#9467bd', shots: [] }
+  ];
+  function resetShots() {
+    for (var i = 0; i < archers.length; i++) {
+      archers[i].shots = ORIG[archers[i].key].map(function (p) { return [p[0], p[1]]; });
+    }
+  }
+  resetShots();
+
+  var state = { selected: -1, overlay: false, metrics: false, step: 0 };
+
+  /* ── geometry helpers ─────────────────────────────────────────── */
+  var PW = 282, PH = 412, PY = 58, PGAP = 16, PX0 = 10;
+  function panelX(i) { return PX0 + i * (PW + PGAP); }
+  function panelCX(i) { return panelX(i) + PW / 2; }
+  var PCY = PY + 194;   // 252
+
+  function fmt(v) { return (v / R0).toFixed(2) + 'R'; }
+
+  function stats(shots) {
+    var n = shots.length;
+    if (!n) return { cx: 0, cy: 0, spread: 0, meanDist: 0, bias: 0, n: 0 };
+    var mx = 0, my = 0, i;
+    for (i = 0; i < n; i++) { mx += shots[i][0]; my += shots[i][1]; }
+    mx /= n; my /= n;
+    var sp = 0, md = 0;
+    for (i = 0; i < n; i++) {
+      sp += (shots[i][0] - mx) * (shots[i][0] - mx) + (shots[i][1] - my) * (shots[i][1] - my);
+      md += Math.sqrt(shots[i][0] * shots[i][0] + shots[i][1] * shots[i][1]);
+    }
+    return { cx: mx, cy: my, spread: Math.sqrt(sp / n), meanDist: md / n, bias: Math.sqrt(mx * mx + my * my), n: n };
+  }
+  function classify(a) {
+    var st = stats(a.shots);
+    return { st: st, prec: st.spread <= PREC_T, acc: st.meanDist <= ACC_T };
+  }
+  function verdictTitle(c) {
+    return (c.prec ? 'precise' : 'imprecise') + ' and ' + (c.acc ? 'accurate' : 'inaccurate');
+  }
+  function verdictBody(a, c) {
+    var s = a.name + "'s shots scatter " + fmt(c.st.spread) + ' about their own centroid, so precision is '
+      + (c.prec ? 'HIGH' : 'LOW') + '. Their mean distance from the bullseye is ' + fmt(c.st.meanDist)
+      + ', so accuracy is ' + (c.acc ? 'HIGH' : 'LOW') + '. ';
+    if (c.prec && c.acc) s += 'Repeatable and correct — the only pattern that is both.';
+    else if (c.prec && !c.acc) s += 'A tight cluster in the wrong place: perfectly repeatable, completely wrong. This is systematic error (bias), and averaging more shots will never fix it.';
+    else if (!c.prec && c.acc) s += 'The shots average out near the truth, but no single shot can be trusted — random error dominates.';
+    else s += 'Neither repeatable nor correct; any near-centre hit here is luck, not skill.';
+    return s;
+  }
+
+  /* ── text helper (bbox-based positioning) ─────────────────────── */
+  function txt(g, str, x, y, opt) {
+    opt = opt || {};
+    var t = g.text(str).font({
+      family: 'sans-serif', size: opt.size || 12,
+      weight: opt.weight || 'normal', anchor: 'middle'
+    }).fill(opt.fill || '#444');
+    var b = t.bbox();
+    var cx = x;
+    if (opt.align === 'start') cx = x + b.width / 2;
+    else if (opt.align === 'end') cx = x - b.width / 2;
+    t.center(cx, y);
+    if (opt.halo) t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3.2, 'stroke-linejoin': 'round' });
+    return t;
+  }
+
+  function starPts(cx, cy, ro, ri, n) {
+    var out = [];
+    for (var k = 0; k < 2 * n; k++) {
+      var a = -Math.PI / 2 + k * Math.PI / n;
+      var r = (k % 2 === 0) ? ro : ri;
+      out.push((cx + r * Math.cos(a)).toFixed(2) + ',' + (cy + r * Math.sin(a)).toFixed(2));
+    }
+    return out.join(' ');
+  }
+
+  function drawTarget(g, cx, cy, R) {
+    var s = R / R0;
+    g.circle(2 * R).center(cx, cy).fill(BLUE);
+    g.circle(2 * 72 * s).center(cx, cy).fill('#fff');
+    g.circle(2 * 52 * s).center(cx, cy).fill(BLUE);
+    g.circle(2 * 44 * s).center(cx, cy).fill('#fff');
+    g.circle(2 * 32 * s).center(cx, cy).fill(BLUE);
+  }
+
+  function drawShot(g, x, y, color, size, info) {
+    var el = g.polygon(starPts(x, y, size, size * 0.62, 8)).fill(color || '#000');
+    if (info) {
+      el.css('cursor', 'pointer');
+      el.on('mousemove', function (e) { showTooltip(info, e); }).on('mouseleave', hideTooltip);
+    }
+    return el;
+  }
+
+  function drawArrow(g, x1, y1, x2, y2, color, showLabel) {
+    var dx = x2 - x1, dy = y2 - y1, L = Math.sqrt(dx * dx + dy * dy);
+    if (L < 6) return;
+    var ux = dx / L, uy = dy / L;
+    var line = g.line(x1, y1, x2 - ux * 8, y2 - uy * 8)
+      .stroke({ color: color, width: 1.8, dasharray: '7,5', linecap: 'round' });
+    var ax = x2 - ux * 10, ay = y2 - uy * 10, px = -uy, py = ux;
+    g.polygon([x2 + ',' + y2, (ax + px * 5) + ',' + (ay + py * 5), (ax - px * 5) + ',' + (ay - py * 5)].join(' '))
+      .fill(color);
+    line.css('cursor', 'pointer').on('mousemove', function (e) {
+      showTooltip('bias: distance from this archer\'s centroid to the true centre = accuracy error', e);
+    }).on('mouseleave', hideTooltip);
+    if (showLabel && L > 34) {
+      txt(g, 'bias', (x1 + x2) / 2 - uy * 12, (y1 + y2) / 2 + ux * 12,
+        { size: 11, fill: color, weight: 'bold', halo: true });
+    }
+  }
+
+  function drawMetrics(g, cx, cy, a, sc, color, withLabel) {
+    var st = stats(a.shots);
+    if (!st.n) return;
+    g.line(cx - 11, cy, cx + 11, cy).stroke({ color: '#333', width: 1.2 });
+    g.line(cx, cy - 11, cx, cy + 11).stroke({ color: '#333', width: 1.2 });
+    var gx = cx + st.cx * sc, gy = cy + st.cy * sc;
+    var sc2 = Math.max(6, st.spread * sc);
+    var sp = g.circle(2 * sc2).center(gx, gy).fill('none')
+      .stroke({ color: color, width: 1.6, dasharray: '6,5' });
+    sp.css('cursor', 'pointer').on('mousemove', function (e) {
+      showTooltip('spread = ' + fmt(st.spread) + ' — RMS scatter about the archer\'s own centroid (precision)', e);
+    }).on('mouseleave', hideTooltip);
+    var ring = g.circle(13).center(gx, gy).fill('none').stroke({ color: color, width: 2.4 });
+    ring.css('cursor', 'pointer').on('mousemove', function (e) {
+      showTooltip('centroid of ' + a.name + '\'s shots', e);
+    }).on('mouseleave', hideTooltip);
+    drawArrow(g, gx, gy, cx, cy, color, withLabel);
+  }
+
+  /* ── four-panel view ──────────────────────────────────────────── */
+  function renderPanels() {
+    for (var i = 0; i < 4; i++) {
+      (function (i) {
+        var a = archers[i], px = panelX(i), sel = (state.selected === i);
+        var g = gMain.group();
+        g.rect(PW, PH).move(px, PY).fill('#ffffff')
+          .stroke({ color: sel ? '#2b6cb0' : '#555', width: sel ? 3.5 : 2 });
+        var inner = g.group();
+        var clip = draw.clip();
+        clip.add(draw.rect(PW - 4, PH - 4).move(px + 2, PY + 2));
+        inner.clipWith(clip);
+        var cx = panelCX(i), cy = PCY;
+        drawTarget(inner, cx, cy, R0);
+        if (state.metrics) drawMetrics(inner, cx, cy, a, 1, '#111', true);
+        for (var k = 0; k < a.shots.length; k++) {
+          var s = a.shots[k];
+          var d = Math.sqrt(s[0] * s[0] + s[1] * s[1]);
+          drawShot(inner, cx + s[0], cy + s[1], '#000', 7,
+            a.name + ' · shot ' + (k + 1) + ' — ' + fmt(d) + ' from the bullseye');
+        }
+        txt(g, a.name, cx, 490, { size: 17, fill: '#555' });
+        g.css('cursor', 'pointer');
+        g.on('click', function () { panelClick(i); });
+        g.on('mousemove', function (e) {
+          showTooltip('Click ' + a.name + ' to see its precision / accuracy rating', e);
+        }).on('mouseleave', hideTooltip);
+      })(i);
+    }
+  }
+
+  /* ── overlay view ─────────────────────────────────────────────── */
+  var OCX = 520, OCY = 262, OR = 103;
+  function renderOverlay() {
+    var g = gMain.group();
+    g.rect(1000, PH).move(10, PY).fill('#ffffff').stroke({ color: '#555', width: 2 });
+    drawTarget(g, OCX, OCY, OR);
+    var sc = OR / R0;
+    for (var i = 0; i < 4; i++) {
+      (function (i) {
+        var a = archers[i];
+        var dim = (state.selected >= 0 && state.selected !== i);
+        var ag = g.group().opacity(dim ? 0.22 : 1);
+        if (state.metrics) drawMetrics(ag, OCX, OCY, a, sc, a.color, !dim);
+        for (var k = 0; k < a.shots.length; k++) {
+          var s = a.shots[k];
+          var d = Math.sqrt(s[0] * s[0] + s[1] * s[1]);
+          drawShot(ag, OCX + s[0] * sc, OCY + s[1] * sc, a.color, 6.5,
+            a.name + ' · shot ' + (k + 1) + ' — ' + fmt(d) + ' from the bullseye');
+        }
+      })(i);
+    }
+    // legend
+    txt(g, 'All four shot sets on one target', 880, 96, { size: 13, weight: 'bold', fill: '#444', align: 'start' });
+    for (var j = 0; j < 4; j++) {
+      (function (j) {
+        var a = archers[j], c = classify(a), y = 130 + j * 62;
+        var row = g.group().css('cursor', 'pointer');
+        row.rect(300, 54).move(872, y - 18).radius(6)
+          .fill(state.selected === j ? '#eef5fd' : '#ffffff')
+          .stroke({ color: state.selected === j ? '#2b6cb0' : '#e2e5ea', width: 1.2 });
+        row.circle(13).center(890, y - 1).fill(a.color);
+        txt(row, a.name, 904, y - 1, { size: 13, weight: 'bold', fill: '#222', align: 'start' });
+        txt(row, (c.prec ? 'precise' : 'imprecise') + ' · ' + (c.acc ? 'accurate' : 'inaccurate'),
+          1160, y - 1, { size: 11.5, fill: c.prec && c.acc ? '#1a7f37' : '#b42318', align: 'end' });
+        txt(row, 'spread ' + fmt(c.st.spread) + '   mean distance ' + fmt(c.st.meanDist),
+          890, y + 20, { size: 11, fill: '#666', align: 'start' });
+        row.on('click', function () { panelClick(j); });
+        row.on('mousemove', function (e) { showTooltip('Focus ' + a.name, e); }).on('mouseleave', hideTooltip);
+      })(j);
+    }
+    txt(g, 'Archer W', OCX, 490, { size: 13, fill: '#fff' }).opacity(0); // spacer keeps layout stable
+  }
+
+  /* ── tray + quadrant legend ───────────────────────────────────── */
+  function renderTray() {
+    gExtras.rect(410, 90).move(20, 508).radius(8).fill('#fafafa')
+      .stroke({ color: '#c9ced6', width: 1.2, dasharray: '5,4' });
+    txt(gExtras, 'Drag a shot onto a target', 44, 532, { size: 13.5, fill: '#555', align: 'start' });
+    txt(gExtras, 'then watch that archer\'s precision and accuracy ratings change',
+      44, 588, { size: 10.5, fill: '#888', align: 'start' });
+    var dot = gExtras.polygon(starPts(60, 562, 8, 5, 8)).fill('#000').css('cursor', 'grab');
+    txt(gExtras, 'new shot', 78, 562, { size: 12, fill: '#333', align: 'start' });
+    dot.on('mousemove', function (e) { showTooltip('Drag me onto any target', e); })
+      .on('mouseleave', hideTooltip);
+    dot.on('pointerdown', startDrag);
+  }
+
+  function renderQuad() {
+    var gx = 985, gy = 534, cw = 95, ch = 34;
+    txt(gExtras, 'Precision vs accuracy', 866, 512, { size: 12.5, weight: 'bold', fill: '#555', align: 'start' });
+    txt(gExtras, 'Accurate', gx + cw / 2, gy - 10, { size: 10.5, fill: '#666' });
+    txt(gExtras, 'Not accurate', gx + cw + cw / 2, gy - 10, { size: 10.5, fill: '#666' });
+    txt(gExtras, 'Precise', gx - 8, gy + ch / 2, { size: 10.5, fill: '#666', align: 'end' });
+    txt(gExtras, 'Not precise', gx - 8, gy + ch + ch / 2, { size: 10.5, fill: '#666', align: 'end' });
+    for (var r = 0; r < 2; r++) {
+      for (var c = 0; c < 2; c++) {
+        var names = [], hot = false;
+        for (var i = 0; i < 4; i++) {
+          var cl = classify(archers[i]);
+          if (cl.prec === (r === 0) && cl.acc === (c === 0)) {
+            names.push(archers[i].key);
+            if (state.selected === i) hot = true;
+          }
+        }
+        var x = gx + c * cw, y = gy + r * ch;
+        gExtras.rect(cw, ch).move(x, y).fill(hot ? '#dceafa' : '#ffffff')
+          .stroke({ color: hot ? '#2b6cb0' : '#ccd1d8', width: hot ? 2 : 1 });
+        txt(gExtras, names.length ? names.join(', ') : '—', x + cw / 2, y + ch / 2,
+          { size: 12, weight: 'bold', fill: names.length ? '#333' : '#aaa' });
+      }
+    }
+  }
+
+  /* ── callout ──────────────────────────────────────────────────── */
+  function chip(g, x, y, w, h, label, good) {
+    g.rect(w, h).move(x, y).radius(5)
+      .fill(good ? '#e7f6ea' : '#fdecea')
+      .stroke({ color: good ? '#8fd0a1' : '#f2b4ae', width: 1 });
+    txt(g, label, x + w / 2, y + h / 2, { size: 11.5, weight: 'bold', fill: good ? '#1a7f37' : '#b42318' });
+  }
+
+  function renderCallout() {
+    if (state.selected < 0) {
+      txt(gCallout, 'Click a target to see its precision and accuracy rating', 600, 30, { size: 13, fill: '#8a8f97' });
+      return;
+    }
+    var i = state.selected, a = archers[i], c = classify(a);
+    var cx = state.overlay ? OCX : panelCX(i);
+    cx = Math.max(195, Math.min(1005, cx));
+    var bw = 360, bh = 48, bx = cx - bw / 2, by = 5;
+    gCallout.rect(bw, bh).move(bx, by).radius(7).fill('#ffffff').stroke({ color: '#2b6cb0', width: 2 });
+    txt(gCallout, a.name, bx + 12, by + 16, { size: 14, weight: 'bold', fill: '#14243a', align: 'start' });
+    chip(gCallout, bx + 96, by + 6, 120, 21, 'Precision: ' + (c.prec ? 'HIGH' : 'LOW'), c.prec);
+    chip(gCallout, bx + 224, by + 6, 120, 21, 'Accuracy: ' + (c.acc ? 'HIGH' : 'LOW'), c.acc);
+    txt(gCallout, 'spread ' + fmt(c.st.spread) + '  ·  mean distance from centre ' + fmt(c.st.meanDist) + '  ·  n = ' + c.st.n,
+      bx + 12, by + 37, { size: 10.5, fill: '#666', align: 'start' });
+  }
+
+  /* ── master render ────────────────────────────────────────────── */
+  function render() {
+    try { draw.defs().clear(); } catch (e) { }
+    gMain.clear(); gExtras.clear(); gCallout.clear();
+    if (state.overlay) renderOverlay(); else renderPanels();
+    renderTray();
+    renderQuad();
+    renderCallout();
+    syncButtons();
+  }
+
+  function syncButtons() {
+    for (var i = 0; i < 4; i++) {
+      var b = document.getElementById('btnA' + i);
+      if (b) b.className = (state.selected === i) ? 'active' : '';
+    }
+    var bn = document.getElementById('btnAn');
+    if (bn) bn.className = (state.selected < 0) ? 'active' : '';
+  }
+
+  function panelClick(i) {
+    state.selected = i;
+    render();
+    var c = classify(archers[i]);
+    showPopup(archers[i].name + ' — ' + verdictTitle(c), verdictBody(archers[i], c));
+  }
+
+  /* ── drag a new shot ──────────────────────────────────────────── */
+  var dragging = false;
+  function toSvg(e) {
+    var pt = draw.node.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    return pt.matrixTransform(draw.node.getScreenCTM().inverse());
+  }
+  function startDrag(e) {
+    e.preventDefault();
+    dragging = true;
+    hideTooltip();
+    gDrag.clear();
+    var p = toSvg(e);
+    gDrag.polygon(starPts(p.x, p.y, 8, 5, 8)).fill('#000').opacity(0.85);
+  }
+  function moveDrag(e) {
+    if (!dragging) return;
+    var p = toSvg(e);
+    gDrag.clear();
+    gDrag.polygon(starPts(p.x, p.y, 8, 5, 8)).fill('#000').opacity(0.85);
+  }
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    var p = toSvg(e);
+    gDrag.clear();
+    var target = -1, rx = 0, ry = 0;
+    if (state.overlay) {
+      if (p.x > 20 && p.x < 1000 && p.y > PY && p.y < PY + PH) {
+        target = state.selected >= 0 ? state.selected : 0;
+        rx = (p.x - OCX) / (OR / R0); ry = (p.y - OCY) / (OR / R0);
+      }
+    } else {
+      for (var i = 0; i < 4; i++) {
+        if (p.x >= panelX(i) && p.x <= panelX(i) + PW && p.y >= PY && p.y <= PY + PH) {
+          target = i; rx = p.x - panelCX(i); ry = p.y - PCY; break;
+        }
+      }
+    }
+    if (target >= 0) {
+      if (archers[target].shots.length < 14) archers[target].shots.push([rx, ry]);
+      state.selected = target;
+      state.metrics = true;
+      var mi = document.getElementById('showMetricsInput');
+      if (mi) mi.checked = true;
+      render();
+      var c = classify(archers[target]);
+      showPopup('New shot added to ' + archers[target].name,
+        'Spread is now ' + fmt(c.st.spread) + ' (precision ' + (c.prec ? 'HIGH' : 'LOW') +
+        ') and mean distance from the bullseye is ' + fmt(c.st.meanDist) + ' (accuracy ' + (c.acc ? 'HIGH' : 'LOW') +
+        '). Notice how one wild arrow wrecks precision while barely moving the centroid, whereas sliding a whole cluster toward the bullseye changes accuracy and leaves precision untouched.');
+    }
+  }
+  window.addEventListener('pointermove', moveDrag);
+  window.addEventListener('pointerup', endDrag);
+
+  /* ── UI handlers ──────────────────────────────────────────────── */
+  window.toggle_overlayTargets = function (on) { state.overlay = !!on; render(); };
+  window.toggle_showMetrics = function (on) { state.metrics = !!on; render(); };
+  window.trigger_selectArcher = function (i) { state.selected = i; render(); };
+  window.trigger_resetShots = function () { resetShots(); render(); };
+
+  /* ── demo steps ───────────────────────────────────────────────── */
+  var steps = [
+    {
+      t: 'Four archers, four patterns',
+      n: 'Four archers each fired four arrows at the same target. Compare the patterns before reading any labels: which archer is "good"?',
+      o: false, m: false, s: -1
+    },
+    {
+      t: 'Archer W — precise and accurate',
+      n: 'Archer W\'s shots are tightly grouped AND centred on the bullseye: repeatable and correct.',
+      o: false, m: false, s: 0
+    },
+    {
+      t: 'Archer X — precise but not accurate',
+      n: 'Archer X\'s cluster is just as tight as W\'s, but sits entirely off the target. Reproducibility says nothing about correctness — this is systematic error.',
+      o: false, m: false, s: 1
+    },
+    {
+      t: 'Measure the two ideas separately',
+      n: 'Centroid, dashed spread circle and bias arrow are now shown. Spread size = precision; arrow length from centroid to centre = accuracy. W: small spread, short arrow. X: small spread, long arrow.',
+      o: false, m: true, s: 1
+    },
+    {
+      t: 'Archers Y and Z — neither',
+      n: 'Y and Z have large spread circles (poor precision) and their shots sit far from the bullseye on average (poor accuracy). Their occasional near-centre hit is luck, not skill.',
+      o: false, m: true, s: 2
+    },
+    {
+      t: 'Overlay for direct comparison',
+      n: 'All four shot sets stacked on one target. Spread and offset can now be read at a glance: two tight clusters (one centred, one offset) and two diffuse scatters.',
+      o: true, m: true, s: -1
+    },
+    {
+      t: 'Add your own shot',
+      n: 'Drag the "new shot" dot from the tray onto any target and watch the ratings update. One wild arrow ruins Archer W\'s precision; moving X\'s cluster onto the bullseye makes it accurate without changing its precision.',
+      o: false, m: true, s: 0
+    }
+  ];
+
+  function applyStep(i) {
+    i = Math.max(0, Math.min(steps.length - 1, i));
+    state.step = i;
+    var s = steps[i];
+    state.overlay = s.o; state.metrics = s.m; state.selected = s.s;
+    var oi = document.getElementById('overlayTargetsInput');
+    var mi = document.getElementById('showMetricsInput');
+    if (oi) oi.checked = s.o;
+    if (mi) mi.checked = s.m;
+    var nar = document.getElementById('demoNarration');
+    if (nar) nar.innerHTML = '<b>' + s.t + '</b><br>' + s.n;
+    var lab = document.getElementById('stepLabel');
+    if (lab) lab.textContent = 'Step ' + (i + 1) + ' / ' + steps.length;
+    render();
+  }
+  window.nextStep = function () { applyStep(state.step + 1); };
+  window.prevStep = function () { applyStep(state.step - 1); };
+
+  applyStep(0);
+  window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

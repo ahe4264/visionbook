@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:600;font-size:12px">Bromination of benzene: why substitution, not addition</span>
+<span id="stepTitle" style="font-weight:600;font-size:12px;color:#164a7b"></span>
+<span id="demoNarration" style="display:block;font-size:12px;line-height:1.45;min-height:72px"></span>
+<span style="display:flex;gap:6px;align-items:center"><button onclick="prevStep()">◀</button><span id="stepLabel" style="font-size:11px"></span><button onclick="nextStep()">▶</button></span>
+<label>Walk the reaction coordinate: <output id="pathwayStageVal">reactants</output><input id="pathwayStageInput" type="range" min="0" max="4" step="1" value="0" oninput="document.getElementById('pathwayStageVal').value=STAGE_NAMES[+this.value];update_pathwayStage(+this.value)"></label>
+<label><input id="branchChoiceInput" type="checkbox" onchange="toggle_branchChoice(this.checked)"> Fate of the intermediate: follow the <b>Addition</b> branch (unchecked = Substitution)</label>
+<button onclick="trigger_energyArrow()">Compare ΔG‡ vs ΔG°</button>
+<button onclick="resetFig()">Reset view</button>
+<span style="font-size:11px;color:#555;display:block;line-height:1.4">Black = substitution pathway · magenta = Br atoms / addition pathway. Hover or click the curves, structures and energy arrows for explanations.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+(function () {
+  var MAG = '#e6007e', BLK = '#000', GRAY = '#c9c9c9';
+  var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+  draw.viewbox(0, 0, 880, 580);
+
+  /* ---------------- helpers ---------------- */
+  function txt(parent, s, x, y, o) {
+    o = o || {};
+    var t = parent.text(s);
+    t.font({
+      family: 'Helvetica, Arial, sans-serif',
+      size: o.size || 15,
+      weight: o.weight || 'normal',
+      style: o.style || 'normal',
+      anchor: o.anchor || 'middle'
+    });
+    t.fill(o.fill || '#000');
+    t.attr({ x: x, y: y, 'dominant-baseline': 'central' });
+    var first = t.node.firstChild;
+    if (first && first.setAttribute) {
+      first.setAttribute('x', x);
+      first.setAttribute('dy', 0);
+      first.setAttribute('dominant-baseline', 'central');
+    }
+    if (o.halo) t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3.2, 'stroke-linejoin': 'round' });
+    return t;
+  }
+  function ptsStr(a) { return a.map(function (p) { return p[0] + ',' + p[1]; }).join(' '); }
+  function catmull(P, per) {
+    var out = [];
+    for (var i = 0; i < P.length - 1; i++) {
+      var p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+      for (var j = 0; j < per; j++) {
+        var t = j / per, t2 = t * t, t3 = t2 * t;
+        out.push([
+          0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+        ]);
+      }
+    }
+    out.push(P[P.length - 1].slice());
+    return out;
+  }
+  function dash(parent, x1, y1, x2, y2, o) {
+    o = o || {};
+    return parent.line(x1, y1, x2, y2).stroke({
+      color: o.color || '#000', width: o.width || 1.6,
+      dasharray: o.dasharray || '9,7', linecap: 'butt'
+    });
+  }
+  function hit(g, x, y, w, h) {
+    return g.rect(w, h).move(x, y).fill({ color: '#fff', opacity: 0 });
+  }
+  function bind(el, tip, title, body) {
+    el.css('cursor', 'pointer');
+    el.on('mousemove', function (e) { showTooltip(tip, e); });
+    el.on('mouseleave', function () { hideTooltip(); });
+    if (title) el.on('click', function () { showPopup(title, body); });
+  }
+
+  /* ---------------- energy arrow (left, outside panel) ---------------- */
+  var grad = draw.gradient('linear', function (add) {
+    add.stop(0, '#ef5a24'); add.stop(0.45, '#f79a4e'); add.stop(0.78, '#fbd98a'); add.stop(1, '#fdf7c9');
+  });
+  grad.attr({ x1: 0, y1: 0, x2: 0, y2: 1 });
+  draw.path('M18,538 L18,62 L4,62 L36,6 L68,62 L54,62 L54,538 Z')
+    .fill(grad).stroke({ color: '#000', width: 1 });
+  var enTxt = txt(draw, 'Energy', 36, 300, { size: 17, weight: 'bold' });
+  enTxt.rotate(-90, 36, 300);
+
+  /* ---------------- panel ---------------- */
+  var panel = draw.rect(784, 530).move(88, 6).fill('#dfeefb').stroke({ color: '#000', width: 1.2 });
+  bind(panel, 'Reaction–energy diagram: vertical = free energy, horizontal = reaction progress');
+
+  var glowLayer = draw.group();
+  var curveLayer = draw.group();
+  var annLayer = draw.group();
+  var structLayer = draw.group();
+
+  /* ---------------- levels ---------------- */
+  var REACT_Y = 312, PROD_Y = 372, TS1_Y = 33;
+  var extTS1 = dash(annLayer, 92, TS1_Y, 868, TS1_Y, { color: '#6b6b6b', width: 1.1, dasharray: '6,5' }).opacity(0);
+  var extReact = dash(annLayer, 92, REACT_Y, 868, REACT_Y, { color: '#6b6b6b', width: 1.1, dasharray: '6,5' }).opacity(0);
+  var extProd = dash(annLayer, 92, PROD_Y, 868, PROD_Y, { color: '#6b6b6b', width: 1.1, dasharray: '6,5' }).opacity(0);
+
+  dash(annLayer, 212, REACT_Y, 354, REACT_Y);
+  dash(annLayer, 370, PROD_Y, 616, PROD_Y);
+  dash(annLayer, 296, TS1_Y, 362, TS1_Y, { dasharray: '8,6' });
+
+  /* ---------------- curves ---------------- */
+  var SUB_PTS = [[208, 312], [248, 306], [272, 252], [296, 148], [313, 72], [330, 40], [350, 56], [372, 96],
+  [396, 124], [415, 132], [438, 120], [462, 97], [479, 86], [496, 84], [513, 97], [531, 132],
+  [551, 216], [571, 300], [591, 351], [609, 368], [622, 372]];
+  var ADD_PTS = [[415, 132], [440, 118], [465, 100], [490, 90], [512, 86], [530, 88], [549, 107], [568, 147],
+  [588, 191], [608, 214], [628, 220], [648, 221]];
+  var PER = 12;
+  var SUB = catmull(SUB_PTS, PER), ADD = catmull(ADD_PTS, PER);
+  var TROUGH_I = 9 * PER;
+  var shared = SUB.slice(0, TROUGH_I + 1), subB = SUB.slice(TROUGH_I);
+
+  function argmin(arr, a, b) { var k = a; for (var i = a; i <= b; i++) if (arr[i][1] < arr[k][1]) k = i; return k; }
+  var TS1_I = argmin(SUB, 0, TROUGH_I);
+  var TS2_I = argmin(SUB, TROUGH_I, SUB.length - 1);
+  var ADDMAX_I = argmin(ADD, 0, ADD.length - 1);
+
+  var subHalo = curveLayer.polyline(ptsStr(subB)).fill('none')
+    .stroke({ color: '#ffd24d', width: 11, linecap: 'round', linejoin: 'round' }).opacity(0);
+  var addHalo = curveLayer.polyline(ptsStr(ADD)).fill('none')
+    .stroke({ color: '#ffb3d9', width: 11, linecap: 'round', linejoin: 'round' }).opacity(0);
+  var addLine = curveLayer.polyline(ptsStr(ADD)).fill('none')
+    .stroke({ color: MAG, width: 3.2, linecap: 'round', linejoin: 'round' });
+  var subLine = curveLayer.polyline(ptsStr(subB)).fill('none')
+    .stroke({ color: BLK, width: 3.2, linecap: 'round', linejoin: 'round' });
+  var sharedLine = curveLayer.polyline(ptsStr(shared)).fill('none')
+    .stroke({ color: BLK, width: 3.2, linecap: 'round', linejoin: 'round' });
+
+  bind(sharedLine, 'Step 1 (slow): benzene attacks Br⁺ — the big barrier ΔG‡',
+    'Step 1: the rate-limiting climb',
+    'Attacking the electrophile destroys benzene\'s aromatic ring, so this first transition state lies very high above the reactants. Its ΔG‡ controls how fast bromination goes, which is why a Lewis-acid catalyst (FeBr₃) is required to make Br₂ electrophilic enough.');
+  bind(subLine, 'Substitution branch: loss of H⁺ restores aromaticity — ends BELOW the reactants',
+    'Substitution branch',
+    'From the carbocation intermediate, loss of H⁺ from the sp³ carbon crosses a much smaller second barrier and regenerates the aromatic ring. Because roughly 150 kJ/mol of aromatic stabilization is recovered, bromobenzene + HBr sit below the reactant level: ΔG° is negative and the reaction is favorable.');
+  bind(addLine, 'Addition branch: aromaticity lost for good — ends ABOVE the reactants',
+    'Addition branch (does not occur)',
+    'If bromide added to the cation instead, the product would be a non-aromatic dibromocyclohexadiene. That product has permanently sacrificed the aromatic stabilization energy, so it lies above benzene + Br₂: the step is endergonic and is not observed.');
+
+  /* ---------------- ΔG arrows ---------------- */
+  function vArrow(parent, x, y1, y2, color, width) {
+    var g = parent.group();
+    var ln = g.line(x, y1 + 7, x, y2 - 7).stroke({ color: color, width: width, linecap: 'butt' });
+    var hs = 9;
+    g.polygon(ptsStr([[x, y1], [x - hs * 0.5, y1 + hs], [x + hs * 0.5, y1 + hs]])).fill(color);
+    g.polygon(ptsStr([[x, y2], [x - hs * 0.5, y2 - hs], [x + hs * 0.5, y2 - hs]])).fill(color);
+    return { g: g, line: ln };
+  }
+  var aGx = vArrow(annLayer, 330, TS1_Y + 3, REACT_Y, BLK, 1.7);
+  var aG0 = vArrow(annLayer, 430, REACT_Y, PROD_Y, BLK, 1.7);
+  var lblGx = txt(annLayer, 'ΔG‡', 320, 210, { size: 17, anchor: 'end', halo: true });
+  var lblG0 = txt(annLayer, 'ΔG°', 441, 342, { size: 17, anchor: 'start', halo: true });
+  var hitGx = hit(annLayer, 300, TS1_Y, 60, REACT_Y - TS1_Y);
+  var hitG0 = hit(annLayer, 400, REACT_Y - 6, 90, PROD_Y - REACT_Y + 12);
+
+  var arrowFocus = null;
+  function clickArrow(which) {
+    arrowFocus = (arrowFocus === which) ? null : which;
+    engaged = true; render();
+    if (arrowFocus === 'dGx') {
+      showPopup('ΔG‡ — how FAST', 'ΔG‡ is the vertical climb from the reactant level up to the highest transition state. It says nothing about whether the reaction is favorable; it only sets the rate. Here it is large, so bromination of benzene needs a catalyst.');
+    } else if (arrowFocus === 'dG0') {
+      showPopup('ΔG° — how FAVORABLE', 'ΔG° is the net vertical drop from reactants to products. For substitution it is negative (products below reactants, aromaticity regained); for the addition branch the same measurement would be positive, which is why that product never forms.');
+    } else { hidePopup(); }
+  }
+  bind(hitGx, 'ΔG‡ — activation barrier (rate). Click to extend its reference levels.');
+  hitGx.on('click', function () { clickArrow('dGx'); });
+  bind(hitG0, 'ΔG° — net free-energy change (favorability). Click to extend its reference levels.');
+  hitG0.on('click', function () { clickArrow('dG0'); });
+
+  /* ---------------- structures ---------------- */
+  function hexPts(cx, cy, r) {
+    var p = [];
+    for (var k = 0; k < 6; k++) { var a = (90 + 60 * k) * Math.PI / 180; p.push([cx + r * Math.cos(a), cy - r * Math.sin(a)]); }
+    return p;
+  }
+  function ring(g, cx, cy, r, dbl) {
+    var p = hexPts(cx, cy, r);
+    g.polygon(ptsStr(p)).fill('none').stroke({ color: BLK, width: 2, linejoin: 'round' });
+    dbl.forEach(function (i) {
+      var a = p[i], b = p[(i + 1) % 6];
+      var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      var dx = cx - mx, dy = cy - my, L = Math.sqrt(dx * dx + dy * dy); dx /= L; dy /= L;
+      var off = 6.5;
+      var a2 = [a[0] + dx * off, a[1] + dy * off], b2 = [b[0] + dx * off, b[1] + dy * off];
+      var ux = b2[0] - a2[0], uy = b2[1] - a2[1];
+      g.line(a2[0] + ux * 0.16, a2[1] + uy * 0.16, b2[0] - ux * 0.16, b2[1] - uy * 0.16)
+        .stroke({ color: BLK, width: 2, linecap: 'round' });
+    });
+    return p;
+  }
+  function bond(g, a, dx, dy) {
+    g.line(a[0], a[1], a[0] + dx, a[1] + dy).stroke({ color: BLK, width: 2, linecap: 'round' });
+    return [a[0] + dx, a[1] + dy];
+  }
+
+  /* reactants */
+  var reactG = structLayer.group();
+  ring(reactG, 155, 368, 34, [0, 2, 4]);
+  txt(reactG, '+', 238, 370, { size: 24 });
+  txt(reactG, 'Br', 280, 370, { size: 20, fill: MAG });
+  txt(reactG, '2', 298, 380, { size: 13, fill: MAG });
+  hit(reactG, 110, 320, 210, 98);
+  bind(reactG, 'Reactants: benzene + Br₂ on the baseline level',
+    'Reactants set the baseline',
+    'Benzene and Br₂ define the dashed reference level on the left. Every other energy in the diagram — both barriers and both product levels — is measured vertically against this line.');
+
+  /* cyclohexadienyl cation */
+  var cationG = structLayer.group();
+  var cp = ring(cationG, 432, 196, 32, [0, 2]);
+  var ch = bond(cationG, cp[5], 26, -17);
+  txt(cationG, 'H', ch[0] + 12, ch[1] - 8, { size: 18, halo: true });
+  var cbr = bond(cationG, cp[5], 28, 21);
+  txt(cationG, 'Br', cbr[0] + 16, cbr[1] + 9, { size: 18, fill: MAG, halo: true });
+  txt(cationG, '+', 412, 148, { size: 20, halo: true });
+  hit(cationG, 392, 140, 130, 110);
+  bind(cationG, 'Cyclohexadienyl cation — a real intermediate, not a transition state',
+    'The carbocation intermediate',
+    'In the trough sits the cyclohexadienyl (arenium) cation: the sp³ carbon now carries both an H and the Br, and the positive charge is delocalized over the three remaining ring carbons. Because it lies in an energy minimum it is a genuine, if short-lived, species — and both pathways start from it.');
+
+  /* substitution products */
+  var prodG = structLayer.group();
+  var pp = ring(prodG, 628, 425, 32, [0, 2, 4]);
+  var pbr = bond(prodG, pp[5], 26, -16);
+  txt(prodG, 'Br', pbr[0] + 15, pbr[1] - 8, { size: 19, fill: MAG, halo: true });
+  txt(prodG, '+', 762, 425, { size: 24 });
+  txt(prodG, 'H', 800, 425, { size: 20, anchor: 'start' });
+  txt(prodG, 'Br', 815, 425, { size: 20, anchor: 'start', fill: MAG });
+  txt(prodG, 'Substitution', 645, 500, { size: 17 });
+  hit(prodG, 586, 372, 270, 142);
+  bind(prodG, 'Bromobenzene + HBr — aromatic ring restored, below the reactant level',
+    'Substitution product',
+    'Losing H⁺ from the sp³ carbon restores the aromatic sextet, so bromobenzene + HBr fall below the reactant line. Regaining ~150 kJ/mol of aromatic stabilization is exactly what makes ΔG° negative here.');
+
+  /* addition product in brackets */
+  var addG = structLayer.group();
+  var ap = ring(addG, 722, 140, 32, [1, 3]);
+  var a1 = bond(addG, ap[0], -22, -20);
+  txt(addG, 'H', a1[0] - 11, a1[1] - 8, { size: 18, halo: true });
+  var a2 = bond(addG, ap[0], 22, -20);
+  txt(addG, 'Br', a2[0] + 13, a2[1] - 8, { size: 18, fill: MAG, halo: true });
+  var a3 = bond(addG, ap[5], 27, -8);
+  txt(addG, 'Br', a3[0] + 16, a3[1] - 4, { size: 18, fill: MAG, halo: true });
+  var a4 = bond(addG, ap[5], 27, 18);
+  txt(addG, 'H', a4[0] + 13, a4[1] + 7, { size: 18, halo: true });
+  addG.path('M660,64 L650,64 L650,234 L660,234').fill('none').stroke({ color: BLK, width: 2, linejoin: 'round' });
+  addG.path('M806,64 L816,64 L816,234 L806,234').fill('none').stroke({ color: BLK, width: 2, linejoin: 'round' });
+  txt(addG, 'Addition', 733, 258, { size: 17 });
+  txt(addG, '(does not occur)', 733, 282, { size: 16, weight: 'bold', fill: MAG });
+  hit(addG, 642, 56, 186, 240);
+  bind(addG, 'Addition product: non-aromatic dibromide — higher in energy than the reactants',
+    'The addition product that never forms',
+    'Adding Br⁻ to the cation would give 5,6-dibromocyclohexa-1,3-diene: two sp³ carbons, only two isolated double bonds, and no aromatic ring. Its energy lies above benzene + Br₂, so this branch is uphill overall and aromatic compounds undergo substitution instead of addition.');
+
+  /* glows */
+  function glow(cx, cy, rx, ry) {
+    return glowLayer.ellipse(rx * 2, ry * 2).center(cx, cy).fill({ color: '#ffe680', opacity: 1 }).opacity(0);
+  }
+  var glowReact = glow(218, 368, 122, 60);
+  var glowCation = glow(455, 196, 98, 80);
+  var glowProd = glow(720, 438, 142, 80);
+  var glowAdd = glow(730, 158, 118, 142);
+
+  /* caption */
+  txt(draw, 'Reaction progress', 452, 560, { size: 17 });
+  draw.line(548, 560, 636, 560).stroke({ color: MAG, width: 3 });
+  draw.polygon(ptsStr([[650, 560], [634, 553], [634, 567]])).fill(MAG);
+
+  /* stage marker */
+  var markerG = draw.group().opacity(0);
+  var markerRing = markerG.circle(28).center(0, 0).fill({ color: '#ffd24d', opacity: 0.55 });
+  var marker = markerG.circle(15).center(0, 0).fill('#ffb400').stroke({ color: '#000', width: 2 });
+
+  /* ---------------- state ---------------- */
+  window.STAGE_NAMES = ['reactants', 'first transition state', 'cationic intermediate', 'second transition state', 'products'];
+  var stageIdx = 0, branch = 'Substitution', engaged = false;
+
+  var STAGE_TIP = [
+    'Reactants: benzene + Br₂ on the baseline',
+    'TS1 — the highest point: rate-limiting attack on Br⁺',
+    'Intermediate: cyclohexadienyl cation in a real energy well',
+    'TS2 — a much lower barrier',
+    'Products'
+  ];
+
+  function stagePoint() {
+    if (stageIdx === 0) return SUB[0];
+    if (stageIdx === 1) return SUB[TS1_I];
+    if (stageIdx === 2) return SUB[TROUGH_I];
+    if (stageIdx === 3) return (branch === 'Substitution') ? SUB[TS2_I] : ADD[ADDMAX_I];
+    return (branch === 'Substitution') ? SUB[SUB.length - 1] : ADD[ADD.length - 1];
+  }
+
+  function render() {
+    var subActive = (branch === 'Substitution');
+
+    if (!engaged) {
+      subLine.stroke({ color: BLK, width: 3.2 });
+      addLine.stroke({ color: MAG, width: 3.2 });
+      subHalo.opacity(0); addHalo.opacity(0);
+      prodG.opacity(1); addG.opacity(1);
+      markerG.opacity(0);
+      glowReact.opacity(0); glowCation.opacity(0); glowProd.opacity(0); glowAdd.opacity(0);
+    } else {
+      subLine.stroke({ color: subActive ? BLK : GRAY, width: subActive ? 4.2 : 2.6 });
+      addLine.stroke({ color: subActive ? GRAY : MAG, width: subActive ? 2.6 : 4.2 });
+      subHalo.opacity(subActive ? 0.55 : 0);
+      addHalo.opacity(subActive ? 0 : 0.55);
+      prodG.opacity(subActive ? 1 : 0.32);
+      addG.opacity(subActive ? 0.32 : 1);
+
+      var p = stagePoint();
+      markerG.opacity(1);
+      markerRing.center(p[0], p[1]);
+      marker.center(p[0], p[1]);
+
+      glowReact.opacity(stageIdx === 0 ? 0.5 : 0);
+      glowCation.opacity(stageIdx === 2 ? 0.5 : 0);
+      glowProd.opacity((stageIdx === 4 && subActive) ? 0.5 : 0);
+      glowAdd.opacity((stageIdx === 4 && !subActive) ? 0.5 : 0);
+    }
+
+    var emph = arrowFocus || (engaged && stageIdx === 1 ? 'dGx' : null);
+    aGx.line.stroke({ width: emph === 'dGx' ? 3.6 : 1.7 });
+    aG0.line.stroke({ width: emph === 'dG0' ? 3.6 : 1.7 });
+    lblGx.font({ weight: emph === 'dGx' ? 'bold' : 'normal' });
+    lblG0.font({ weight: emph === 'dG0' ? 'bold' : 'normal' });
+    extTS1.opacity(emph === 'dGx' ? 1 : 0);
+    extReact.opacity(emph ? 1 : 0);
+    extProd.opacity(emph === 'dG0' ? 1 : 0);
+  }
+
+  window.update_pathwayStage = function (v) { stageIdx = v; engaged = true; render(); };
+  window.toggle_branchChoice = function (on) {
+    branch = on ? 'Addition' : 'Substitution'; engaged = true; render();
+  };
+  window.trigger_energyArrow = function () {
+    clickArrow(arrowFocus === null ? 'dGx' : (arrowFocus === 'dGx' ? 'dG0' : null));
+  };
+  window.resetFig = function () {
+    engaged = false; arrowFocus = null; stageIdx = 0; branch = 'Substitution'; stepIdx = 0;
+    document.getElementById('pathwayStageInput').value = 0;
+    document.getElementById('pathwayStageVal').value = STAGE_NAMES[0];
+    document.getElementById('branchChoiceInput').checked = false;
+    syncStepText(); hidePopup(); render();
+  };
+
+  /* ---------------- demo steps ---------------- */
+  var steps = [
+    { t: 'Reactants on the baseline', n: 'Benzene and Br₂ sit on the left dashed level; everything else in the diagram is measured vertically against this line.', s: 0, b: false },
+    { t: 'The big first barrier', n: 'The black curve climbs steeply to the first transition state. Breaking benzene\'s aromaticity to attack Br⁺ costs a large ΔG‡, which is why bromination needs an FeBr₃ catalyst.', s: 1, b: false },
+    { t: 'The carbocation intermediate', n: 'The curve drops into a real minimum: the cyclohexadienyl cation, with H and Br on the same sp³ carbon and a delocalized positive charge. It is a genuine, if fleeting, species — not a transition state.', s: 2, b: false },
+    { t: 'Second, smaller barrier', n: 'Loss of H⁺ from the sp³ carbon crosses a much lower maximum — this step is fast compared with the first.', s: 3, b: false },
+    { t: 'Substitution ends downhill', n: 'Bromobenzene plus HBr land below the reactant level: the aromatic ring is restored, so ΔG° is negative and the reaction is favorable.', s: 4, b: false },
+    { t: 'The road not taken: addition', n: 'Switch the branch and the magenta curve leaves the same intermediate but finishes ABOVE the reactants — the dibromide has no aromatic stabilization, so addition is uphill and does not occur.', s: 4, b: true }
+  ];
+  var stepIdx = 0;
+
+  function syncStepText() {
+    var s = steps[stepIdx];
+    document.getElementById('stepTitle').textContent = s.t;
+    document.getElementById('demoNarration').textContent = s.n;
+    document.getElementById('stepLabel').textContent = 'Step ' + (stepIdx + 1) + ' / ' + steps.length;
+  }
+  function applyStep() {
+    var s = steps[stepIdx];
+    stageIdx = s.s; branch = s.b ? 'Addition' : 'Substitution';
+    document.getElementById('pathwayStageInput').value = s.s;
+    document.getElementById('pathwayStageVal').value = STAGE_NAMES[s.s];
+    document.getElementById('branchChoiceInput').checked = s.b;
+    syncStepText();
+    render();
+  }
+  window.nextStep = function () { if (stepIdx < steps.length - 1) { stepIdx++; engaged = true; applyStep(); } };
+  window.prevStep = function () { if (stepIdx > 0) { stepIdx--; engaged = true; applyStep(); } };
+
+  syncStepText();
+  render();
+  window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

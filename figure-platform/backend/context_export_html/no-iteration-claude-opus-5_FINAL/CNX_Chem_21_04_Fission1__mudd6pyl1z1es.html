@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:700;font-size:12px">Guided demo</span>
+<p id="demoNarration" style="margin:0;font-size:11.5px;line-height:1.45;color:#222"></p>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;color:#444"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<span style="font-weight:700;font-size:12px;margin-top:6px">Fission stage</span>
+<span style="display:flex;flex-direction:column;gap:3px">
+  <button id="phaseBtn0" onclick="set_fissionPhase(0)">1 · neutron approach</button>
+  <button id="phaseBtn1" onclick="set_fissionPhase(1)">2 · capture: U-236 forms</button>
+  <button id="phaseBtn2" onclick="set_fissionPhase(2)">3 · deformation &amp; scission</button>
+  <button id="phaseBtn3" onclick="set_fissionPhase(3)">4 · products + energy</button>
+  <input id="fissionPhaseInput" type="hidden" value="0">
+</span>
+<button onclick="trigger_playFission()" style="margin-top:4px">▶ Play full fission sequence</button>
+<label style="margin-top:6px">Chain-reaction generations: <output id="chainGenerationVal">0</output>
+  <input id="chainGenerationInput" type="range" min="0" max="3" step="1" value="0"
+    oninput="document.getElementById('chainGenerationVal').value=this.value;update_chainGeneration(+this.value)"></label>
+<span style="font-size:11px;color:#555;line-height:1.5;margin-top:4px">Key:
+  <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:radial-gradient(circle at 34% 30%,#dff0c8,#7cb342 55%,#43691f)"></span> proton &nbsp;
+  <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:radial-gradient(circle at 34% 30%,#fff,#ececE6 55%,#b9b9ae)"></span> neutron.
+  Click any particle (nucleus, neutron, energy burst) for its Z, A and role; click the white background to clear.</span>
+<span style="font-size:11px;color:#333;line-height:1.45;margin-top:4px"><b>Key insight:</b> fission consumes 1 neutron and emits 3 — that surplus turns one event into an exponentially growing chain.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+(function () {
+  var FONT = 'Arial, Helvetica, sans-serif';
+  var W = 1140, H = 580;
+  var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+  draw.viewbox(0, 0, W, H).attr('preserveAspectRatio', 'xMidYMid meet');
+
+  /* ---------- gradients & markers ---------- */
+  function mkGrad(c0, c1, c2) {
+    var g = draw.gradient('radial', function (add) {
+      add.stop(0, c0); add.stop(0.5, c1); add.stop(1, c2);
+    });
+    g.attr({ cx: 0.35, cy: 0.32, r: 0.74, fx: 0.33, fy: 0.30 });
+    return g;
+  }
+  var gGreenF = mkGrad('#e2f2ca', '#7cb342', '#41681e');
+  var gGreenB = mkGrad('#bcdb9d', '#5e8e30', '#31501a');
+  var gGreyF = mkGrad('#ffffff', '#ededE7', '#b7b7ac');
+  var gGreyB = mkGrad('#f1f1eb', '#d5d5cc', '#98988e');
+
+  var mArrow = draw.marker(5, 4, function (add) { add.polygon('0,0 5,2 0,4').fill('#111'); });
+  var mArrowSm = draw.marker(6, 5, function (add) { add.polygon('0,0 6,2.5 0,5').fill('#8a8a8a'); });
+
+  /* ---------- layers ---------- */
+  var gBg = draw.group();
+  gBg.rect(W, H).fill('#ffffff');
+  var gHalo = draw.group();
+  var gEnergy = draw.group();
+  var gNeutronIn = draw.group();
+  var gU235 = draw.group();
+  var gU236 = draw.group();
+  var gKr = draw.group();
+  var gBa = draw.group();
+  var gN3 = draw.group();
+  var gEq = draw.group();
+  var gHit = draw.group();
+  var gOverlay = draw.group().opacity(0);
+
+  /* ---------- helpers ---------- */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function samplePts(inside, half, minDist, cap, rng) {
+    var pts = [], md2 = minDist * minDist, attempts = 0, maxA = cap * 30;
+    while (pts.length < cap && attempts < maxA) {
+      attempts++;
+      var x = (rng() * 2 - 1) * half.x, y = (rng() * 2 - 1) * half.y, z = (rng() * 2 - 1) * half.z;
+      if (!inside(x, y, z)) continue;
+      var ok = true;
+      for (var i = 0; i < pts.length; i++) {
+        var dx = pts[i][0] - x, dy = pts[i][1] - y, dz = pts[i][2] - z;
+        if (dx * dx + dy * dy + dz * dz < md2) { ok = false; break; }
+      }
+      if (ok) pts.push([x, y, z]);
+    }
+    return pts;
+  }
+  function drawSpheres(g, cx, cy, pts, baseR, Rz, greenFrac, rng) {
+    pts.sort(function (a, b) { return a[2] - b[2]; });
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      var d = (p[2] + Rz) / (2 * Rz); if (d < 0) d = 0; if (d > 1) d = 1;
+      var r = baseR * (0.80 + 0.26 * d);
+      var green = rng() < greenFrac;
+      var grad = green ? (d > 0.45 ? gGreenF : gGreenB) : (d > 0.45 ? gGreyF : gGreyB);
+      g.circle(r * 2).center(cx + p[0], cy + p[1]).fill(grad);
+    }
+  }
+  function ballNucleus(g, cx, cy, R, baseR, cap, seed) {
+    var rng = mulberry32(seed), inner = 0.52 * R;
+    var pts = samplePts(function (x, y, z) {
+      var d2 = x * x + y * y + z * z;
+      return d2 <= R * R && d2 >= inner * inner;
+    }, { x: R, y: R, z: R }, baseR * 1.42, cap, rng);
+    drawSpheres(g, cx, cy, pts, baseR, R, 0.42, rng);
+  }
+  function txt(g, s, x, y, size, color, weight) {
+    var t = g.text(s).font({ size: size, family: FONT, weight: weight || 'normal' }).fill(color || '#111');
+    t.cx(x).cy(y);
+    return t;
+  }
+  function isotope(g, x, y, A, Z, sym, size, align) {
+    var small = size * 0.62;
+    var tA = g.text(String(A)).font({ size: small, family: FONT }).fill('#111');
+    var tZ = g.text(String(Z)).font({ size: small, family: FONT }).fill('#111');
+    var tS = g.text(sym).font({ size: size, family: FONT }).fill('#111');
+    var nW = Math.max(tA.bbox().width, tZ.bbox().width);
+    var sW = tS.bbox().width;
+    var gap = size * 0.18;
+    var total = nW + gap + sW;
+    var left = (align === 'start') ? x : x - total / 2;
+    tA.cx(left + nW / 2).cy(y - size * 0.42);
+    tZ.cx(left + nW / 2).cy(y + size * 0.42);
+    tS.cx(left + nW + gap + sW / 2).cy(y);
+    return total;
+  }
+  function arrow(g, x1, y1, x2, y2, w, col) {
+    return g.line(x1, y1, x2, y2)
+      .stroke({ color: col || '#111', width: w || 3.2, linecap: 'round' })
+      .marker('end', mArrow);
+  }
+
+  /* ---------- halos (stage highlight) ---------- */
+  var haloDefs = [
+    { x: 2, y: 166, w: 250, h: 148 },
+    { x: 158, y: 112, w: 362, h: 302 },
+    { x: 492, y: 14, w: 204, h: 484 },
+    { x: 742, y: 12, w: 394, h: 434 }
+  ];
+  var halos = haloDefs.map(function (d) {
+    return gHalo.rect(d.w, d.h).move(d.x, d.y).radius(30).fill('#ffeeb0').opacity(0);
+  });
+
+  /* ---------- energy starburst ---------- */
+  var EX = 872, EY = 212;
+  function starburst(g, cx, cy, spikes, rOut, rIn, fill, rot, op) {
+    var pts = [];
+    for (var i = 0; i < spikes * 2; i++) {
+      var ang = rot + i * Math.PI / spikes;
+      var rr = (i % 2 === 0) ? rOut * (0.68 + 0.40 * Math.abs(Math.sin(i * 1.9 + 0.6))) : rIn;
+      pts.push((cx + rr * Math.cos(ang)).toFixed(1) + ',' + (cy + rr * Math.sin(ang)).toFixed(1));
+    }
+    return g.polygon(pts.join(' ')).fill(fill).opacity(op == null ? 1 : op);
+  }
+  starburst(gEnergy, EX, EY, 13, 108, 26, '#f9dd97', 0.18, 0.95);
+  starburst(gEnergy, EX, EY, 11, 82, 22, '#f3cd6f', 0.75, 0.95);
+  gEnergy.circle(60).center(EX, EY).fill('#fbe9b4');
+  var energyTxt = gEnergy.text('Energy').font({ size: 18, family: FONT }).fill('#2a2a2a');
+  energyTxt.attr({ 'paint-order': 'stroke', stroke: '#fff7e0', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+  energyTxt.cx(EX).cy(EY);
+
+  /* ---------- incoming neutron ---------- */
+  arrow(gNeutronIn, 48, 240, 172, 240);
+  var streakAngles = [152, 170, 190, 206, 226];
+  streakAngles.forEach(function (a, i) {
+    var rad = a * Math.PI / 180, len = 52 + (i % 2) * 14;
+    gNeutronIn.line(184, 238, 184 + len * Math.cos(rad), 238 + len * Math.sin(rad))
+      .stroke({ color: '#d5d9c6', width: 4, linecap: 'round' });
+  });
+  gNeutronIn.circle(28).center(22, 240).fill(gGreyF);
+  isotope(gNeutronIn, 22, 282, 1, 0, 'n', 17);
+
+  /* ---------- U-235 ---------- */
+  ballNucleus(gU235, 287, 240, 104, 13.5, 300, 20240501);
+  isotope(gU235, 287, 386, 235, 92, 'U', 20);
+
+  /* ---------- U-236 dumbbell ---------- */
+  var DX = 592, DY = 210, Ra = 62, Dh = 112, nw = 22, dBaseR = 12.5;
+  (function () {
+    var Ra2 = Ra + dBaseR * 0.9, nw2 = nw + dBaseR * 0.9;
+    var ax = Ra2 * 0.743, ay = Ra2 * 0.669;
+    var p = 'M ' + (DX + ax) + ' ' + (DY - Dh + ay) +
+      ' A ' + Ra2 + ' ' + Ra2 + ' 0 1 0 ' + (DX - ax) + ' ' + (DY - Dh + ay) +
+      ' Q ' + (DX - (2 * nw2 - ax)) + ' ' + DY + ' ' + (DX - ax) + ' ' + (DY + Dh - ay) +
+      ' A ' + Ra2 + ' ' + Ra2 + ' 0 1 0 ' + (DX + ax) + ' ' + (DY + Dh - ay) +
+      ' Q ' + (DX + (2 * nw2 - ax)) + ' ' + DY + ' ' + (DX + ax) + ' ' + (DY - Dh + ay) + ' Z';
+    gU236.path(p).fill('#ffffff').stroke({ color: '#9e2f1c', width: 2.2, linejoin: 'round' });
+  })();
+  (function () {
+    var rng = mulberry32(777001);
+    function neckR(y) {
+      var t = Math.min(1, Math.abs(y) / Dh);
+      return nw + (Ra * 0.85 - nw) * t * t;
+    }
+    var inside = function (x, y, z) {
+      var d1 = x * x + (y + Dh) * (y + Dh) + z * z;
+      var d2 = x * x + (y - Dh) * (y - Dh) + z * z;
+      if (d1 <= Ra * Ra || d2 <= Ra * Ra) return true;
+      if (Math.abs(y) < Dh) { var nr = neckR(y); return (x * x + z * z) <= nr * nr; }
+      return false;
+    };
+    var pts = samplePts(inside, { x: Ra, y: Dh + Ra, z: Ra }, dBaseR * 1.42, 340, rng);
+    drawSpheres(gU236, DX, DY, pts, dBaseR, Ra, 0.42, rng);
+  })();
+  arrow(gU236, 412, 242, 512, 242);
+  isotope(gU236, DX, 432, 236, 92, 'U', 20);
+  txt(gU236, 'Unstable nucleus', DX, 470, 19, '#111');
+
+  /* ---------- daughters ---------- */
+  arrow(gKr, 664, 126, 776, 80);
+  ballNucleus(gKr, 872, 92, 64, 12, 170, 33210);
+  isotope(gKr, 962, 82, 92, 36, 'Kr', 20, 'start');
+
+  arrow(gBa, 664, 302, 784, 350);
+  ballNucleus(gBa, 880, 360, 76, 12.5, 215, 91177);
+  isotope(gBa, 970, 352, 141, 56, 'Ba', 20, 'start');
+
+  /* ---------- three neutrons ---------- */
+  arrow(gN3, 950, 162, 1008, 148);
+  arrow(gN3, 950, 192, 1008, 190);
+  arrow(gN3, 950, 234, 1008, 254);
+  gN3.circle(26).center(1030, 146).fill(gGreyF);
+  gN3.circle(30).center(1032, 190).fill(gGreyF);
+  gN3.circle(26).center(1034, 262).fill(gGreyF);
+  (function () {
+    var t3 = gN3.text('3').font({ size: 20, family: FONT }).fill('#111');
+    t3.cx(1064).cy(190);
+    isotope(gN3, 1078, 190, 1, 0, 'n', 18, 'start');
+  })();
+
+  /* ---------- bottom equation ---------- */
+  (function () {
+    var size = 20, y = 536, cur = 0, gap = 10;
+    function iso(A, Z, s) { cur += isotope(gEq, cur, y, A, Z, s, size, 'start') + gap; }
+    function plain(s) {
+      var t = gEq.text(s).font({ size: size, family: FONT }).fill('#111');
+      var w = t.bbox().width; t.cx(cur + w / 2).cy(y); cur += w + gap;
+    }
+    function arr(len) {
+      gEq.line(cur + 6, y, cur + len - 8, y).stroke({ color: '#111', width: 2.6, linecap: 'round' }).marker('end', mArrow);
+      cur += len + gap;
+    }
+    iso(235, 92, 'U'); plain('+'); iso(1, 0, 'n'); arr(98);
+    iso(236, 92, 'U'); arr(98);
+    iso(141, 56, 'Ba'); plain('+'); iso(92, 36, 'Kr'); plain('+'); plain('3'); iso(1, 0, 'n');
+    var bb = gEq.bbox();
+    gEq.transform({ translate: [(W - bb.width) / 2 - bb.x, 0] });
+  })();
+
+  /* ---------- inspect (click) ---------- */
+  var parts = {
+    neutron: {
+      g: gNeutronIn, title: 'Neutron  ¹₀n',
+      body: 'Mass number A = 1, atomic number Z = 0. Because it carries no charge it feels no Coulomb repulsion and can drift straight into a nucleus. Slow ("thermal") neutrons are captured most readily by U-235.'
+    },
+    u235: {
+      g: gU235, title: 'Uranium-235  ²³⁵₉₂U',
+      body: 'Z = 92 protons (green) and 143 neutrons (grey), A = 235. It is fissile: absorbing even a slow neutron supplies enough excitation energy to deform and split the nucleus.'
+    },
+    u236: {
+      g: gU236, title: 'Uranium-236 — compound nucleus',
+      body: 'Z = 92, A = 236 right after capture. The extra binding energy leaves it violently excited, so it oscillates and stretches into a pinched dumbbell. The dark red contour marks this short-lived, unstable state.'
+    },
+    kr: {
+      g: gKr, title: 'Krypton-92  ⁹²₃₆Kr',
+      body: 'Z = 36, A = 92. One of the two fission fragments. The two positively charged fragments repel each other fiercely, which is where most of the released energy appears as kinetic energy.'
+    },
+    ba: {
+      g: gBa, title: 'Barium-141  ¹⁴¹₅₆Ba',
+      body: 'Z = 56, A = 141. Check the bookkeeping: 56 + 36 = 92 protons, and 141 + 92 + 3 = 236 nucleons. Charge and mass number are conserved.'
+    },
+    n3: {
+      g: gN3, title: 'Three free neutrons',
+      body: 'Fission consumes one neutron and releases three. Each free neutron can induce another fission, so the multiplication factor exceeds 1 — this surplus is exactly what makes the reaction self-sustaining.'
+    },
+    energy: {
+      g: gEnergy, title: 'Energy release (~200 MeV)',
+      body: 'Each fission converts a tiny amount of mass into about 200 MeV, mostly kinetic energy of the fragments. That is roughly 100 million times the energy of a typical chemical reaction per atom.'
+    }
+  };
+  var selected = null;
+  function clearSelect() {
+    selected = null;
+    Object.keys(parts).forEach(function (k) { parts[k].g.animate(180).opacity(1); });
+    gEq.animate(180).opacity(1);
+    hidePopup();
+  }
+  function selectPart(k) {
+    if (selected === k) { clearSelect(); return; }
+    selected = k;
+    Object.keys(parts).forEach(function (kk) {
+      parts[kk].g.animate(180).opacity(kk === k ? 1 : 0.20);
+    });
+    gEq.animate(180).opacity(0.28);
+    showPopup(parts[k].title, parts[k].body);
+  }
+  gBg.rect(W, H).fill('#ffffff').opacity(0.001).on('click', clearSelect);
+
+  function hit(shape, key, tip) {
+    shape.fill('#ffffff').opacity(0.001).css('cursor', 'pointer')
+      .on('mousemove', function (e) { showTooltip(tip, e); })
+      .on('mouseleave', hideTooltip)
+      .on('click', function () { selectPart(key); });
+  }
+  hit(gHit.circle(52).center(22, 252), 'neutron', 'Incoming neutron — A 1, Z 0 (click)');
+  hit(gHit.circle(220).center(287, 240), 'u235', 'Uranium-235 nucleus — Z 92, A 235 (click)');
+  hit(gHit.ellipse(160, 380).center(DX, DY), 'u236', 'Uranium-236 compound nucleus — unstable (click)');
+  hit(gHit.circle(148).center(872, 92), 'kr', 'Krypton-92 fragment — Z 36, A 92 (click)');
+  hit(gHit.circle(170).center(880, 360), 'ba', 'Barium-141 fragment — Z 56, A 141 (click)');
+  hit(gHit.rect(120, 170).move(985, 115), 'n3', '3 emitted neutrons — the chain-reaction surplus (click)');
+  hit(gHit.circle(86).center(EX, EY), 'energy', '~200 MeV released per fission (click)');
+
+  /* ---------- chain-reaction overlay ---------- */
+  function drawChain(gen) {
+    gOverlay.clear();
+    if (gen <= 0) { gOverlay.opacity(0); gOverlay.css('pointer-events', 'none'); return; }
+    gOverlay.opacity(1); gOverlay.css('pointer-events', 'all');
+    gOverlay.rect(W, H).fill('#ffffff').opacity(0.95);
+
+    var xs = [150, 420, 700, 965];
+    var rs = [17, 12, 7.5, 4.6];
+    var levels = [[{ y: 300, spread: 420 }]];
+    for (var k = 1; k <= gen; k++) {
+      var next = [];
+      levels[k - 1].forEach(function (p) {
+        var s = p.spread / 3;
+        [-1, 0, 1].forEach(function (d) { next.push({ y: p.y + d * s, spread: s, parent: p }); });
+      });
+      levels.push(next);
+    }
+    for (var L = 1; L <= gen; L++) {
+      var op = (L < gen) ? 0.3 : 0.95;
+      levels[L].forEach(function (n) {
+        var x1 = xs[L - 1] + rs[L - 1] + 2, y1 = n.parent.y;
+        var x2 = xs[L] - rs[L] - 3, y2 = n.y;
+        gOverlay.line(x1, y1, x2, y2).stroke({ color: '#8a8a8a', width: 1.3 })
+          .marker('end', mArrowSm).opacity(op);
+        gOverlay.circle(6).center(x1 + (x2 - x1) * 0.55, y1 + (y2 - y1) * 0.55)
+          .fill(gGreyF).opacity(op);
+      });
+    }
+    for (var L2 = 0; L2 <= gen; L2++) {
+      var op2 = (L2 < gen) ? 0.32 : 1;
+      levels[L2].forEach(function (n) {
+        var c = gOverlay.circle(rs[L2] * 2).center(xs[L2], n.y).fill(gGreenF)
+          .stroke({ color: '#41681e', width: 0.9 }).opacity(op2);
+        c.css('cursor', 'pointer')
+          .on('mousemove', function (e) { showTooltip('One fission event: U-235 + n → Ba + Kr + 3n', e); })
+          .on('mouseleave', hideTooltip);
+      });
+      var lt = gOverlay.text('Gen ' + L2).font({ size: 14, family: FONT }).fill('#555');
+      lt.cx(xs[L2]).cy(540);
+      var ct = gOverlay.text(Math.pow(3, L2) + (Math.pow(3, L2) === 1 ? ' fission' : ' fissions'))
+        .font({ size: 13, family: FONT }).fill('#777');
+      ct.cx(xs[L2]).cy(558);
+    }
+    var thisGen = Math.pow(3, gen);
+    var total = (Math.pow(3, gen + 1) - 1) / 2;
+    var mev = total * 200;
+    var t1 = gOverlay.text('Generation ' + gen).font({ size: 25, family: FONT, weight: 'bold' }).fill('#1a1a1a');
+    t1.x(46).cy(44);
+    var t2 = gOverlay.text('this generation: 3^' + gen + ' = ' + thisGen + ' fissions').font({ size: 15, family: FONT }).fill('#333');
+    t2.x(46).cy(74);
+    var t3 = gOverlay.text('cumulative fissions: ' + total).font({ size: 15, family: FONT }).fill('#333');
+    t3.x(46).cy(96);
+    var t4 = gOverlay.text('energy released ≈ ' + mev.toLocaleString() + ' MeV  (' + (total * 3.2e-11).toExponential(1) + ' J)')
+      .font({ size: 15, family: FONT }).fill('#a2571a');
+    t4.x(46).cy(118);
+    var t5 = gOverlay.text('Each fission emits 3 neutrons, and each of those can split another U-235: 1 → 3 → 9 → 27.')
+      .font({ size: 14, family: FONT }).fill('#555');
+    t5.cx(W / 2).cy(H - 12);
+  }
+
+  /* ---------- controls ---------- */
+  var PHASES = ['neutron approach', 'capture: U-236 forms', 'deformation & scission', 'products + energy released'];
+  var phaseIdx = 0;
+  window.set_fissionPhase = function (i) {
+    phaseIdx = i;
+    var inp = document.getElementById('fissionPhaseInput');
+    if (inp) inp.value = String(i);
+    for (var k = 0; k < 4; k++) {
+      halos[k].animate(200).opacity(k === i ? 0.55 : 0);
+      var b = document.getElementById('phaseBtn' + k);
+      if (b) b.className = (k === i) ? 'active' : '';
+    }
+  };
+  var chainGen = 0;
+  window.update_chainGeneration = function (v) {
+    chainGen = v;
+    drawChain(v);
+  };
+  function setChainUI(v) {
+    var s = document.getElementById('chainGenerationInput');
+    var o = document.getElementById('chainGenerationVal');
+    if (s) s.value = String(v);
+    if (o) o.value = String(v);
+    window.update_chainGeneration(v);
+  }
+  var playTimer = null;
+  window.trigger_playFission = function () {
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    clearSelect();
+    setChainUI(0);
+    var i = 0;
+    window.set_fissionPhase(0);
+    playTimer = setInterval(function () {
+      i++;
+      if (i > 3) { clearInterval(playTimer); playTimer = null; return; }
+      window.set_fissionPhase(i);
+    }, 1100);
+  };
+
+  /* ---------- demo steps ---------- */
+  var steps = [
+    { title: 'A single slow neutron', narration: 'One low-energy neutron drifts toward a uranium-235 nucleus. Click the neutron to see that it carries mass number 1 and zero charge — it can approach without electrostatic repulsion.', state: { fissionPhase: 'neutron approach', chainGeneration: 0 } },
+    { title: 'Capture forms U-236', narration: 'The nucleus absorbs the neutron, becoming uranium-236. The red outline marks a compound nucleus with too much internal energy to survive.', state: { fissionPhase: 'capture: U-236 forms', chainGeneration: 0 } },
+    { title: 'Deformation and scission', narration: 'The excited nucleus stretches into a pinched dumbbell as repulsion between the two halves overcomes the strong force holding it together.', state: { fissionPhase: 'deformation & scission', chainGeneration: 0 } },
+    { title: 'Products, neutrons, and energy', narration: 'The nucleus splits into Ba-141 and Kr-92, ejecting three neutrons and releasing a huge burst of energy. Check the equation: 92 = 56 + 36 and 236 = 141 + 92 + 3.', state: { fissionPhase: 'products + energy released', chainGeneration: 0 } },
+    { title: 'One fission becomes three', narration: 'Each of the three emitted neutrons can strike another U-235 nucleus. Generation 1 turns one fission into three.', state: { fissionPhase: 'products + energy released', chainGeneration: 1 } },
+    { title: 'The chain runs away', narration: 'Advance the generations: 1 → 3 → 9 → 27 fissions, with energy released multiplying just as fast. This geometric growth is the self-sustaining chain reaction behind reactors and weapons.', state: { fissionPhase: 'products + energy released', chainGeneration: 3 } }
+  ];
+  var stepIdx = 0;
+  function applyStep(i) {
+    stepIdx = Math.max(0, Math.min(steps.length - 1, i));
+    var s = steps[stepIdx];
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    clearSelect();
+    window.set_fissionPhase(PHASES.indexOf(s.state.fissionPhase));
+    setChainUI(s.state.chainGeneration);
+    var n = document.getElementById('demoNarration');
+    if (n) n.innerHTML = '<b>' + s.title + '.</b> ' + s.narration;
+    var l = document.getElementById('stepLabel');
+    if (l) l.textContent = 'Step ' + (stepIdx + 1) + ' / ' + steps.length;
+  }
+  window.nextStep = function () { applyStep(stepIdx + 1); };
+  window.prevStep = function () { applyStep(stepIdx - 1); };
+
+  applyStep(0);
+  window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

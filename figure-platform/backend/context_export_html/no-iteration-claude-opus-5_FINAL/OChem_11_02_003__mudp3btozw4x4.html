@@ -1,0 +1,1889 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The canvas ResizeObserver then re-fits the camera
+       automatically, so docking never crops the figure — it re-frames it.       */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      grid-area: stage;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    /* Positioned by _syncLabels in CANVAS pixel space, so they are appended to
+       #stage (not <body>) — that keeps the math correct once #ui is docked and
+       the stage no longer starts at the page origin. */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    /* Docked labels get no text-shadow halo — they sit on a flat panel, not
+       over the figure. */
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    /* A docked panel has real width, so let wide controls use it. */
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Lightweight hover tooltip for generated 3D explainers ───────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="stage">
+    <canvas id="c"></canvas>
+  </div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <button id="btnProjToggle" style="display:none">3D view</button>
+    <!-- @FIGURE_UI_BEGIN -->
+<div style="font-weight:700;font-size:13px;line-height:1.3;margin-bottom:2px;">S<sub>N</sub>2 substitution — backside attack &amp; inversion</div>
+
+<label>Reaction coordinate (reactants → TS → products)
+  <input id="reactionProgress" type="range" min="0" max="1" step="0.01" value="0">
+</label>
+<div id="progVal" style="font-size:11px;color:#333;margin:-2px 0 4px 0;">t = 0.00 · Reactants</div>
+
+<div style="font-weight:600;">Display</div>
+<div style="display:flex;flex-direction:column;gap:3px;">
+  <button id="modeMap">Electrostatic potential map</button>
+  <button id="modeBall">Ball-and-stick</button>
+  <button id="modeBoth" class="active">Both (translucent map)</button>
+</div>
+
+<button id="btnPlay" style="margin-top:4px;">▶ Play mechanism</button>
+
+<div style="margin-top:6px;font-weight:600;">Electrostatic potential key</div>
+<div style="height:13px;border:1px solid #bbb;border-radius:2px;
+     background:linear-gradient(to right,#D9534F,#E8746B,#E8945A,#E8E06A,#8FD18F,#7F9FE0);"></div>
+<div style="display:flex;justify-content:space-between;font-size:10px;color:#444;">
+  <span>most negative (red)</span><span>least (blue)</span>
+</div>
+
+<div style="margin-top:8px;font-weight:600;">Guided walk-through</div>
+<div style="display:flex;gap:4px;">
+  <button id="stepPrev" style="flex:0 0 auto;">◀</button>
+  <button id="stepNext" style="flex:1 1 auto;">Next step ▶</button>
+</div>
+<div id="stepTitle" style="font-weight:700;font-size:11.5px;margin-top:3px;">Reactants</div>
+<div id="stepNarr" style="font-size:11px;line-height:1.35;color:#333;">The nucleophile is a separate, deeply red sphere holding all of the negative charge, while the alkyl halide is a two-lobed tetrahedral surface whose only red region is the halide end.</div>
+
+<div style="margin-top:8px;font-weight:600;">Reaction scheme (click a row)</div>
+<div id="schemeBox" style="margin-top:2px;"></div>
+<div style="font-size:10px;color:#666;line-height:1.3;">Drag in the figure to orbit — at t = 0.5 the three C–H bonds really do lie in one plane perpendicular to the Nu···C···X axis.</div>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    // Show error overlay if module scripts fail or take too long
+    let _rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    // Timeout fallback: if nothing renders in 12s, show overlay
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const _stage = document.getElementById('stage');
+    const _ui = document.getElementById('ui');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── UI layout: keep controls in a right-side column ────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     */
+    function setUiLayout() {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      const next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', `${sizePx}px`);
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    function _autoUiLayout() {
+      const hasEditor = Boolean(_ui.querySelector('textarea'));
+      const mode = 'right';
+      const start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      const cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      let size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', `${size}px`);
+      let guard = 0;
+      const step = () => {
+        if (guard++ > 6) return;
+        if (_ui.scrollHeight <= _ui.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', `${size}px`);
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+
+    // Re-evaluate when the generated code adds controls after first paint.
+    new MutationObserver(() => {
+      clearTimeout(_autoUiLayout._t);
+      _autoUiLayout._t = setTimeout(_autoUiLayout, 0);
+    }).observe(_ui, { childList: true, subtree: true });
+    window.addEventListener('resize', () => { _autoUiLayout(); });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    let camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    let controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // Has the student orbited / panned / zoomed? OrbitControls fires 'start' on
+    // pointer-down and on wheel — i.e. only on real user input — while the
+    // 'change' event also fires from our own controls.update() in animate(),
+    // so 'start' is the signal that does not produce false positives.
+    // Consumed by the ResizeObserver: a camera the student has moved must NOT
+    // be repositioned by a resize (chapter-preview iframes resize routinely).
+    let _userMovedCamera = false;
+    function _trackCameraInteraction(ctrl) {
+      ctrl.addEventListener('start', () => { _userMovedCamera = true; });
+    }
+    _trackCameraInteraction(controls);
+
+    // HOME view will be computed from the scene bounds so different scenes
+    // (especially tall ones) get a consistent starting zoom/angle while
+    // still allowing interactive OrbitControls.
+    const HOME_POS = new THREE.Vector3();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    let HOME_ZOOM = 0.75;
+    let _labelZoomRef = 1;      // zoom at which label scale is exactly 1
+    let _lastViewArgs = null;   // last resolved setCameraView args, re-applied on resize
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      if (_lastViewArgs) { setCameraView(_lastViewArgs); return; }
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      camera.zoom = HOME_ZOOM;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+
+    // Framing parameters
+    const FRAME_HALF_HEIGHT = d; // base frustum half-height used when computing zoom
+    const FRAME_MARGIN = 0.08;   // fraction of extra space around content
+    const MIN_ZOOM = 0.2;
+    const MAX_ZOOM = 5;
+
+    function computeSceneBounds() {
+      const box = new THREE.Box3().setFromObject(scene);
+      if (box.isEmpty()) {
+        // fallback box so empty scenes get a sensible frame
+        box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(2 * d, 2 * d, 2 * d));
+      }
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return { box, center, size };
+    }
+
+    /**
+     * setCameraView(options)
+     * - azimuthDeg: horizontal angle around Y axis, in degrees.
+     * - elevationDeg: angle above the ground/XZ plane, in degrees.
+     * - zoom: optional orthographic zoom. If omitted, derived from content bounds.
+     * - target: optional [x,y,z] camera target. If omitted, uses scene bounds center.
+     * - heightFraction: fraction of the view the content's height should occupy.
+     * This is the preferred per-figure camera API for matching the source image.
+     */
+    /* ── Oblique projection ──────────────────────────────────────────────── */
+    // An oblique projection is a shear of EYE-SPACE coordinates, applied before
+    // the orthographic projection: P' = P_ortho · S. It is deliberately NOT a
+    // shear of the geometry — keeping it in the camera means addLabel/_syncLabels
+    // (which call pos.project(camera)) track it with no extra work.
+    //
+    // Known limitation: Raycaster.setFromCamera derives its ray direction from
+    // the camera's view axis, not the sheared projection direction, so
+    // registerInteractive hit-testing is approximate at large depth under
+    // oblique. Acceptable for the shallow diagrams oblique is used for.
+    let _obliqueState = null;        // { angleDeg, depthScale, shearAmt, shearTarget } or null
+
+    function _applyObliqueShear() {
+      if (!_obliqueState || !camera.isOrthographicCamera) return;
+      const th = THREE.MathUtils.degToRad(_obliqueState.angleDeg);
+      // shearAmt eases 1 -> 0 to reveal the true 3D shape. Both the shear terms
+      // and the zt pinning terms below carry the same k, so the target plane
+      // stays pinned and the figure does not drift while un-shearing.
+      const k = _obliqueState.depthScale * _obliqueState.shearAmt;
+      // Shear about the PROJECTION PLANE (the controls target's eye-space
+      // depth zt), not about the camera origin. The camera looks down -Z with
+      // the target at distance ~R, so every scene point has eye z ~= -R, not
+      // ~= 0. Shearing raw z would add a large rigid translation
+      // (cos(th)*k*R, sin(th)*k*R) to the ENTIRE scene, shoving it off-screen.
+      // Shearing (z - zt) instead pins the target plane in place and only
+      // tilts depth around it -- the textbook definition of an oblique
+      // projection about the picture plane.
+      camera.updateMatrixWorld();
+      const zt = controls.target.clone().applyMatrix4(camera.matrixWorldInverse).z;
+      const S = new THREE.Matrix4().set(
+        1, 0, -Math.cos(th) * k, Math.cos(th) * k * zt,
+        0, 1, -Math.sin(th) * k, Math.sin(th) * k * zt,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      );
+      // Post-multiply: S acts on eye space, then P_ortho projects.
+      camera.projectionMatrix.multiply(S);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+    }
+
+    // Re-apply the shear after ANY updateProjectionMatrix() — OrbitControls calls
+    // it on every zoom, which would otherwise silently wipe the shear.
+    function _installObliqueHook(cam) {
+      if (cam.__obliqueHooked) return;
+      const base = cam.updateProjectionMatrix.bind(cam);
+      cam.updateProjectionMatrix = function () {
+        base();
+        _applyObliqueShear();
+      };
+      cam.__obliqueHooked = true;
+    }
+
+    function _setObliqueEnabled(on) {
+      const btn = document.getElementById('btnProjToggle');
+      if (on) {
+        _obliqueState = _obliqueState || { angleDeg: 45, depthScale: 0.5, shearAmt: 1, shearTarget: 1 };
+        _obliqueState.shearTarget = 1;
+        if (btn) { btn.style.display = ''; btn.textContent = '3D view'; }
+        // Oblique is only meaningful from its authored front-on pose. Setting
+        // shearTarget BEFORE this call matters: setCameraView preserves the
+        // current shearTarget rather than forcing it to 1, so the 1 set above is
+        // what survives and drives the ease back to the printed view.
+        if (_lastViewArgs) { setCameraView(_lastViewArgs); return; }
+      } else if (_obliqueState) {
+        // Keep the state object alive so animate() can ease shearAmt down to 0.
+        // It is cleared only when setCameraView leaves the oblique projection.
+        _obliqueState.shearTarget = 0;
+        if (btn) btn.textContent = 'Figure view';
+      }
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+
+    document.getElementById('btnProjToggle').addEventListener('click', () => {
+      if (!_obliqueState) return;
+      if (_obliqueState.shearTarget > 0.5) {
+        _setObliqueEnabled(false);
+      } else {
+        _setObliqueEnabled(true);
+      }
+    });
+
+    // Drag to reveal: past a small threshold, ease the shear out so the student
+    // sees the true 3D object they are turning. The threshold separates a drag
+    // from a click, so clicking an interactive element does not collapse the
+    // figure.
+    const _REVEAL_DRAG_PX = 6;
+    let _revealPointerDown = false;
+    let _revealDragPx = 0;
+    let _revealLastX = 0;
+    let _revealLastY = 0;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      _revealPointerDown = true;
+      _revealDragPx = 0;
+      _revealLastX = e.clientX;
+      _revealLastY = e.clientY;
+    });
+    window.addEventListener('pointerup', () => { _revealPointerDown = false; });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!_revealPointerDown || !_obliqueState || _obliqueState.shearTarget === 0) return;
+      // movementX/Y are unavailable in some environments; fall back to a
+      // clientX/Y delta against the previous move so the accumulator never
+      // goes NaN and silently disables drag-to-reveal.
+      const _dx = typeof e.movementX === 'number' ? e.movementX : (e.clientX - _revealLastX);
+      const _dy = typeof e.movementY === 'number' ? e.movementY : (e.clientY - _revealLastY);
+      _revealLastX = e.clientX;
+      _revealLastY = e.clientY;
+      _revealDragPx += Math.abs(_dx) + Math.abs(_dy);
+      if (_revealDragPx > _REVEAL_DRAG_PX) {
+        _obliqueState.shearTarget = 0;
+        const btn = document.getElementById('btnProjToggle');
+        if (btn) btn.textContent = 'Figure view';
+      }
+    });
+
+    /**
+     * _ensureCamera(kind) → boolean
+     * Rebuilds `camera` and `controls` when the required camera class changes.
+     * OrbitControls caches its object, so it is disposed and reconstructed
+     * rather than re-pointed. Returns true when a swap happened.
+     */
+    function _ensureCamera(kind) {
+      const want = kind === 'perspective' ? 'perspective' : 'orthographic';
+      const have = camera.isPerspectiveCamera ? 'perspective' : 'orthographic';
+      if (want === have) return false;
+
+      const prevTarget = controls.target.clone();
+      controls.dispose();
+
+      camera = want === 'perspective'
+        ? new THREE.PerspectiveCamera(35, aspect, 0.1, 1000)
+        : new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 0.1, 100);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.target.copy(prevTarget);
+      _trackCameraInteraction(controls);   // the old listener died with the old controls
+
+      if (window.__figverify) {
+        window.__figverify.camera = camera;
+        window.__figverify.controls = controls;
+      }
+      return true;
+    }
+
+    // Solve an orthographic camera pose from the on-screen angles of the two
+    // horizontal-plane axes, as measured off the source figure.
+    //
+    // For a camera at azimuth a, elevation e with up = (0,1,0):
+    //     right = (  sin a,           0,      -cos a          )
+    //     up'   = ( -cos a * sin e,   cos e,  -sin a * sin e   )
+    // Projecting X=(1,0,0) and Z=(0,0,1) onto that basis and taking the angle
+    // below screen horizontal gives:
+    //     tan(phiX) = sin e * cot a
+    //     tan(phiZ) = sin e * tan a
+    // whose product and ratio invert cleanly:
+    //     sin e = sqrt(tan phiX * tan phiZ)
+    //     tan a = sqrt(tan phiZ / tan phiX)
+    // Sanity: phiX = phiZ = 30 gives e = 35.264, a = 45 — canonical isometric.
+    const ISO_FALLBACK = { azimuthDeg: 45, elevationDeg: 35.264389682754654 };
+
+    function _solvePoseFromAxisAngles(angles) {
+      // Explicit null means the source is drawn head-on: no depth to recover.
+      if (angles === null) return { azimuthDeg: 90, elevationDeg: 0 };
+      if (!angles || !Number.isFinite(angles.x) || !Number.isFinite(angles.z)) {
+        return { ...ISO_FALLBACK };
+      }
+      // An axis at or past horizontal/vertical is drawn edge-on; the inversion
+      // has no finite solution there.
+      if (angles.x <= 0 || angles.x >= 90 || angles.z <= 0 || angles.z >= 90) {
+        return { ...ISO_FALLBACK };
+      }
+      const tX = Math.tan(THREE.MathUtils.degToRad(angles.x));
+      const tZ = Math.tan(THREE.MathUtils.degToRad(angles.z));
+      const sinSq = tX * tZ;
+      // sin^2(e) >= 1 admits no real elevation.
+      if (!(sinSq > 0) || sinSq >= 1) return { ...ISO_FALLBACK };
+      return {
+        azimuthDeg: THREE.MathUtils.radToDeg(Math.atan(Math.sqrt(tZ / tX))),
+        elevationDeg: THREE.MathUtils.radToDeg(Math.asin(Math.sqrt(sinSq))),
+      };
+    }
+
+    function setCameraView({
+      projection = 'orthographic',
+      azimuthDeg: azimuthDegArg = 45,
+      elevationDeg: elevationDegArg = 35,
+      rollDeg = 0,
+      obliqueAngleDeg = 45,
+      depthScale = 0.5,
+      zoom = null,
+      target = null,
+      heightFraction = 0.5,
+      distanceScale = 1.2,
+      axisScreenAngles = undefined
+    } = {}) {
+      let azimuthDeg = azimuthDegArg;
+      let elevationDeg = elevationDegArg;
+      // Measured axis angles win over any guessed azimuth/elevation. Oblique
+      // overrides both below — its pose is fixed front-on by definition.
+      if (axisScreenAngles !== undefined) {
+        const solved = _solvePoseFromAxisAngles(axisScreenAngles);
+        azimuthDeg = solved.azimuthDeg;
+        elevationDeg = solved.elevationDeg;
+      }
+      const mode = projection === 'perspective' ? 'perspective'
+        : projection === 'oblique' ? 'oblique'
+          : 'orthographic';
+      _ensureCamera(mode === 'perspective' ? 'perspective' : 'orthographic');
+      _installObliqueHook(camera);
+      if (mode === 'oblique') {
+        // Preserve BOTH the in-flight shearAmt and the current shearTarget.
+        // The ResizeObserver re-applies _lastViewArgs on every resize, and a
+        // button click does not set _userMovedCamera — so hardcoding
+        // shearTarget: 1 here would silently re-shear a figure the student had
+        // already revealed. Task 3's "Figure view" button still works because it
+        // sets shearTarget = 1 *before* calling setCameraView, and that value is
+        // what gets preserved here.
+        const _prevShearAmt = _obliqueState ? _obliqueState.shearAmt : 1;
+        const _prevShearTarget = _obliqueState ? _obliqueState.shearTarget : 1;
+        _obliqueState = {
+          angleDeg: Number.isFinite(obliqueAngleDeg) ? obliqueAngleDeg : 45,
+          depthScale: Number.isFinite(depthScale) ? depthScale : 0.5,
+          shearAmt: _prevShearAmt,
+          shearTarget: _prevShearTarget,
+        };
+        // Rotation stays enabled: dragging is how the student reveals the true
+        // shape. The drag listener eases the shear out as they turn the figure.
+        controls.enableRotate = true;
+        const btn = document.getElementById('btnProjToggle');
+        // Label reflects the PRESERVED shearTarget, not an assumed "just enabled"
+        // state -- otherwise a resize while revealed (shearTarget 0) would flip
+        // the label back to '3D view' even though the shear itself stayed put.
+        if (btn) { btn.style.display = ''; btn.textContent = _prevShearTarget > 0.5 ? '3D view' : 'Figure view'; }
+      } else {
+        _obliqueState = null;
+        controls.enableRotate = true;
+        const btn = document.getElementById('btnProjToggle');
+        if (btn) btn.style.display = 'none';
+      }
+
+      const { box, center, size } = computeSceneBounds();
+      const viewTarget = Array.isArray(target)
+        ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
+        : center;
+
+      // Oblique is defined by a front-on viewpoint; depth comes from the shear.
+      if (mode === 'oblique') { azimuthDeg = 90; elevationDeg = 0; }
+
+      const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
+      const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
+      const elevation = THREE.MathUtils.degToRad(elevationDeg);
+      const cosElev = Math.cos(elevation);
+      const dir = new THREE.Vector3(
+        Math.cos(azimuth) * cosElev,
+        Math.sin(elevation),
+        Math.sin(azimuth) * cosElev
+      ).normalize();
+
+      camera.position.copy(dir).multiplyScalar(radius).add(viewTarget);
+      camera.up.set(0, 1, 0);
+      if (Number.isFinite(rollDeg) && rollDeg !== 0) {
+        camera.up.applyAxisAngle(dir.clone().negate(), THREE.MathUtils.degToRad(rollDeg));
+      }
+      camera.lookAt(viewTarget);
+      camera.updateMatrixWorld();
+
+      // Project all 8 bounding-box corners into view space. View-space X and Y
+      // are independent of how far the camera sits along its own view axis, so
+      // this extent is valid for both projections.
+      const toView = camera.matrixWorldInverse;
+      const pt = new THREE.Vector3();
+      // Under oblique, camera.projectionMatrix will get a depth shear baked in
+      // (about the target's eye-space depth, see _applyObliqueShear) AFTER
+      // this fit runs. If the fit measured the UNsheared extent, the shear
+      // would inflate the actually-drawn projection beyond what was fit,
+      // breaking heightFraction (and, at large heightFraction, clipping the
+      // figure off-screen). So replicate the same shear here before measuring.
+      const obliqueTh = mode === 'oblique' ? THREE.MathUtils.degToRad(_obliqueState.angleDeg) : 0;
+      const obliqueK = mode === 'oblique' ? _obliqueState.depthScale * _obliqueState.shearAmt : 0;
+      const ztFit = mode === 'oblique' ? viewTarget.clone().applyMatrix4(toView).z : 0;
+      let minVY = Infinity, maxVY = -Infinity, minVX = Infinity, maxVX = -Infinity;
+      for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
+        pt.set(xi ? box.max.x : box.min.x,
+          yi ? box.max.y : box.min.y,
+          zi ? box.max.z : box.min.z).applyMatrix4(toView);
+        let vx = pt.x, vy = pt.y;
+        if (mode === 'oblique') {
+          const dz = pt.z - ztFit;
+          vx -= Math.cos(obliqueTh) * obliqueK * dz;
+          vy -= Math.sin(obliqueTh) * obliqueK * dz;
+        }
+        minVY = Math.min(minVY, vy); maxVY = Math.max(maxVY, vy);
+        minVX = Math.min(minVX, vx); maxVX = Math.max(maxVX, vx);
+      }
+      const projH = Math.max(maxVY - minVY, 1e-6);
+      const projW = Math.max(maxVX - minVX, 1e-6);
+      const frac = Math.min(Math.max(heightFraction, 0.05), 1);
+
+      if (camera.isPerspectiveCamera) {
+        // Frame by DISTANCE and fov. Assigning an orthographic-derived number to
+        // camera.zoom (the old behaviour) is dimensionally meaningless here.
+        camera.zoom = 1;
+        camera.aspect = aspect;
+        const vFov = THREE.MathUtils.degToRad(camera.fov);
+        const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+        const distH = (projH / 2) / Math.tan(vFov / 2) / frac;
+        const distW = (projW / 2) / Math.tan(hFov / 2) / frac;
+        const dist = Math.max(distH, distW, 0.01);
+        camera.position.copy(dir).multiplyScalar(dist).add(viewTarget);
+        camera.lookAt(viewTarget);
+        camera.near = Math.max(0.01, dist - radius * 2);
+        camera.far = dist + radius * 4;
+      } else {
+        camera.near = 0.01;
+        camera.far = radius * 4 + 100;
+        let resolvedZoom;
+        if (Number.isFinite(zoom)) {
+          resolvedZoom = zoom;
+        } else {
+          const zH = (2 * FRAME_HALF_HEIGHT * frac) / projH;
+          const zW = (2 * FRAME_HALF_HEIGHT * aspect * frac) / projW;
+          resolvedZoom = Math.min(Math.max(Math.min(zH, zW), MIN_ZOOM), MAX_ZOOM);
+        }
+        camera.zoom = resolvedZoom;
+      }
+
+      controls.target.copy(viewTarget);
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      HOME_POS.copy(camera.position);
+      HOME_TARGET.copy(controls.target);
+      HOME_ZOOM = camera.zoom;
+
+      _labelZoomRef = camera.zoom || 1;
+      // An explicit setCameraView (including the Reset View button) is the
+      // author/student asking for this exact pose, so any earlier manual
+      // orbiting is superseded — resize may re-fit freely again.
+      _userMovedCamera = false;
+      _lastViewArgs = {
+        projection: mode, azimuthDeg, elevationDeg, rollDeg,
+        obliqueAngleDeg, depthScale, zoom, target, heightFraction, distanceScale,
+        axisScreenAngles,
+      };
+
+      window.__figureCameraView = {
+        projection: mode,
+        azimuthDeg, elevationDeg, rollDeg,
+        zoom: camera.zoom,
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
+    }
+
+    /**
+     * setStandardView(options)
+     * Backwards-compatible wrapper. Prefer setCameraView({ azimuthDeg, elevationDeg, ... }).
+     */
+    function setStandardView({ azimuth = Math.PI / 4, polar = Math.PI / 4, heightFraction = 0.5 } = {}) {
+      const azimuthDeg = THREE.MathUtils.radToDeg(azimuth);
+      const elevationDeg = 90 - THREE.MathUtils.radToDeg(polar);
+      setCameraView({ azimuthDeg, elevationDeg, heightFraction });
+    }
+
+    // Apply a standard view once at startup so tall/narrow scenes get a similar framing.
+    // Call this again after adding or loading scene content that changes bounds.
+    setStandardView();
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+    const _v = new THREE.Vector3();
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color) div.style.color = options.color;
+      if (options.fontSize) div.style.fontSize = options.fontSize;
+      if (options.bold) div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background = options.background;
+        div.style.padding = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      // #stage, not <body>: _syncLabels below computes left/top in canvas pixel
+      // space, which is only the same as page space while the stage starts at the
+      // page origin. Once #ui is docked it does not, so labels must be positioned
+      // inside the stage.
+      _stage.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    const _referenceDistance = 8;
+
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+
+        // Hide labels that are behind the camera or outside the normalized device
+        // coordinate cube to avoid showing offscreen labels.
+        if (_v.z > 1 || _v.z < -1 || _v.x < -1 || _v.x > 1 || _v.y < -1 || _v.y > 1) {
+          div.style.display = 'none';
+          continue;
+        }
+        div.style.display = '';
+
+        const ox = offset && offset[0] ? offset[0] : 0;
+        const oy = offset && offset[1] ? offset[1] : 0;
+        const x = canvas.offsetLeft + (_v.x * 0.5 + 0.5) * canvas.clientWidth + ox;
+        const y = canvas.offsetTop + (-_v.y * 0.5 + 0.5) * canvas.clientHeight + oy;
+
+        // Under a parallel projection (orthographic and oblique) camera distance
+        // has NO effect on apparent size — only zoom does. Folding distance in
+        // made label sizes vary with scene size across figures.
+        let scale;
+        if (camera.isOrthographicCamera) {
+          scale = (camera.zoom || 1) / (_labelZoomRef || 1);
+        } else {
+          const distance = Math.max(camera.position.distanceTo(pos), 1e-4);
+          scale = _referenceDistance / distance;
+        }
+
+        // Clamp scale to a reasonable range to avoid extremely small/large labels.
+        scale = Math.max(0.15, Math.min(scale, 6));
+
+        div.style.left = x + 'px';
+        div.style.top = y + 'px';
+        div.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      }
+    }
+
+    /* ── Interaction explainer helpers ───────────────────────────────────── */
+    const _tooltip = document.getElementById('figTooltip');
+    const _raycaster = new THREE.Raycaster();
+    const _pointer = new THREE.Vector2();
+    const _interactiveObjects = [];
+    let _hoveredInteractive = null;
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      const pad = 12;
+      const x = Math.min(event.clientX + pad, window.innerWidth - _tooltip.offsetWidth - pad);
+      const y = Math.max(pad, event.clientY - _tooltip.offsetHeight - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    function _setPointerFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      _pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      _pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function _firstInteractiveHit(event) {
+      if (!_interactiveObjects.length) return null;
+      _setPointerFromEvent(event);
+      _raycaster.setFromCamera(_pointer, camera);
+      const hits = _raycaster.intersectObjects(_interactiveObjects.map(entry => entry.object), true);
+      for (const hit of hits) {
+        let obj = hit.object;
+        while (obj) {
+          const entry = _interactiveObjects.find(item => item.object === obj);
+          if (entry) return { ...entry, hit };
+          obj = obj.parent;
+        }
+      }
+      return null;
+    }
+
+    function registerInteractive(object, info = {}) {
+      if (!object) return object;
+      object.userData = object.userData || {};
+      object.userData.interactive = true;
+      _interactiveObjects.push({ object, info });
+      return object;
+    }
+
+    canvas.addEventListener('pointermove', (event) => {
+      moveTooltip(event);
+      const entry = _firstInteractiveHit(event);
+      if (entry) {
+        _hoveredInteractive = entry;
+        canvas.style.cursor = 'pointer';
+        showTooltip(entry.info.tooltip || entry.info.title || 'Click to explain', event);
+      } else {
+        _hoveredInteractive = null;
+        canvas.style.cursor = controls.enabled ? 'grab' : 'default';
+        hideTooltip();
+      }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      _hoveredInteractive = null;
+      canvas.style.cursor = 'default';
+      hideTooltip();
+    });
+
+    canvas.addEventListener('click', (event) => {
+      const entry = _firstInteractiveHit(event) || _hoveredInteractive;
+      if (!entry) {
+        hidePopup();
+        return;
+      }
+      const title = entry.info.title || entry.info.tooltip || 'Figure element';
+      const body = entry.info.body || entry.info.description || 'This part is interactive.';
+      showPopup(title, body);
+      if (typeof entry.info.onClick === 'function') entry.info.onClick(entry.hit, entry.object);
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hidePopup();
+        hideTooltip();
+      }
+    });
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    let _firstFrame = true;
+    let _lastFrameTime = performance.now();
+    function animate() {
+      requestAnimationFrame(animate);
+      // Ease the oblique shear toward its target. Frame-rate normalised against
+      // 60fps and clamped, so the reveal takes the same wall-clock time on a
+      // slow headless renderer as on a fast display.
+      const _now = performance.now();
+      const _frameScale = Math.min(2.5, Math.max(0.5, (_now - _lastFrameTime) / 16));
+      _lastFrameTime = _now;
+      if (_obliqueState) {
+        const _tgt = _obliqueState.shearTarget;
+        if (Math.abs(_obliqueState.shearAmt - _tgt) > 0.001) {
+          _obliqueState.shearAmt += (_tgt - _obliqueState.shearAmt) * Math.min(1, 0.14 * _frameScale);
+          camera.updateProjectionMatrix();
+        } else if (_obliqueState.shearAmt !== _tgt) {
+          _obliqueState.shearAmt = _tgt;
+          camera.updateProjectionMatrix();
+        }
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+      // Frame counter used by the headless verifier to prove the render loop is
+      // actually alive (not frozen by an exception thrown after the first frame).
+      window.__figFrames = (window.__figFrames || 0) + 1;
+      if (_firstFrame) { _firstFrame = false; window.__markRendered?.(); }
+    }
+    animate();
+
+    /* ── Verification hook (invisible; read by the headless verifier) ──────── */
+    // Exposes the live objects so automated checks can confirm the GPU drew
+    // something, the scene has content, and no geometry has NaN coordinates.
+    window.__figverify = {
+      renderer, scene, camera, controls, setCameraView,
+      obliqueState: () => _obliqueState,
+    };
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!w || !h) return;
+      aspect = w / h;
+      renderer.setSize(w, h, false);
+      if (camera.isPerspectiveCamera) {
+        camera.aspect = aspect;
+      } else {
+        camera.left = -d * aspect;
+        camera.right = d * aspect;
+      }
+      // updateProjectionMatrix() is hooked (see _installObliqueHook), so the
+      // oblique shear is re-applied here on BOTH branches below.
+      camera.updateProjectionMatrix();
+      // Re-apply the last view so heightFraction still holds at the new aspect —
+      // but ONLY while the camera is still the one the figure authored. Once the
+      // student has orbited/panned/zoomed, setCameraView would recompute
+      // camera.position from azimuth/elevation and overwrite controls.target,
+      // silently throwing away their interaction on every canvas resize (and
+      // chapter-preview iframes resize routinely). In that case we keep the live
+      // pose and only widen/narrow the frustum, which is all a resize means.
+      if (_lastViewArgs && !_userMovedCamera) setCameraView(_lastViewArgs);
+      else controls.update();
+    }).observe(canvas);
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → (…args) => number
+     * Throws on a syntax error or a variable outside `vars`. Never falls back.
+     *
+     * DUPLICATED (deliberately): base_scene_2d.html has a byte-for-byte
+     * equivalent ES5 copy. Each scaffold is a standalone served HTML file and
+     * neither can import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_2d.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      const names = (vars && vars.length) ? vars : ['x'];
+      let parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error(`Cannot parse "${src}": ${e?.message || e}`);
+      }
+      for (const used of parsed.variables()) {
+        if (!names.includes(used)) {
+          throw new Error(`Unknown variable "${used}" (expected: ${names.join(', ')})`);
+        }
+      }
+      return (...args) => {
+        const scope = {};
+        names.forEach((n, i) => { scope[n] = args[i]; });
+        let v;
+        try { v = parsed.evaluate(scope); } catch { return NaN; }
+        return typeof v === 'number' ? v : NaN;
+      };
+    }
+
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs directly in #ui, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_2d.html.
+     */
+    function _equationErrorSlot(input) {
+      const parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        const slotId = `eq-err-${input.id}`;
+        const byId = document.getElementById(slotId);
+        if (byId) return byId;
+        const namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      const existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      const span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → (fn, src) => void
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify.js catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_2d.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') return (fn, src) => t(fn, src);
+      if (t && t.handle) {
+        const method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            `bindEquationInput("${inputId}"): target handle has no method "${method}". ` +
+            `Use { handle, method: '...' } with a method the handle really has ` +
+            `(plotCurve3D/plotSurface: setExpr, setFn; plotParametric3D: setX, setY, setZ).`
+          );
+        }
+        return (fn) => t.handle[method](fn);
+      }
+      if (t && typeof t.setFn === 'function') return (fn) => t.setFn(fn);
+      throw new Error(
+        `bindEquationInput("${inputId}"): this target cannot be driven — it is not a ` +
+        `function and has no .setFn. Handles without .setFn (e.g. plotParametric3D) must ` +
+        `be passed as { handle, method: 'setX' } naming the setter to call.`
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     * targets: a plot handle, { handle, method }, a function(fn, src), or an array.
+     * opts   : { variables=['x'], onChange(fn, src) }
+     * On a parse error the last good geometry is kept and the message is shown
+     * inline. This NEVER substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_2d.html.
+     */
+    function bindEquationInput(inputId, targets, opts = {}) {
+      const input = document.getElementById(inputId);
+      if (!input) throw new Error(`bindEquationInput: no element with id "${inputId}"`);
+      const vars = opts.variables || ['x'];
+      const list = Array.isArray(targets) ? targets : [targets];
+      const slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      const appliers = list.map((t) => _resolveEqTarget(inputId, t));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          const fn = compileExpr(src, vars);
+          for (const run of appliers) run(fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', () => apply(input.value));
+      apply(input.value);
+      return { apply, input, errorSlot: slot };
+    }
+
+    /* ── 3D plotting ─────────────────────────────────────────────────────── */
+    const _plot3d = new Map();
+
+    function _disposeObject(obj) {
+      obj.traverse?.(o => {
+        o.geometry?.dispose?.();
+        if (Array.isArray(o.material)) o.material.forEach(m => m.dispose?.());
+        else o.material?.dispose?.();
+      });
+    }
+
+    function _register3d(id, handle) {
+      const prev = _plot3d.get(id);
+      if (prev && prev !== handle) { scene.remove(prev.object); _disposeObject(prev.object); }
+      _plot3d.set(id, handle);
+      return handle;
+    }
+
+    function _resolveFn3d(value, vars) {
+      return typeof value === 'function' ? value : compileExpr(value, vars);
+    }
+
+    /**
+     * plotCurve3D(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain=[-2,2], plane='xy'|'xz',
+     *           samples=200, color=0x1f77b4 }
+     * 'xy' maps t → (t, f(t), 0); 'xz' maps t → (t, 0, f(t)).
+     */
+    function plotCurve3D(id, opts = {}) {
+      const vars = opts.variables || ['x'];
+      const material = new THREE.LineBasicMaterial({ color: opts.color ?? 0x1f77b4 });
+      const line = new THREE.Line(new THREE.BufferGeometry(), material);
+      scene.add(line);
+      const handle = {
+        id,
+        object: line,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || [-2, 2],
+        samples: opts.samples || 200,
+        plane: opts.plane === 'xz' ? 'xz' : 'xy',
+        setExpr(src) { this.fn = _resolveFn3d(src, vars); return this.sample(); },
+        setFn(f) { this.fn = f; return this.sample(); },
+        setDomain(dm) { this.domain = dm; return this.sample(); },
+        remove() { scene.remove(line); _disposeObject(line); _plot3d.delete(id); },
+        sample() {
+          if (!this.fn) return this;
+          const [a, b] = this.domain;
+          const n = Math.max(2, this.samples | 0);
+          const pts = [];
+          for (let i = 0; i < n; i++) {
+            const t = a + (b - a) * (i / (n - 1));
+            let v;
+            try { v = this.fn(t); } catch { v = NaN; }
+            if (!Number.isFinite(v)) v = 0;
+            pts.push(this.plane === 'xz' ? new THREE.Vector3(t, 0, v)
+              : new THREE.Vector3(t, v, 0));
+          }
+          const old = line.geometry;
+          line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    /**
+     * plotParametric3D(id, opts) → handle
+     *   opts: { x, y, z, variables=['t'], tDomain=[0,1], samples=200, color }
+     */
+    function plotParametric3D(id, opts = {}) {
+      const vars = opts.variables || ['t'];
+      const material = new THREE.LineBasicMaterial({ color: opts.color ?? 0x1f77b4 });
+      const line = new THREE.Line(new THREE.BufferGeometry(), material);
+      scene.add(line);
+      const handle = {
+        id,
+        object: line,
+        fx: _resolveFn3d(opts.x ?? '0', vars),
+        fy: _resolveFn3d(opts.y ?? '0', vars),
+        fz: _resolveFn3d(opts.z ?? '0', vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX(src) { this.fx = _resolveFn3d(src, vars); return this.sample(); },
+        setY(src) { this.fy = _resolveFn3d(src, vars); return this.sample(); },
+        setZ(src) { this.fz = _resolveFn3d(src, vars); return this.sample(); },
+        remove() { scene.remove(line); _disposeObject(line); _plot3d.delete(id); },
+        sample() {
+          const [a, b] = this.tDomain;
+          const n = Math.max(2, this.samples | 0);
+          const pts = [];
+          for (let i = 0; i < n; i++) {
+            const t = a + (b - a) * (i / (n - 1));
+            let x, y, z;
+            try { x = this.fx(t); y = this.fy(t); z = this.fz(t); } catch { x = y = z = NaN; }
+            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+              pts.push(new THREE.Vector3(x, y, z));
+            }
+          }
+          const old = line.geometry;
+          line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    /**
+     * plotSurface(id, opts) → handle
+     *   opts: { expr | fn, variables=['x','y'], xDomain=[-2,2], yDomain=[-2,2],
+     *           segments=48, color=0x6699cc, wireframe=false }
+     * Height is mapped to the world Y axis (the scaffold is y-up); the domain
+     * spans world X and Z.
+     */
+    function plotSurface(id, opts = {}) {
+      const vars = opts.variables || ['x', 'y'];
+      const material = new THREE.MeshBasicMaterial({
+        color: opts.color ?? 0x6699cc,
+        wireframe: !!opts.wireframe,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: opts.opacity ?? 0.85,
+      });
+      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+      scene.add(mesh);
+      const handle = {
+        id,
+        object: mesh,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        xDomain: opts.xDomain || [-2, 2],
+        yDomain: opts.yDomain || [-2, 2],
+        segments: opts.segments || 48,
+        setExpr(src) { this.fn = _resolveFn3d(src, vars); return this.sample(); },
+        setFn(f) { this.fn = f; return this.sample(); },
+        remove() { scene.remove(mesh); _disposeObject(mesh); _plot3d.delete(id); },
+        sample() {
+          if (!this.fn) return this;
+          const [x0, x1] = this.xDomain;
+          const [y0, y1] = this.yDomain;
+          const seg = Math.max(1, this.segments | 0);
+          const geom = new THREE.PlaneGeometry(x1 - x0, y1 - y0, seg, seg);
+          const pos = geom.attributes.position;
+          const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+          for (let i = 0; i < pos.count; i++) {
+            const px = pos.getX(i) + cx;
+            const py = pos.getY(i) + cy;
+            let h;
+            try { h = this.fn(px, py); } catch { h = NaN; }
+            if (!Number.isFinite(h)) h = 0;
+            pos.setXYZ(i, px, h, py);
+          }
+          pos.needsUpdate = true;
+          geom.computeVertexNormals();
+          geom.computeBoundingBox();
+          geom.computeBoundingSphere();
+          const old = mesh.geometry;
+          mesh.geometry = geom;
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    // @FIGURE_CODE_BEGIN
+// ── element spec ────────────────────────────────────────────────────────────
+// central carbon        → SphereGeometry(0.45)  MeshStandard  #60706a
+// 3 × hydrogen          → SphereGeometry(0.28)  MeshStandard  #dde2de
+// 3 × C–H bond          → CylinderGeometry(r=0.085)           #b9c0bb
+// halide X (+X side)    → SphereGeometry(0.62)  MeshStandard  #a0301c
+// nucleophile Nu (−X)   → SphereGeometry(0.62)  MeshStandard  #a0301c
+// C–X , C–Nu bonds      → CylinderGeometry(r=0.11) faded by bond order
+//                         + 8 dot spheres (r=0.075) for the partial bonds
+// ESP surface           → custom surface-nets metaball mesh, per-vertex colour,
+//                         MeshPhysicalMaterial transparent, depthWrite false
+// captions / atom tags  → addLabel  ("Tetrahedral" / "Planar", Nu, C, X)
+// 2D reaction scheme    → SVG in #ui (built below), active row highlighted
+// ────────────────────────────────────────────────────────────────────────────
+
+const ORIGIN = new THREE.Vector3(0, 0, 0);
+
+/* ── lighting ───────────────────────────────────────────────────────────── */
+scene.add(new THREE.HemisphereLight(0xffffff, 0xe6e6e6, 0.85));
+const dlA = new THREE.DirectionalLight(0xffffff, 0.78); dlA.position.set(4, 7, 9); scene.add(dlA);
+const dlB = new THREE.DirectionalLight(0xffffff, 0.40); dlB.position.set(-7, -3, -5); scene.add(dlB);
+
+/* ── molecular state ────────────────────────────────────────────────────── */
+function atomState(t) {
+  const dcx = 2.0 * t * t + 0.2 * t + 1.8;     // 1.8 → 2.4 → 4.0
+  const dcn = 1.4 * t * t - 3.9 * t + 4.0;     // 4.0 → 2.4 → 1.5
+  const th = THREE.MathUtils.degToRad(109.5 - 39 * t);   // H–C–X angle
+  const H = [];
+  for (let k = 0; k < 3; k++) {
+    const ph = THREE.MathUtils.degToRad(270 + 120 * k);
+    H.push(new THREE.Vector3(
+      Math.cos(th),
+      Math.sin(th) * Math.sin(ph),
+      Math.sin(th) * Math.cos(ph)
+    ).multiplyScalar(1.09));
+  }
+  const X = new THREE.Vector3(dcx, 0, 0);
+  const NU = new THREE.Vector3(-dcn, 0, 0);
+  const qNu = -(1 - 0.4 * t), qX = -(0.6 + 0.4 * t);
+  const field = [
+    { p: NU, r: 1.9, q: qNu },
+    { p: ORIGIN.clone(), r: 1.4, q: 0.20 },
+    { p: X, r: 1.9, q: qX },
+    { p: H[0], r: 1.1, q: 0.08 },
+    { p: H[1], r: 1.1, q: 0.08 },
+    { p: H[2], r: 1.1, q: 0.08 }
+  ];
+  for (const a of field) { a.r2 = a.r * a.r; a.cut = a.r2 * 9; }
+  return { t, H, X, NU, field };
+}
+
+/* ── implicit field + potential ─────────────────────────────────────────```
+──────────────────────── */
+const ISO = 1.0, VMIN = -0.20, VMAX = 0.10;
+
+function fieldVal(x, y, z, A) {
+  let s = 0;
+  for (let n = 0; n < A.length; n++) {
+    const a = A[n];
+    const dx = x - a.p.x, dy = y - a.p.y, dz = z - a.p.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > a.cut || d2 < 1e-6) { if (d2 < 1e-6) return 99; continue; }
+    const q = a.r2 / d2;
+    s += q * q * q;
+  }
+  return s;
+}
+
+function potVal(x, y, z, A) {
+  let v = 0;
+  for (let n = 0; n < A.length; n++) {
+    const a = A[n];
+    const dx = x - a.p.x, dy = y - a.p.y, dz = z - a.p.z;
+    let dd = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dd < 0.8) dd = 0.8;
+    v += a.q * Math.exp(-dd / 2.2) / dd;
+  }
+  return v;
+}
+
+const RAMP = [
+  [0.00, new THREE.Color(0xD9534F)],
+  [0.18, new THREE.Color(0xE8746B)],
+  [0.38, new THREE.Color(0xE8945A)],
+  [0.55, new THREE.Color(0xE8E06A)],
+  [0.72, new THREE.Color(0x8FD18F)],
+  [1.00, new THREE.Color(0x7F9FE0)]
+];
+const _rc = new THREE.Color();
+function rampColor(u) {
+  if (u <= 0) return RAMP[0][1];
+  if (u >= 1) return RAMP[RAMP.length - 1][1];
+  for (let i = 1; i < RAMP.length; i++) {
+    if (u <= RAMP[i][0]) {
+      const f = (u - RAMP[i - 1][0]) / (RAMP[i][0] - RAMP[i - 1][0]);
+      return _rc.copy(RAMP[i - 1][1]).lerp(RAMP[i][1], f);
+    }
+  }
+  return RAMP[RAMP.length - 1][1];
+}
+
+/* ── surface-nets metaball mesh ─────────────────────────────────────────── */
+const NX = 56, NY = 26, NZ = 26;
+const GX0 = -6.9, GX1 = 6.9, GY0 = -2.95, GY1 = 2.95, GZ0 = -2.95, GZ1 = 2.95;
+const HXs = (GX1 - GX0) / (NX - 1), HYs = (GY1 - GY0) / (NY - 1), HZs = (GZ1 - GZ0) / (NZ - 1);
+const FGRID = new Float32Array(NX * NY * NZ);
+const CIDX = new Int32Array((NX - 1) * (NY - 1) * (NZ - 1));
+
+const EDG = [];
+for (let c = 0; c < 8; c++) {
+  if (!(c & 1)) EDG.push([c, c | 1]);
+  if (!(c & 2)) EDG.push([c, c | 2]);
+  if (!(c & 4)) EDG.push([c, c | 4]);
+}
+
+const blobMat = new THREE.MeshPhysicalMaterial({
+  vertexColors: true, transparent: true, opacity: 0.55,
+  roughness: 0.35, metalness: 0.0, clearcoat: 0.55, clearcoatRoughness: 0.35,
+  side: THREE.DoubleSide, depthWrite: false
+});
+const blobMesh = new THREE.Mesh(new THREE.BufferGeometry(), blobMat);
+blobMesh.renderOrder = 2;
+scene.add(blobMesh);
+
+function cellId(i, j, k) { return CIDX[i + (NX - 1) * (j + (NY - 1) * k)]; }
+
+function rebuildSurface(A) {
+  const Af = A.field;
+  const nxy = NX * NY;
+  let n = 0;
+  for (let k = 0; k < NZ; k++) {
+    const z = GZ0 + k * HZs;
+    for (let j = 0; j < NY; j++) {
+      const y = GY0 + j * HYs;
+      for (let i = 0; i < NX; i++, n++) FGRID[n] = fieldVal(GX0 + i * HXs, y, z, Af);
+    }
+  }
+  CIDX.fill(-1);
+  const P = [], NR = [], CO = [], IX = [];
+  const vv = new Array(8);
+  let vc = 0;
+  for (let k = 0; k < NZ - 1; k++) for (let j = 0; j < NY - 1; j++) for (let i = 0; i < NX - 1; i++) {
+    const b0 = i + NX * j + nxy * k;
+    vv[0] = FGRID[b0]; vv[1] = FGRID[b0 + 1]; vv[2] = FGRID[b0 + NX]; vv[3] = FGRID[b0 + NX + 1];
+    vv[4] = FGRID[b0 + nxy]; vv[5] = FGRID[b0 + nxy + 1]; vv[6] = FGRID[b0 + nxy + NX]; vv[7] = FGRID[b0 + nxy + NX + 1];
+    let mask = 0;
+    for (let c = 0; c < 8; c++) if (vv[c] > ISO) mask |= 1 << c;
+    if (mask === 0 || mask === 255) continue;
+    let sx = 0, sy = 0, sz = 0, cnt = 0;
+    for (let e = 0; e < 12; e++) {
+      const a = EDG[e][0], b = EDG[e][1];
+      const va = vv[a], vb = vv[b];
+      if ((va > ISO) === (vb > ISO)) continue;
+      let s = (ISO - va) / (vb - va);
+      if (!(s >= 0 && s <= 1)) s = 0.5;
+      const ax = a & 1, ay = (a >> 1) & 1, az = (a >> 2) & 1;
+      const bx = b & 1, by = (b >> 1) & 1, bz = (b >> 2) & 1;
+      sx += ax + (bx - ax) * s; sy += ay + (by - ay) * s; sz += az + (bz - az) * s;
+      cnt++;
+    }
+    if (!cnt) continue;
+    const px = GX0 + (i + sx / cnt) * HXs;
+    const py = GY0 + (j + sy / cnt) * HYs;
+    const pz = GZ0 + (k + sz / cnt) * HZs;
+    CIDX[i + (NX - 1) * (j + (NY - 1) * k)] = vc++;
+    P.push(px, py, pz);
+    const h = 0.13;
+    let gx = fieldVal(px + h, py, pz, Af) - fieldVal(px - h, py, pz, Af);
+    let gy = fieldVal(px, py + h, pz, Af) - fieldVal(px, py - h, pz, Af);
+    let gz = fieldVal(px, py, pz + h, Af) - fieldVal(px, py, pz - h, Af);
+    let L = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
+    NR.push(-gx / L, -gy / L, -gz / L);
+    const col = rampColor((potVal(px, py, pz, Af) - VMIN) / (VMAX - VMIN));
+    CO.push(col.r, col.g, col.b);
+  }
+
+  function tri(i0, i1, i2) {
+    const ax = P[3 * i0], ay = P[3 * i0 + 1], az = P[3 * i0 + 2];
+    const ux = P[3 * i1] - ax, uy = P[3 * i1 + 1] - ay, uz = P[3 * i1 + 2] - az;
+    const wx = P[3 * i2] - ax, wy = P[3 * i2 + 1] - ay, wz = P[3 * i2 + 2] - az;
+    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+    const dp = cx * NR[3 * i0] + cy * NR[3 * i0 + 1] + cz * NR[3 * i0 + 2];
+    if (dp >= 0) IX.push(i0, i1, i2); else IX.push(i0, i2, i1);
+  }
+  function quad(a, b, c, dd) {
+    if (a < 0 || b < 0 || c < 0 || dd < 0) return;
+    tri(a, b, c); tri(a, c, dd);
+  }
+
+  for (let k = 1; k < NZ - 1; k++) for (let j = 1; j < NY - 1; j++) for (let i = 0; i < NX - 1; i++) {
+    const b0 = i + NX * j + nxy * k;
+    if ((FGRID[b0] > ISO) === (FGRID[b0 + 1] > ISO)) continue;
+    quad(cellId(i, j - 1, k - 1), cellId(i, j, k - 1), cellId(i, j, k), cellId(i, j - 1, k));
+  }
+  for (let k = 1; k < NZ - 1; k++) for (let j = 0; j < NY - 1; j++) for (let i = 1; i < NX - 1; i++) {
+    const b0 = i + NX * j + nxy * k;
+    if ((FGRID[b0] > ISO) === (FGRID[b0 + NX] > ISO)) continue;
+    quad(cellId(i - 1, j, k - 1), cellId(i, j, k - 1), cellId(i, j, k), cellId(i - 1, j, k));
+  }
+  for (let k = 0; k < NZ - 1; k++) for (let j = 1; j < NY - 1; j++) for (let i = 1; i < NX - 1; i++) {
+    const b0 = i + NX * j + nxy * k;
+    if ((FGRID[b0] > ISO) === (FGRID[b0 + nxy] > ISO)) continue;
+    quad(cellId(i - 1, j - 1, k), cellId(i, j - 1, k), cellId(i, j, k), cellId(i - 1, j - 1, k));
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(NR, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(CO, 3));
+  g.setIndex(IX);
+  g.computeBoundingSphere();
+  const old = blobMesh.geometry;
+  blobMesh.geometry = g;
+  if (old) old.dispose();
+}
+
+/* ── ball-and-stick model ───────────────────────────────────────────────── */
+const bsGroup = new THREE.Group();
+scene.add(bsGroup);
+
+const matC = new THREE.MeshStandardMaterial({ color: 0x60706a, roughness: 0.45, metalness: 0.05 });
+const matH = new THREE.MeshStandardMaterial({ color: 0xdde2de, roughness: 0.5 });
+const matHal = new THREE.MeshStandardMaterial({ color: 0xa0301c, roughness: 0.4 });
+const matBond = new THREE.MeshStandardMaterial({ color: 0xb9c0bb, roughness: 0.6 });
+const matBX = new THREE.MeshStandardMaterial({ color: 0xa8aeaa, roughness: 0.6, transparent: true, opacity: 1 });
+const matBN = new THREE.MeshStandardMaterial({ color: 0xa8aeaa, roughness: 0.6, transparent: true, opacity: 1 });
+const matDotX = new THREE.MeshStandardMaterial({ color: 0x8b9490, roughness: 0.6, transparent: true, opacity: 0.95 });
+const matDotN = new THREE.MeshStandardMaterial({ color: 0x8b9490, roughness: 0.6, transparent: true, opacity: 0.95 });
+
+const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 16);
+const cMesh = new THREE.Mesh(new THREE.SphereGeometry(0.45, 32, 24), matC);
+const xMesh = new THREE.Mesh(new THREE.SphereGeometry(0.62, 32, 24), matHal);
+const nuMesh = new THREE.Mesh(new THREE.SphereGeometry(0.62, 32, 24), matHal);
+bsGroup.add(cMesh, xMesh, nuMesh);
+
+const hMesh = [], hBond = [];
+for (let k = 0; k < 3; k++) {
+  const s = new THREE.Mesh(new THREE.SphereGeometry(0.28, 24, 18), matH);
+  const b = new THREE.Mesh(cylGeo, matBond);
+  hMesh.push(s); hBond.push(b); bsGroup.add(s, b);
+}
+const cxBond = new THREE.Mesh(cylGeo, matBX);
+const cnBond = new THREE.Mesh(cylGeo, matBN);
+bsGroup.add(cxBond, cnBond);
+
+const dotGeo = new THREE.SphereGeometry(0.075, 12, 10);
+const cxDots = [], cnDots = [];
+for (let i = 0; i < 8; i++) {
+  const a = new THREE.Mesh(dotGeo, matDotX); cxDots.push(a); bsGroup.add(a);
+  const b = new THREE.Mesh(dotGeo, matDotN); cnDots.push(b); bsGroup.add(b);
+}
+
+const _up = new THREE.Vector3(0, 1, 0), _dir = new THREE.Vector3(), _mid = new THREE.Vector3();
+function setBond(mesh, a, b, rad) {
+  _dir.subVectors(b, a);
+  const len = _dir.length() || 1e-4;
+  _mid.addVectors(a, b).multiplyScalar(0.5);
+  mesh.position.copy(_mid);
+  mesh.quaternion.setFromUnitVectors(_up, _dir.normalize());
+  mesh.scale.set(rad, len, rad);
+}
+
+let showBS = true;
+
+function updPartial(cyl, dots, mat, dotMat, a, b, order) {
+  const solid = THREE.MathUtils.smoothstep(order, 0.60, 0.95);
+  mat.opacity = solid;
+  mat.transparent = solid < 0.995;
+  cyl.visible = showBS && solid > 0.03;
+  setBond(cyl, a, b, 0.11);
+  const dotOn = showBS && order > 0.08 && solid < 0.97;
+  dotMat.opacity = 0.35 + 0.6 * Math.min(1, order * 1.6);
+  for (let i = 0; i < dots.length; i++) {
+    dots[i].visible = dotOn;
+    if (dotOn) dots[i].position.lerpVectors(a, b, (i + 1) / (dots.length + 1));
+  }
+}
+
+function updateBallStick(A) {
+  bsGroup.visible = showBS;
+  cMesh.position.copy(ORIGIN);
+  for (let k = 0; k < 3; k++) {
+    hMesh[k].position.copy(A.H[k]);
+    setBond(hBond[k], ORIGIN, A.H[k], 0.085);
+  }
+  xMesh.position.copy(A.X);
+  nuMesh.position.copy(A.NU);
+  updPartial(cxBond, cxDots, matBX, matDotX, ORIGIN, A.X, 1 - A.t);
+  updPartial(cnBond, cnDots, matBN, matDotN, ORIGIN, A.NU, A.t);
+}
+
+registerInteractive(cMesh, {
+  title: 'The sp³ → sp² → sp³ carbon',
+  tooltip: 'Central carbon — it inverts',
+  body: 'The electrophilic carbon. As Nu attacks from the backside the carbon rehybridises to sp² at the transition state (three coplanar C–H bonds), then re-pyramidalises on the opposite side — an inversion of configuration, like an umbrella turning inside out.'
+});
+registerInteractive(xMesh, {
+  title: 'Leaving group X',
+  tooltip: 'Leaving group X',
+  body: 'The C–X bond stretches from 1.8 Å to 4.0 Å across the reaction. Electron density (red on the map) flows onto X until it departs as X:⁻.'
+});
+registerInteractive(nuMesh, {
+  title: 'Nucleophile Nu:⁻',
+  tooltip: 'Nucleophile Nu:⁻',
+  body: 'Nu attacks along the line exactly 180° opposite the C–X bond — backside attack. Only that direction overlaps with the empty σ* orbital of C–X, which is why S_N2 always inverts configuration.'
+});
+
+/* ── camera (after geometry) ────────────────────────────────────────────── */
+let progT = 0;
+rebuildSurface(atomState(0));
+updateBallStick(atomState(0));
+setCameraView({ projection: 'perspective', azimuthDeg: 100, elevationDeg: 12, rollDeg: 0, heightFraction: 0.6 });
+
+/* ── labels ─────────────────────────────────────────────────────────────── */
+const capLabel = addLabel('<b>Tetrahedral</b>', new THREE.Vector3(0, -3.35, 0), { fontSize: '16px' });
+const nuLabel = addLabel('Nu', new THREE.Vector3(-4, 1, 0), { fontSize: '14px', color: '#E0218A', bold: true });
+const xLabel = addLabel('X', new THREE.Vector3(1.8, 1, 0), { fontSize: '14px', color: '#E0218A', bold: true });
+const cLabel = addLabel('C', new THREE.Vector3(0, 0.85, 0), { fontSize: '13px', color: '#222', bold: true });
+
+function updateLabels(A) {
+  nuLabel.pos.copy(A.NU); nuLabel.pos.y += 1.05;
+  xLabel.pos.copy(A.X); xLabel.pos.y += 1.05;
+  cLabel.pos.set(0, 0.95, 0);
+  const t = A.t;
+  nuLabel.div.innerHTML = t < 0.08 ? 'Nu:<sup>−</sup>' : (t > 0.94 ? 'Nu' : 'Nu<sup>δ−</sup>');
+  xLabel.div.innerHTML = t > 0.94 ? 'X:<sup>−</sup>' : (t < 0.08 ? 'X' : 'X<sup>δ−</sup>');
+  let cap;
+  if (t < 0.25) cap = '<b>Tetrahedral</b>';
+  else if (t < 0.42) cap = 'flattening…';
+  else if (t <= 0.58) cap = '<b>Planar</b>';
+  else if (t < 0.75) cap = 'inverting…';
+  else cap = '<b>Tetrahedral</b> (inverted)';
+  capLabel.div.innerHTML = cap;
+}
+
+/* ── 2D reaction scheme (SVG) ───────────────────────────────────────────── */
+const MAG = '#E0218A';
+function ln(x1, y1, x2, y2, col, w, extra) {
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col || '#111'}" stroke-width="${w || 1.6}" stroke-linecap="round" ${extra || ''}/>`;
+}
+function wdg(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+  const px = -dy / L * 2.7, py = dx / L * 2.7;
+  return `<polygon points="${x1},${y1} ${x2 + px},${y2 + py} ${x2 - px},${y2 - py}" fill="#111"/>`;
+}
+function hsh(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+  const px = -dy / L, py = dx / L;
+  let s = '';
+  for (let i = 1; i <= 5; i++) {
+    const f = i / 5.5, cx = x1 + dx * f, cy = y1 + dy * f, w = 0.9 + 2.1 * f;
+    s += ln(cx - px * w, cy - py * w, cx + px * w, cy + py * w, '#111', 1.5);
+  }
+  return s;
+}
+function txt(x, y, s, col, size, anchor) {
+  return `<text x="${x}" y="${y}" fill="${col || '#111'}" font-family="Georgia,serif" font-size="${size || 15}" text-anchor="${anchor || 'start'}">${s}</text>`;
+}
+function dot(x, y, col) { return `<circle cx="${x}" cy="${y}" r="1.6" fill="${col}"/>`; }
+function skel(cx, cy, s, mode) {
+  if (mode === 'ts') {
+    return hsh(cx - 3, cy - 6, cx - 11, cy - 22) + wdg(cx + 3, cy - 6, cx + 10, cy - 22) +
+      ln(cx, cy + 7, cx, cy + 24) + txt(cx, cy + 5, 'C', '#111', 15, 'middle');
+  }
+  return wdg(cx - 3 * s, cy - 5, cx - 19 * s, cy - 20) +
+    hsh(cx + 3 * s, cy - 6, cx + 11 * s, cy - 23) +
+    ln(cx - 4 * s, cy + 5, cx - 17 * s, cy + 19) +
+    txt(cx, cy + 5, 'C', '#111', 15, 'middle');
+}
+function arrow(x, y1, y2) {
+  return ln(x, y1, x, y2 - 7) + `<polygon points="${x - 4},${y2 - 8} ${x + 4},${y2 - 8} ${x},${y2}" fill="#111"/>`;
+}
+
+const R1 = 42, R2 = 152, R3 = 266;
+let svg = `<svg viewBox="0 0 250 306" width="100%" style="display:block">`;
+svg += `<g id="schemeRow0" style="cursor:pointer">`
+  + txt(10, R1 + 5, 'Nu', MAG, 16) + dot(41, R1 - 2, MAG) + dot(41, R1 + 4, MAG)
+  + txt(46, R1 - 4, '−', MAG, 13)
+  + txt(62, R1 + 5, '+', '#111', 16)
+  + skel(120, R1, 1, 'tet')
+  + ln(129, R1, 152, R1)
+  + txt(156, R1 + 5, 'X', MAG, 16)
+  + `</g>`;
+svg += arrow(120, R1 + 28, R1 + 64);
+const bt = R2 - 42, bb = R2 + 36;
+svg += `<g id="schemeRow1" style="cursor:pointer">`
+  + ln(13, bt, 6, bt) + ln(6, bt, 6, bb) + ln(6, bb, 13, bb)
+  + ln(237, bt, 243, bt) + ln(243, bt, 243, bb) + ln(237, bb, 243, bb)
+  + txt(18, R2 - 22, 'δ', MAG, 13) + txt(27, R2 - 27, '−', MAG, 11)
+  + txt(16, R2 + 5, 'Nu', MAG, 16)
+  + ln(47, R2, 110, R2, MAG, 1.7, 'stroke-dasharray="2,3.4"')
+  + skel(122, R2, 1, 'ts')
+  + ln(134, R2, 198, R2, MAG, 1.7, 'stroke-dasharray="2,3.4"')
+  + txt(203, R2 + 5, 'X', MAG, 16)
+  + txt(203, R2 - 22, 'δ', MAG, 13) + txt(212, R2 - 27, '−', MAG, 11)
+  + `</g>`;
+svg += arrow(120, R2 + 46, R2 + 82);
+svg += `<g id="schemeRow2" style="cursor:pointer">`
+  + txt(14, R3 + 5, 'Nu', MAG, 16)
+  + ln(45, R3, 69, R3)
+  + skel(78, R3, -1, 'tet')
+  + txt(140, R3 + 5, '+', '#111', 16)
+  + txt(166, R3 + 5, 'X', MAG, 16) + dot(184, R3 - 2, MAG) + dot(184, R3 + 4, MAG)
+  + txt(189, R3 - 4, '−', MAG, 13)
+  + `</g>`;
+svg += `</svg>`;
+document.getElementById('schemeBox').innerHTML = svg;
+const rowEls = [0, 1, 2].map(i => document.getElementById('schemeRow' + i));
+rowEls.forEach((el, i) => el.addEventListener('click', () => { stopPlay(); tweenTo(i * 0.5, 700); }));
+
+/* ── UI wiring ──────────────────────────────────────────────────────────── */
+const slider = document.getElementById('reactionProgress');
+const progVal = document.getElementById('progVal');
+const btnMap = document.getElementById('modeMap');
+const btnBall = document.getElementById('modeBall');
+const btnBoth = document.getElementById('modeBoth');
+const btnPlay = document.getElementById('btnPlay');
+
+let dirty = true, mode = 'both';
+
+function setMode(m) {
+  mode = m;
+  btnMap.classList.toggle('active', m === 'map');
+  btnBall.classList.toggle('active', m === 'ball');
+  btnBoth.classList.toggle('active', m === 'both');
+  showBS = (m !== 'map');
+  blobMesh.visible = (m !== 'ball');
+  blobMat.opacity = (m === 'map') ? 0.95 : 0.55;
+  blobMat.depthWrite = (m === 'map');
+  blobMat.needsUpdate = true;
+  dirty = true;
+}
+btnMap.addEventListener('click', () => setMode('map'));
+btnBall.addEventListener('click', () => setMode('ball'));
+btnBoth.addEventListener('click', () => setMode('both'));
+
+function phaseName(t) {
+  if (t < 0.08) return 'Reactants — Nu:⁻ free, C–X intact';
+  if (t < 0.42) return 'Backside approach — C–X stretching';
+  if (t <= 0.58) return 'Planar transition state — [Nu···C···X]‡';
+  if (t < 0.92) return 'Inversion — new C–Nu bond forming';
+  return 'Products — inverted, X:⁻ free';
+}
+
+function setProgress(v, fromSlider) {
+  progT = Math.min(1, Math.max(0, v));
+  if (!fromSlider) slider.value = progT.toFixed(2);
+  progVal.textContent = 't = ' + progT.toFixed(2) + ' · ' + phaseName(progT);
+  const active = progT < 0.25 ? 0 : (progT > 0.75 ? 2 : 1);
+  rowEls.forEach((el, i) => el.setAttribute('opacity', i === active ? '1' : '0.22'));
+  dirty = true;
+}
+slider.addEventListener('input', () => { stopPlay(); setProgress(parseFloat(slider.value), true); });
+
+/* ── demo steps ─────────────────────────────────────────────────────────── */
+const STEPS = [
+  { title: 'Reactants', t: 0, mode: 'both', n: 'The nucleophile is a separate, deeply red sphere holding all of the negative charge, while the alkyl halide is a two-lobed tetrahedral surface whose only red region is the halide end.' },
+  { title: 'Backside approach', t: 0.3, mode: 'both', n: 'Nu moves in along the line directly opposite the C–X bond; the C–X bond stretches and the three hydrogens begin to bend away from the incoming nucleophile.' },
+  { title: 'Planar transition state', t: 0.5, mode: 'both', n: 'At the halfway point the carbon is trigonal planar with Nu and X both half-bonded at 180°. The map is a wide symmetric three-lobed surface, red at both ends and green-yellow across the middle — the charge is delocalised over both Nu and X, each carrying δ−.' },
+  { title: 'Inversion completes', t: 0.75, mode: 'ball', n: 'Past the transition state the hydrogens snap through to the far side, the new Nu–C bond shortens and the C–X bond breaks — the carbon\'s configuration has been turned inside out.' },
+  { title: 'Products', t: 1, mode: 'both', n: 'The product is again tetrahedral but with the wedge and hash reversed, and the negative charge — the red lobe — now lives entirely on the free leaving group X:⁻.' }
+];
+let stepI = 0;
+const stepTitle = document.getElementById('stepTitle'), stepNarr = document.getElementById('stepNarr');
+function goToStep(i) {
+  stepI = (i + STEPS.length) % STEPS.length;
+  const s = STEPS[stepI];
+  stopPlay();
+  setMode(s.mode);
+  tweenTo(s.t, 900);
+  stepTitle.textContent = (stepI + 1) + '. ' + s.title;
+  stepNarr.textContent = s.n;
+}
+document.getElementById('stepNext').addEventListener('click', () => goToStep(stepI + 1));
+document.getElementById('stepPrev').addEventListener('click', () => goToStep(stepI - 1));
+
+/* ── tween + play loop ──────────────────────────────────────────────────── */
+let tween = null, playing = false, playPhase = 0, lastT = performance.now();
+function tweenTo(target, dur) { tween = { from: progT, to: target, t0: performance.now(), dur: dur || 800 }; }
+function stopPlay() { if (playing) { playing = false; btnPlay.textContent = '▶ Play mechanism'; btnPlay.classList.remove('active'); } }
+btnPlay.addEventListener('click', () => {
+  if (playing) { stopPlay(); return; }
+  playing = true; tween = null; playPhase = progT;
+  btnPlay.textContent = '❚❚ Pause';
+  btnPlay.classList.add('active');
+});
+
+function ease(p) { return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+
+function snTick(now) {
+  requestAnimationFrame(snTick);
+  const dt = Math.min(64, now - lastT); lastT = now;
+  if (playing) {
+    playPhase += dt / 2600;
+    if (playPhase >= 2) playPhase -= 2;
+    const p = playPhase < 1 ? playPhase : 2 - playPhase;
+    setProgress(ease(p));
+  } else if (tween) {
+    const p = Math.min(1, (now - tween.t0) / tween.dur);
+    setProgress(tween.from + (tween.to - tween.from) * ease(p));
+    if (p >= 1) tween = null;
+  }
+  if (dirty) {
+    dirty = false;
+    const A = atomState(progT);
+    updateBallStick(A);
+    if (blobMesh.visible) rebuildSurface(A);
+    updateLabels(A);
+  }
+}
+requestAnimationFrame(snTick);
+
+setMode('both');
+setProgress(0);
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+
+  </script>
+</body>
+
+</html>

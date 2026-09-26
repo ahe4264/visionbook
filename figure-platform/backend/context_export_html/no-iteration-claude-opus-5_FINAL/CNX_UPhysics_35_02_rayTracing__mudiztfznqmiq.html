@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:700;font-size:12px">Ray diagrams: locating the image</span>
+<p id="demoNarration" style="margin:0;font-size:11px;line-height:1.45;color:#222"></p>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;flex:1"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<span style="height:1px;background:#dcdfe3"></span>
+<label><input id="mirrorTypeInput" type="checkbox" onchange="toggle_mirrorType(this.checked)"> Mirror type: <b id="mirrorTypeVal">Concave</b> (check = Convex)</label>
+<label>Object distance from mirror: <output id="objectDistanceVal">3</output> × f
+  <input id="objectDistanceInput" type="range" min="1.2" max="5" step="0.1" value="3"
+         oninput="document.getElementById('objectDistanceVal').value=this.value;update_objectDistance(+this.value)"></label>
+<span id="imgInfo" style="font-size:10.5px;line-height:1.4;color:#333"></span>
+<span style="height:1px;background:#dcdfe3"></span>
+<span style="font-size:11px;font-weight:700">Principal rays — click to isolate</span>
+<button id="rayBtn1" onclick="selectRay(1)" style="text-align:left;border-left:6px solid #1f7fa8">1 · parallel in → out through F</button>
+<button id="rayBtn2" onclick="selectRay(2)" style="text-align:left;border-left:6px solid #e02b2b">2 · in through F → out parallel</button>
+<button id="rayBtn3" onclick="selectRay(3)" style="text-align:left;border-left:6px solid #8064b0">3 · along radius through C → retraces</button>
+<button id="rayBtn4" onclick="selectRay(4)" style="text-align:left;border-left:6px solid #7fa640">4 · to vertex V → equal angles</button>
+<button id="rayBtn0" onclick="selectRay(0)">Show all four rays</button>
+<span id="ruleBox" style="font-size:10.5px;line-height:1.45;color:#333"></span>
+<button onclick="keyIdea()">💡 Key idea</button>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var COL = {
+  1: '#1f7fa8', 2: '#e02b2b', 3: '#8064b0', 4: '#7fa640',
+  obj: '#e8463c', img: '#f4877f', axis: '#6b6b6b',
+  mir: '#b8d9e9', mirHi: '#f3fbff', mirEdge: '#8cb7cc', dot: '#111'
+};
+
+var RULES = {
+  1: { s: 'Ray 1 — parallel in, through F out',
+       l: 'A ray that arrives parallel to the optical axis leaves through the focal point F. For a convex mirror it leaves as if it had come from F behind the surface, so its dashed backward extension passes through F.' },
+  2: { s: 'Ray 2 — through F in, parallel out',
+       l: 'A ray that heads for the focal point F (for a convex mirror, toward F behind the surface) comes back parallel to the optical axis. It is the time-reverse of ray 1.' },
+  3: { s: 'Ray 3 — along a radius through C, retraces',
+       l: 'A ray directed along a radius (the line through the centre of curvature C) meets the mirror at 90° — see the small right-angle mark — so it reflects straight back on itself.' },
+  4: { s: 'Ray 4 — to the vertex V, equal angles',
+       l: 'A ray striking the vertex V reflects with the angle of reflection equal to the angle of incidence, measured from the optical axis, so it leaves symmetrically on the other side of the axis.' }
+};
+
+var STEPS = [
+  { t: 'The concave construction', sel: 0, mode: 'concave', s: 3,
+    n: 'A concave mirror with object arrow PQ on the left. All four principal rays leave the tip Q and, after reflection, actually cross at Q′ between C and F — a real, inverted image the eye can see in space.' },
+  { t: 'Isolate one ray rule', sel: 1, mode: 'concave', s: 3,
+    n: 'Click ray 1: the blue ray travels parallel to the axis and must reflect through F. Clicking rays 2, 3 and 4 in turn shows the through-F, through-C and vertex rules — any two of them are enough to fix Q′.' },
+  { t: 'Slide the object inward', sel: 0, mode: 'concave', s: 1.4,
+    n: 'Move the object from far away toward F. The real image slides outward past C and grows, staying inverted — object position relative to F controls both size and location.' },
+  { t: 'Switch to the convex mirror', sel: 0, mode: 'convex', s: 3,
+    n: 'Flip the mirror. Now the same four rays spread apart after reflection; nothing converges in front of the mirror. Only their dashed backward extensions meet, at a virtual Q′ behind the surface.' },
+  { t: 'Virtual image stays tame', sel: 0, mode: 'convex', s: 1.6,
+    n: 'Slide the object anywhere along the axis: the convex image remains upright, reduced and trapped between V and F — a virtual image no screen can catch.' }
+];
+
+var F0 = 2, H0 = 2;
+var state = { mode: 'concave', s: 3, sel: 0, step: 0 };
+
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+setPlotFrame({ xDomain: [-13.5, 2.4], yDomain: [-5.2, 5.2], margin: 16, draw: draw });
+
+var unit = 40, fs = 14, lw = 2;
+
+/* ---------- small helpers ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function applyFrame(yHalf) {
+  var M = 16;
+  var xlo = -13.5, xhi = (state.mode === 'concave') ? 2.4 : 6.6;
+  var W = _plotFrame.width, H = _plotFrame.height;
+  var aw = Math.max(80, W - 2 * M), ah = Math.max(60, H - 2 * M);
+  var sc = Math.min(aw / (xhi - xlo), ah / (2 * yHalf));
+  var hw = aw / (2 * sc), hh = ah / (2 * sc), xc = (xlo + xhi) / 2;
+  setPlotFrame({ xDomain: [xc - hw, xc + hw], yDomain: [-hh, hh], margin: M, draw: draw });
+  unit = _plotFrame.sx;
+  fs = clamp(unit * 0.40, 7.5, 19);
+  lw = clamp(unit * 0.055, 0.9, 3.2);
+}
+
+function seg(g, a, b, color, w, dash, op) {
+  var l = g.line(plotX(a[0]), plotY(a[1]), plotX(b[0]), plotY(b[1]))
+    .stroke({ color: color, width: w, linecap: dash ? 'butt' : 'round', opacity: op == null ? 1 : op });
+  if (dash) l.attr('stroke-dasharray', (w * 3.4) + ',' + (w * 2.8));
+  return l;
+}
+
+function addArrow(g, wx, wy, dx, dy, color, size) {
+  var sx = plotX(wx), sy = plotY(wy), ex = plotX(wx + dx), ey = plotY(wy + dy);
+  var a = Math.atan2(ey - sy, ex - sx), L = size, Wd = size * 0.5;
+  var p = [[sx + Math.cos(a) * L * 0.55, sy + Math.sin(a) * L * 0.55],
+  [sx - Math.cos(a) * L * 0.45 + Math.cos(a + Math.PI / 2) * Wd, sy - Math.sin(a) * L * 0.45 + Math.sin(a + Math.PI / 2) * Wd],
+  [sx - Math.cos(a) * L * 0.45 - Math.cos(a + Math.PI / 2) * Wd, sy - Math.sin(a) * L * 0.45 - Math.sin(a + Math.PI / 2) * Wd]];
+  return g.polygon(p.map(function (q) { return q[0] + ',' + q[1]; }).join(' ')).fill(color).stroke('none');
+}
+
+function arrowOn(g, a, b, t, color, size, back) {
+  var x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+  var s = back ? -1 : 1;
+  addArrow(g, x, y, (b[0] - a[0]) * s, (b[1] - a[1]) * s, color, size);
+}
+
+function txtAt(g, wx, wy, str, color, size, anchor, italic, weight) {
+  var t = g.plain(str);
+  t.font({ family: 'Georgia,"Times New Roman",serif', size: size, style: italic ? 'italic' : 'normal', weight: weight || 'normal' });
+  t.attr({
+    x: plotX(wx), y: plotY(wy), 'text-anchor': anchor || 'middle', 'dominant-baseline': 'central',
+    fill: color, 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': Math.max(2, size * 0.32), 'stroke-linejoin': 'round'
+  });
+  return t;
+}
+
+function numLabel(g, a, b, t, off, txt, color) {
+  var x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+  var dx = b[0] - a[0], dy = b[1] - a[1], L = Math.sqrt(dx * dx + dy * dy) || 1;
+  var nx = -dy / L, ny = dx / L;
+  if (ny < 0) { nx = -nx; ny = -ny; }
+  txtAt(g, x + nx * off, y + ny * off, txt, color, fs * 0.95, 'middle', false, '700');
+}
+
+function extend(p, dx, dy, box) {
+  var t = Infinity;
+  if (dx > 1e-9) t = Math.min(t, (box.xhi - p[0]) / dx);
+  if (dx < -1e-9) t = Math.min(t, (box.xlo - p[0]) / dx);
+  if (dy > 1e-9) t = Math.min(t, (box.yhi - p[1]) / dy);
+  if (dy < -1e-9) t = Math.min(t, (box.ylo - p[1]) / dy);
+  if (!isFinite(t)) t = 1;
+  return [p[0] + dx * t, p[1] + dy * t];
+}
+
+function drawEye(g, wx, wy, sz) {
+  var cx = plotX(wx), cy = plotY(wy), u = sz * unit, w = Math.max(0.9, unit * 0.035);
+  function P(a, b) { return (cx + a * u) + ',' + (cy + b * u); }
+  var eg = g.group().css('cursor', 'pointer');
+  eg.path('M ' + P(-1.25, 0.15) + ' C ' + P(-0.7, -0.7) + ' ' + P(0.55, -0.9) + ' ' + P(1.3, -0.15) +
+    ' C ' + P(0.6, 0.65) + ' ' + P(-0.6, 0.8) + ' ' + P(-1.25, 0.15) + ' Z')
+    .fill('#fff').stroke({ color: '#222', width: w });
+  eg.circle(u * 0.44).center(cx + 0.78 * u, cy - 0.16 * u).fill('#222');
+  var lash = [[[-1.22, 0.1], [-1.72, 0.3]], [[-0.95, -0.45], [-1.3, -0.85]], [[-0.45, -0.72], [-0.6, -1.2]], [[0.15, -0.78], [0.2, -1.25]]];
+  lash.forEach(function (s) {
+    eg.line(cx + s[0][0] * u, cy + s[0][1] * u, cx + s[1][0] * u, cy + s[1][1] * u).stroke({ color: '#222', width: w, linecap: 'round' });
+  });
+  eg.on('mousemove', function (e) { showTooltip('The observer looks toward the mirror and sees the image', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup('The observer', 'The eye intercepts the reflected rays. Whether they truly crossed (real image) or only appear to come from a point behind the mirror (virtual image), the brain projects the tip of the object back to Q′.'); });
+  return eg;
+}
+
+/* ---------- main render ---------- */
+function render() {
+  var mode = state.mode, d = state.s * F0, h = H0;
+  var f = (mode === 'concave') ? F0 : -F0;
+  var Fx = -f, Cx = 2 * Fx;
+  var di = d * f / (d - f), xi = -di, m = -di / d, hi = m * h;
+
+  var y1 = h;
+  var y2 = (Math.abs(Fx + d) < 1e-6) ? NaN : h * Fx / (Fx + d);
+  var y3 = (Math.abs(Cx + d) < 1e-6) ? NaN : h * Cx / (Cx + d);
+  var hits = [y1, y2, y3].filter(function (v) { return isFinite(v) && Math.abs(v) <= 10.5; });
+  var maxHit = 0; hits.forEach(function (v) { maxHit = Math.max(maxHit, Math.abs(v)); });
+  var yHalf = Math.min(11, Math.max(5.2, Math.abs(hi) + 1.0, maxHit + 0.9));
+  var yAp = Math.min(yHalf - 0.3, Math.max(3.6, maxHit * 1.06));
+
+  applyFrame(yHalf);
+  draw.clear();
+  var g = draw.group();
+
+  var xd = _plotFrame.xDomain, yd = _plotFrame.yDomain;
+  var box = { xlo: xd[0] + 0.35, xhi: xd[1] - 0.35, ylo: yd[0] + 0.35, yhi: yd[1] - 0.35 };
+  var Rd = 3.1 * yAp;
+  function mx(y) {
+    var s = Math.sqrt(Math.max(0, Rd * Rd - y * y));
+    return (mode === 'concave') ? (s - Rd) : (Rd - s);
+  }
+
+  /* axis */
+  g.line(plotX(xd[0] + 0.15), plotY(0), plotX(xd[1] - 0.15), plotY(0))
+    .stroke({ color: COL.axis, width: Math.max(0.7, unit * 0.022) });
+
+  /* mirror arc */
+  var pts = [], i, y;
+  for (i = 0; i <= 70; i++) { y = -yAp + (2 * yAp) * i / 70; pts.push([plotX(mx(y)), plotY(y)]); }
+  var ps = pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+  var mgrp = g.group().css('cursor', 'pointer');
+  mgrp.polyline(ps).fill('none').stroke({ color: COL.mirEdge, width: Math.max(2, unit * 0.23), linecap: 'round' });
+  mgrp.polyline(ps).fill('none').stroke({ color: COL.mir, width: Math.max(1.6, unit * 0.19), linecap: 'round' });
+  mgrp.polyline(pts.map(function (p) { return (p[0] + (mode === 'concave' ? -unit * 0.045 : unit * 0.045)) + ',' + p[1]; }).join(' '))
+    .fill('none').stroke({ color: COL.mirHi, width: Math.max(0.8, unit * 0.07), linecap: 'round' });
+  mgrp.on('mousemove', function (e) { showTooltip(mode === 'concave' ? 'Concave mirror: hollow side faces the object' : 'Convex mirror: bulging side faces the object', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () {
+      showPopup(mode === 'concave' ? 'Concave mirror' : 'Convex mirror',
+        mode === 'concave'
+          ? 'Its centre of curvature C and focal point F lie in front of the surface, so reflected rays are bent toward the axis and can genuinely cross.'
+          : 'Its centre of curvature C and focal point F lie behind the surface, so reflected rays always spread apart; only their backward extensions meet.');
+    });
+
+  /* ---- ray definitions ---- */
+  var Q = [-d, h], defs = [];
+  if (Math.abs(y1) <= yAp) {
+    var M1 = [mx(y1), y1];
+    var dir1 = (mode === 'concave') ? [Fx - M1[0], -y1] : [M1[0] - Fx, y1];
+    defs.push({ n: 1, inc: [Q, M1], solid: [[M1, extend(M1, dir1[0], dir1[1], box)]],
+      dash: (mode === 'convex') ? [[M1, [Fx, 0]]] : [] });
+  }
+  if (isFinite(y2) && Math.abs(y2) <= yAp) {
+    var M2 = [mx(y2), y2];
+    var xEnd = Math.max(box.xlo, -d - 0.7);
+    defs.push({ n: 2, inc: [Q, M2], solid: [[M2, [xEnd, y2]]],
+      dash: (mode === 'convex') ? [[M2, [xi + 0.7, y2]]] : [] });
+  }
+  if (isFinite(y3) && Math.abs(y3) <= yAp) {
+    var M3 = [mx(y3), y3];
+    defs.push({ n: 3, inc: [Q, M3], solid: [], retrace: true, ra: true,
+      dash: (mode === 'convex') ? [[M3, [M3[0] + 1.08 * (Cx - M3[0]), y3 + 1.08 * (0 - y3)]]] : [] });
+  }
+  var M4 = [0, 0];
+  defs.push({ n: 4, inc: [Q, M4], solid: [[M4, extend(M4, -d, -h, box)]],
+    dash: (mode === 'convex') ? [[M4, [xi * 1.3, hi * 1.3]]] : [] });
+
+  /* ---- draw rays ---- */
+  defs.forEach(function (r) {
+    var c = COL[r.n], sel = state.sel;
+    var active = (sel === 0 || sel === r.n);
+    var w = lw * (sel === r.n ? 1.9 : 1);
+    var op = active ? 1 : 0.16;
+    var rg = g.group().css('cursor', 'pointer').opacity(op);
+    var ah = unit * 0.24 * (sel === r.n ? 1.25 : 1);
+
+    r.dash.forEach(function (s) { seg(rg, s[0], s[1], c, w * 0.9, true); });
+    seg(rg, r.inc[0], r.inc[1], c, w);
+    arrowOn(rg, r.inc[0], r.inc[1], r.n === 1 ? 0.66 : 0.5, c, ah);
+    numLabel(rg, r.inc[0], r.inc[1], r.n === 1 ? 0.5 : 0.62, 0.42, String(r.n), c);
+
+    r.solid.forEach(function (s) {
+      seg(rg, s[0], s[1], c, w);
+      arrowOn(rg, s[0], s[1], 0.45, c, ah);
+      numLabel(rg, s[0], s[1], 0.72, 0.42, String(r.n), c);
+    });
+    if (r.retrace) {
+      arrowOn(rg, r.inc[0], r.inc[1], 0.82, c, ah, true);
+      numLabel(rg, r.inc[0], r.inc[1], 0.9, 0.45, String(r.n), c);
+    }
+    if (r.ra) {
+      var M = r.inc[1], ux = M[0] - r.inc[0][0], uy = M[1] - r.inc[0][1];
+      var L = Math.sqrt(ux * ux + uy * uy) || 1; ux /= L; uy /= L;
+      var vx = -uy, vy = ux, sgn = (M[1] > 0) ? -1 : 1;
+      if (vy * sgn < 0) { vx = -vx; vy = -vy; }
+      var q = 0.36;
+      var a1 = [M[0] - ux * q, M[1] - uy * q];
+      var a2 = [a1[0] + vx * q, a1[1] + vy * q];
+      var a3 = [M[0] + vx * q, M[1] + vy * q];
+      rg.polyline([a1, a2, a3].map(function (p) { return plotX(p[0]) + ',' + plotY(p[1]); }).join(' '))
+        .fill('none').stroke({ color: '#333', width: Math.max(0.7, lw * 0.5) });
+    }
+    /* invisible hit area */
+    var hitAll = [r.inc].concat(r.solid).concat(r.dash);
+    hitAll.forEach(function (s) {
+      rg.line(plotX(s[0][0]), plotY(s[0][1]), plotX(s[1][0]), plotY(s[1][1]))
+        .stroke({ color: '#fff', width: Math.max(8, lw * 6), opacity: 0.01 });
+    });
+    rg.on('mousemove', function (e) { showTooltip(RULES[r.n].s, e); })
+      .on('mouseleave', hideTooltip)
+      .on('click', function () { selectRay(r.n); showPopup('Ray ' + r.n, RULES[r.n].l); });
+  });
+
+  /* ---- axis points ---- */
+  var rDot = Math.max(1.8, unit * 0.075);
+  function dot(wx, wy, col) { return g.circle(rDot * 2).center(plotX(wx), plotY(wy)).fill(col).stroke('none'); }
+  dot(Cx, 0, COL.dot); txtAt(g, Cx, 0.62, 'C', '#111', fs, 'middle', true);
+  dot(Fx, 0, '#e02b2b'); txtAt(g, Fx, 0.62, 'F', '#111', fs, 'middle', true);
+  txtAt(g, mode === 'concave' ? -0.62 : -0.72, mode === 'concave' ? 0.6 : -0.62, 'V', '#111', fs, 'middle', true);
+
+  /* ---- object ---- */
+  var ow = Math.max(3, unit * 0.13);
+  g.line(plotX(-d), plotY(0), plotX(-d), plotY(h * 0.84)).stroke({ color: COL.obj, width: ow, linecap: 'butt' });
+  addArrow(g, -d, h, 0, 0.5, COL.obj, unit * 0.52);
+  dot(-d, 0, '#2b6cb0');
+  txtAt(g, -d - 0.32, -0.55, 'P', '#111', fs, 'middle', true);
+  txtAt(g, -d - 0.42, h + 0.5, 'Q', '#111', fs, 'middle', true);
+  txtAt(g, -d - 0.55, h * 0.52, 'Object', '#111', fs * 0.95, 'end');
+
+  /* ---- image ---- */
+  var igrp = g.group().css('cursor', 'pointer');
+  igrp.line(plotX(xi), plotY(0), plotX(xi), plotY(hi * 0.78)).stroke({ color: COL.img, width: ow * 0.85, linecap: 'butt' });
+  addArrow(igrp, xi, hi, 0, (hi > 0 ? 0.4 : -0.4), COL.img, unit * 0.45);
+  igrp.circle(rDot * 1.7).center(plotX(xi), plotY(0)).fill('#c0392b').stroke('none');
+  igrp.on('mousemove', function (e) {
+    showTooltip((mode === 'concave' ? 'Real, inverted image' : 'Virtual, upright image') +
+      ' · m = ' + m.toFixed(2), e);
+  }).on('mouseleave', hideTooltip)
+    .on('click', function () {
+      showPopup(mode === 'concave' ? 'Real image' : 'Virtual image',
+        mode === 'concave'
+          ? 'All four reflected rays physically pass through Q′, so light really is concentrated there — a screen placed at P′ would catch the inverted image.'
+          : 'No reflected ray ever reaches Q′; only the dashed backward extensions meet there. The image is upright, reduced and cannot be caught on a screen.');
+    });
+  var qlx = xi + (mode === 'concave' ? 0.55 : -0.5), qly = hi + (mode === 'concave' ? -0.45 : 0.5);
+  txtAt(g, qlx, qly, 'Q\u2032', '#111', fs, 'middle', true);
+  txtAt(g, xi - 0.12, (mode === 'concave' ? 0.6 : -0.58), 'P\u2032', '#111', fs, 'middle', true);
+
+  /* Image leader + label */
+  var lx = xi + (mode === 'concave' ? 1.9 : 1.6), ly = hi + (mode === 'concave' ? -1.9 : -2.1);
+  if (mode === 'convex') { lx = xi + 1.1; ly = -1.9; }
+  var sx0 = plotX(lx), sy0 = plotY(ly + 0.45);
+  var ex0 = plotX(xi + (hi > 0 ? 0.12 : 0.12)), ey0 = plotY(hi * 0.82);
+  g.path('M ' + sx0 + ' ' + sy0 + ' Q ' + (sx0) + ' ' + ((sy0 + ey0) / 2) + ' ' + ex0 + ' ' + ey0)
+    .fill('none').stroke({ color: '#111', width: Math.max(0.8, lw * 0.55) });
+  var ang = Math.atan2(ey0 - (sy0 + ey0) / 2, ex0 - sx0);
+  addArrow(g, xi + 0.12 + Math.cos(ang) * 0.0, hi * 0.82, Math.cos(ang) * 0.4, -Math.sin(ang) * 0.4, '#111', unit * 0.2);
+  txtAt(g, lx, ly, 'Image', '#111', fs * 0.95, 'middle');
+
+  /* ---- eye ---- */
+  drawEye(g, clamp(-0.62 * d - 1.0, box.xlo + 1.6, -2.2), -yHalf * 0.6, 0.5);
+
+  /* ---- banner ---- */
+  var btxt = (mode === 'concave')
+    ? 'Real, inverted image \u2014 the rays actually cross'
+    : 'Virtual, upright image \u2014 only the extensions cross';
+  var bg = g.group();
+  var bt = txtAt(bg, xd[0] + 0.55, yd[1] - 0.75, btxt, mode === 'concave' ? '#0b6b3a' : '#8a4b00', fs * 0.92, 'start');
+  var bb = bt.bbox();
+  bg.rect(bb.width + fs * 0.7, bb.height + fs * 0.5).move(bb.x - fs * 0.35, bb.y - fs * 0.25)
+    .radius(fs * 0.3).fill(mode === 'concave' ? '#eaf7ef' : '#fdf1e2')
+    .stroke({ color: mode === 'concave' ? '#9ccfb2' : '#e3bd8a', width: 0.8 }).back();
+
+  /* ---- caption ---- */
+  txtAt(g, (xd[0] + xd[1]) / 2, yd[0] + 0.55,
+    mode === 'concave' ? '(a) concave mirror' : '(b) convex mirror', '#111', fs * 1.0, 'middle');
+
+  /* info line in UI */
+  var info = document.getElementById('imgInfo');
+  if (info) {
+    info.textContent = 'Object ' + (d / F0).toFixed(1) + 'f in front  ·  image ' +
+      Math.abs(di / F0).toFixed(2) + 'f ' + (di > 0 ? 'in front (real)' : 'behind (virtual)') +
+      '  ·  m = ' + m.toFixed(2) + (m < 0 ? ' (inverted)' : ' (upright)');
+  }
+  window.__markRendered();
+}
+
+/* ---------- interactions ---------- */
+function toggle_mirrorType(on) {
+  state.mode = on ? 'convex' : 'concave';
+  var v = document.getElementById('mirrorTypeVal');
+  if (v) v.textContent = on ? 'Convex' : 'Concave';
+  render();
+}
+
+function update_objectDistance(v) { state.s = v; render(); }
+
+function selectRay(n) {
+  state.sel = (state.sel === n) ? 0 : n;
+  updateRuleUI();
+  render();
+}
+
+function updateRuleUI() {
+  for (var k = 0; k <= 4; k++) {
+    var b = document.getElementById('rayBtn' + k);
+    if (b) b.className = (state.sel === k) ? 'active' : '';
+  }
+  var rb = document.getElementById('ruleBox');
+  if (rb) rb.textContent = state.sel ? RULES[state.sel].l : 'All four rays shown. Any two are enough to locate Q′ — the others confirm it.';
+}
+
+function keyIdea() {
+  showPopup('Key idea',
+    'An image is simply where the rays from a point on the object meet. If they meet in real space the image is real and inverted (concave mirror); if only their backward extensions meet, the image is virtual and upright behind the mirror (convex mirror).');
+}
+
+/* ---------- demo steps ---------- */
+function goStep(i) {
+  i = (i + STEPS.length) % STEPS.length;
+  state.step = i;
+  var st = STEPS[i];
+  state.mode = st.mode;
+  state.s = st.s;
+  state.sel = st.sel;
+  var cb = document.getElementById('mirrorTypeInput');
+  if (cb) cb.checked = (state.mode === 'convex');
+  var mv = document.getElementById('mirrorTypeVal');
+  if (mv) mv.textContent = (state.mode === 'convex') ? 'Convex' : 'Concave';
+  var sl = document.getElementById('objectDistanceInput');
+  if (sl) sl.value = state.s;
+  var so = document.getElementById('objectDistanceVal');
+  if (so) so.value = state.s;
+  document.getElementById('demoNarration').textContent = st.n;
+  document.getElementById('stepLabel').textContent = 'Step ' + (i + 1) + '/' + STEPS.length + ' — ' + st.t;
+  updateRuleUI();
+  render();
+}
+function nextStep() { goStep(state.step + 1); }
+function prevStep() { goStep(state.step - 1); }
+
+document.addEventListener('fig-resize', function () { render(); });
+
+goStep(0);
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
