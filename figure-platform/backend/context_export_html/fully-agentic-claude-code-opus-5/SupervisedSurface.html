@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supervised Loss Surface</title>
+<style>
+  :root{
+    --ink:#1b1b1d;
+    --muted:#6a6a72;
+    --line:#d9d9e0;
+    --bg:#ffffff;
+    --panel:#fafafb;
+    --accent:#e07b17;
+    --teal:#34837a;
+    --cyan:#a0d9d3;
+    --grey:#c6cdcf;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Inter,system-ui,-apple-system,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1240px;margin:0 auto;padding:22px 20px 44px;}
+  h1{font-size:20px;font-weight:600;margin:0 0 4px;letter-spacing:.1px}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 18px;max-width:1000px;line-height:1.5}
+  .figrow{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:flex-start}
+  .panel{position:relative}
+  .panel canvas{display:block;touch-action:none;cursor:crosshair;max-width:100%;height:auto}
+  .plabel{position:absolute;left:2px;top:0px;font-size:26px;color:#111;font-weight:400;
+    font-family:"Segoe UI",Helvetica,Arial,sans-serif;pointer-events:none}
+  .hint{font-size:11.5px;color:var(--muted);text-align:center;margin-top:-4px}
+
+  .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(288px,1fr));gap:16px;
+    margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 14px 15px}
+  .card h2{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 10px}
+  .row{display:flex;align-items:center;gap:10px;margin:9px 0}
+  .row label{font-size:13px;min-width:74px;color:#33333a}
+  .row input[type=range]{flex:1;accent-color:var(--accent);min-width:80px}
+  .val{font-variant-numeric:tabular-nums;font-size:13px;min-width:56px;text-align:right;color:#111;font-weight:600}
+  .big{font-size:15px}
+  .lossbox{display:flex;align-items:baseline;gap:9px;margin:12px 0 4px;padding:9px 11px;
+    background:#fff;border:1px solid var(--line);border-radius:8px}
+  .lossbox .k{font-size:13px;color:var(--muted)}
+  .lossbox .v{font-size:25px;font-weight:700;font-variant-numeric:tabular-nums}
+  .grad{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px}
+  .btns{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+  button{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:7px;border:1px solid #c8c8d2;
+    background:#fff;color:#22222a;cursor:pointer}
+  button:hover{background:#f0f0f4}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#c96a10}
+  .dotbtn{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:11px;height:11px;border-radius:50%;border:1px solid rgba(0,0,0,.35);display:inline-block}
+  .status{font-size:12.5px;margin-top:9px;min-height:32px;color:#33333a;line-height:1.45}
+  .status b{color:#111}
+  .warn{color:#b5321a;font-weight:600}
+  .ok{color:#1d7a4a;font-weight:600}
+  .note{font-size:11.5px;color:var(--muted);line-height:1.45;margin-top:8px}
+  .chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#33333a;margin-top:9px}
+  .caption{margin-top:20px;font-size:13px;color:#3a3a42;line-height:1.6;border-top:1px solid var(--line);padding-top:14px}
+  .caption b{color:#111}
+  em.m{font-family:Georgia,"Times New Roman",serif;font-style:italic}
+  kbd{font:inherit;font-size:11.5px;background:#ececf1;border:1px solid #d3d3dc;border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The supervised-learning loss surface <em class="m">L</em>[<em class="m">&phi;</em>] of a 1-D linear model</h1>
+  <p class="sub">A linear model <em class="m">y</em> = <em class="m">&phi;</em><sub>0</sub> + <em class="m">&phi;</em><sub>1</sub><em class="m">x</em> is fitted to 11 training points by least squares.
+  The loss <em class="m">L</em>[<em class="m">&phi;</em>] = &Sigma;<sub>i</sub>(<em class="m">&phi;</em><sub>0</sub> + <em class="m">&phi;</em><sub>1</sub><em class="m">x<sub>i</sub></em> &minus; <em class="m">y<sub>i</sub></em>)<sup>2</sup> is a <b>convex quadratic bowl</b>: exactly one minimum, no local minima and no saddle points,
+  so gradient descent always reaches the global optimum. Drag the orange point on either panel, or use the sliders.</p>
+
+  <div class="figrow">
+    <div class="panel"><canvas id="cvA" width="620" height="570"></canvas><div class="plabel">a)</div></div>
+    <div class="panel"><canvas id="cvB" width="560" height="570"></canvas><div class="plabel">b)</div></div>
+  </div>
+  <div class="hint">Drag the orange marker in either panel &middot; release to run gradient descent</div>
+
+  <div class="controls">
+
+    <div class="card">
+      <h2>Parameters</h2>
+      <div class="row">
+        <label>Intercept <em class="m">&phi;</em><sub>0</sub></label>
+        <input id="s0" type="range" min="0" max="2" step="0.005" value="0.35">
+        <span class="val big" id="v0">0.350</span>
+      </div>
+      <div class="row">
+        <label>Slope <em class="m">&phi;</em><sub>1</sub></label>
+        <input id="s1" type="range" min="-1" max="1" step="0.005" value="-0.55">
+        <span class="val big" id="v1">-0.550</span>
+      </div>
+      <div class="lossbox">
+        <span class="k">Loss <em class="m">L</em>[<em class="m">&phi;</em>] =</span>
+        <span class="v" id="vL">0.00</span>
+      </div>
+      <div class="grad" id="vG">&nabla;L = (0.00, 0.00)</div>
+      <div class="btns">
+        <button class="dotbtn" data-p0="1.60" data-p1="-0.80"><span class="dot" style="background:#c6cdcf"></span>point&nbsp;1</button>
+        <button class="dotbtn" data-p0="0.41" data-p1="0.21"><span class="dot" style="background:#a0d9d3"></span>point&nbsp;2</button>
+        <button class="dotbtn" id="btnMin"><span class="dot" style="background:#34837a"></span>minimum</button>
+      </div>
+      <div class="note">The three example settings are the fixed markers drawn in both panels.
+      The teal one sits at the least-squares solution.</div>
+    </div>
+
+    <div class="card">
+      <h2>Gradient descent</h2>
+      <div class="row">
+        <label>Rate <em class="m">&alpha;</em></label>
+        <input id="slr" type="range" min="0.002" max="0.062" step="0.001" value="0.012">
+        <span class="val big" id="vlr">0.012</span>
+      </div>
+      <div class="btns">
+        <button class="primary" id="btnRun">Run descent</button>
+        <button id="btnStep">Single step</button>
+        <button id="btnClear">Clear path</button>
+      </div>
+      <div class="chk"><input type="checkbox" id="chkAuto" checked><label for="chkAuto" style="min-width:0">run automatically after a drag</label></div>
+      <div class="status" id="status"></div>
+      <div class="note">Update rule <em class="m">&phi;</em> &larr; <em class="m">&phi;</em> &minus; <em class="m">&alpha;</em>&nabla;<em class="m">L</em>[<em class="m">&phi;</em>].
+      Descent converges for <em class="m">&alpha;</em> &lt; 2/<em class="m">&lambda;</em><sub>max</sub> = <span id="acrit">0.0436</span> and diverges above it.
+      The Hessian condition number here is <span id="kappa">12.6</span>, which is why the path zig-zags across the narrow valley.</div>
+    </div>
+
+    <div class="card">
+      <h2>What the loss measures</h2>
+      <canvas id="cvC" width="272" height="192" style="display:block;margin:0 auto"></canvas>
+      <div class="note" style="margin-top:6px">Training data (dots), the line for the current <em class="m">&phi;</em> (orange) and the
+      best-fit line (dashed). Red sticks are the residuals; <em class="m">L</em>[<em class="m">&phi;</em>] is the sum of their squared lengths.
+      Moving <em class="m">&phi;</em> away from the minimum lengthens the sticks and climbs the bowl.</div>
+    </div>
+  </div>
+
+  <p class="caption"><b>a)</b> The loss surface over the two parameters, rendered as a 3-D mesh.
+  <b>b)</b> The same function seen from above as a heat map with iso-loss contours; the contours are ellipses because the loss
+  is exactly quadratic in <em class="m">&phi;</em>. Both panels show the same three example parameter settings.
+  Because the Hessian 2&middot;[[<em class="m">N</em>, &Sigma;<em class="m">x<sub>i</sub></em>], [&Sigma;<em class="m">x<sub>i</sub></em>, &Sigma;<em class="m">x<sub>i</sub></em><sup>2</sup>]] is positive definite,
+  the bowl is strictly convex: every downhill path ends at the single global minimum, marked by the white cross.
+  The valley is elongated along the direction in which raising the intercept is compensated by lowering the slope &mdash; a shallow
+  direction that makes plain gradient descent slow, and a large step size unstable.</p>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ */
+/* Training data: 11 points. Chosen so the loss surface reproduces the  */
+/* reference figure (peak L(0,-1) = 70, minimum at (0.854, 0.545)).     */
+/* ------------------------------------------------------------------ */
+const DX = [0.056,0.124,0.475,0.533,0.823,0.850,1.181,1.411,1.459,1.729,1.827];
+const DY = [1.082,0.435,1.592,1.275,0.714,1.643,1.281,2.130,1.201,2.085,1.659];
+const N = DX.length;
+let Sx=0,Sxx=0,Sy=0,Sxy=0,Syy=0;
+for(let i=0;i<N;i++){Sx+=DX[i];Sxx+=DX[i]*DX[i];Sy+=DY[i];Sxy+=DX[i]*DY[i];Syy+=DY[i]*DY[i];}
+
+function loss(a,b){ return N*a*a + Sxx*b*b + Syy + 2*a*b*Sx - 2*a*Sy - 2*b*Sxy; }
+function grad(a,b){ return [2*(N*a + Sx*b - Sy), 2*(Sx*a + Sxx*b - Sxy)]; }
+
+const DET = N*Sxx - Sx*Sx;
+const PHI0S = (Sxx*Sy - Sx*Sxy)/DET;      // least squares intercept
+const PHI1S = (N*Sxy - Sx*Sy)/DET;        // least squares slope
+const LMIN  = loss(PHI0S,PHI1S);
+const LMAX  = loss(0,-1);                 // highest corner of the plotted box
+// Hessian eigenvalues (H = 2*[[N,Sx],[Sx,Sxx]])
+const HT = 2*(N+Sxx), HD = 4*DET;
+const LAM_MAX = (HT + Math.sqrt(HT*HT - 4*HD))/2;
+const LAM_MIN = (HT - Math.sqrt(HT*HT - 4*HD))/2;
+const ALPHA_CRIT = 2/LAM_MAX;
+
+const P0LO=0, P0HI=2, P1LO=-1, P1HI=1, ZBOX=72;
+
+/* ------------------------------ colour map ------------------------- */
+const LUT = [
+ [0.000, 42,  9,  2],[0.010, 45, 12,  5],[0.028, 50, 15, 10],[0.048, 55, 18, 14],
+ [0.068, 60, 21, 17],[0.092, 66, 25, 21],[0.125, 75, 30, 25],[0.156, 85, 37, 31],
+ [0.203, 97, 44, 36],[0.229,105, 50, 41],[0.266,114, 55, 45],[0.289,123, 62, 50],
+ [0.328,129, 66, 54],[0.359,139, 74, 60],[0.397,152, 84, 68],[0.422,160, 91, 74],
+ [0.453,167, 97, 78],[0.486,174,105, 86],[0.516,182,111, 90],[0.542,190,119, 97],
+ [0.596,202,132,108],[0.624,208,139,114],[0.652,215,147,122],[0.680,221,155,128],
+ [0.708,226,162,134],[0.736,231,171,142],[0.763,235,178,149],[0.791,240,187,157],
+ [0.819,243,195,165],[1.000,255,243,214]
+];
+function cmap(t){
+  if(!(t>0)) t=0; if(t>1) t=1;
+  let i=0; while(i<LUT.length-2 && LUT[i+1][0]<t) i++;
+  const a=LUT[i], b=LUT[i+1];
+  const f = (t-a[0])/(b[0]-a[0]||1);
+  return [a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, a[3]+(b[3]-a[3])*f];
+}
+function cmapCss(t){ const c=cmap(t); return 'rgb('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+')'; }
+function tOf(L){ return (L-LMIN)/(LMAX-LMIN); }
+
+/* -------------------------- reference markers ---------------------- */
+const MARKERS = [
+  {p0:1.600, p1:-0.800, col:'#c6cdcf', edge:'#8e9799', name:'point 1'},
+  {p0:0.410, p1: 0.210, col:'#a0d9d3', edge:'#5ea8a1', name:'point 2'},
+  {p0:PHI0S, p1: PHI1S, col:'#34837a', edge:'#1f5a53', name:'minimum'}
+];
+
+/* ------------------------------ state ------------------------------ */
+const st = { p0:0.35, p1:-0.55, lr:0.012, path:[], running:false, iter:0, msg:'' };
+
+/* =================================================================== */
+/*  text helper : mixed roman / italic-serif math labels                */
+/* =================================================================== */
+const SANS='"Segoe UI",Helvetica,Arial,sans-serif';
+const SERIF='Georgia,"Times New Roman",serif';
+function measure(ctx,parts){ let w=0; for(const p of parts){ ctx.font=p.f; w+=ctx.measureText(p.t).width; } return w; }
+function drawParts(ctx,parts,x,y,align){
+  const w=measure(ctx,parts);
+  let cx = align==='center' ? x-w/2 : (align==='right' ? x-w : x);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  for(const p of parts){ ctx.font=p.f; ctx.fillText(p.t, cx, y+(p.dy||0)); cx+=ctx.measureText(p.t).width; }
+}
+function mathPhi(size,sub){
+  const a=[{t:'φ', f:'italic 700 '+size+'px '+SERIF}];
+  if(sub!==undefined) a.push({t:String(sub), f:'400 '+Math.round(size*0.62)+'px '+SANS, dy:Math.round(size*0.24)});
+  return a;
+}
+function labelSlope(sz){ return [{t:'Slope, ',f:'400 '+sz+'px '+SANS}].concat(mathPhi(sz+1,1)); }
+function labelInt(sz){ return [{t:'Intercept, ',f:'400 '+sz+'px '+SANS}].concat(mathPhi(sz+1,0)); }
+function labelLoss(sz){ return [{t:'Loss, ',f:'400 '+sz+'px '+SANS},
+                                {t:'L',f:'italic 400 '+(sz+2)+'px '+SERIF},
+                                {t:'[',f:'400 '+(sz+2)+'px '+SERIF}]
+                               .concat(mathPhi(sz+1))
+                               .concat([{t:']',f:'400 '+(sz+2)+'px '+SERIF}]); }
+
+/* =================================================================== */
+/*  PANEL A  -  3-D surface                                             */
+/* =================================================================== */
+const cvA=document.getElementById('cvA'), ctxA=cvA.getContext('2d');
+const AW=cvA.width, AH=cvA.height;
+// axonometric basis measured from the reference figure
+const ML=84, MR=26, MT=14, MB=62;
+const E0=[403.7,-94.2], E1=[225.3,169.0], ZPXu=437.5/70;   // px per unit z (unscaled)
+const spanX = E0[0]+E1[0];                                  // 629
+const spanY = ZPXu*ZBOX + E1[1];                            // top to bottom
+const SA = Math.min((AW-ML-MR)/spanX, (AH-MT-MB)/spanY);
+const OX = ML, OY = MT + ZPXu*ZBOX*SA;
+const e0=[E0[0]*SA,E0[1]*SA], e1=[E1[0]*SA,E1[1]*SA], ZPX=ZPXu*SA;
+
+function projA(p0,p1,z){
+  const t0=(p0-P0LO)/(P0HI-P0LO), t1=(p1-P1LO)/(P1HI-P1LO);
+  return [OX + e0[0]*t0 + e1[0]*t1, OY + e0[1]*t0 + e1[1]*t1 - ZPX*z];
+}
+function projSurf(p0,p1){ return projA(p0,p1,loss(p0,p1)); }
+
+// view direction (depth key): larger = nearer to viewer
+const VK=[-E1[0]/E0[0], 1, (E1[1] + (E1[0]/E0[0])*E0[1])/(ZPXu*ZBOX)];
+function depthKey(t0,t1,tz){ return VK[0]*t0 + VK[1]*t1 + VK[2]*tz; }
+
+/* ---- pre-rendered background (panes + grid + surface) ---- */
+const bgA = document.createElement('canvas'); bgA.width=AW; bgA.height=AH;
+function drawPanelABackground(){
+  const c=bgA.getContext('2d');
+  c.clearRect(0,0,AW,AH);
+  const C = {
+    L0:projA(P0LO,P1LO,0), F0:projA(P0LO,P1HI,0), R0:projA(P0HI,P1HI,0), B0:projA(P0HI,P1LO,0),
+    LZ:projA(P0LO,P1LO,ZBOX), BZ:projA(P0HI,P1LO,ZBOX), RZ:projA(P0HI,P1HI,ZBOX)
+  };
+  // ---- panes ----
+  const paneFill='#f2f2f4', paneFill2='#efeff2', grid='#ffffff';
+  // floor
+  c.beginPath(); c.moveTo(C.L0[0],C.L0[1]); c.lineTo(C.B0[0],C.B0[1]); c.lineTo(C.R0[0],C.R0[1]); c.lineTo(C.F0[0],C.F0[1]);
+  c.closePath(); c.fillStyle=paneFill2; c.fill();
+  // back wall phi1 = -1
+  c.beginPath(); c.moveTo(C.L0[0],C.L0[1]); c.lineTo(C.B0[0],C.B0[1]); c.lineTo(C.BZ[0],C.BZ[1]); c.lineTo(C.LZ[0],C.LZ[1]);
+  c.closePath(); c.fillStyle=paneFill; c.fill();
+  // right wall phi0 = 2
+  c.beginPath(); c.moveTo(C.B0[0],C.B0[1]); c.lineTo(C.R0[0],C.R0[1]); c.lineTo(C.RZ[0],C.RZ[1]); c.lineTo(C.BZ[0],C.BZ[1]);
+  c.closePath(); c.fillStyle=paneFill; c.fill();
+
+  // ---- grid lines ----
+  c.strokeStyle=grid; c.lineWidth=1.4;
+  const line=(a,b)=>{c.beginPath();c.moveTo(a[0],a[1]);c.lineTo(b[0],b[1]);c.stroke();};
+  for(let k=0;k<=8;k++){
+    const p0=P0LO+(P0HI-P0LO)*k/8, p1=P1LO+(P1HI-P1LO)*k/8;
+    line(projA(p0,P1LO,0), projA(p0,P1HI,0));            // floor, const phi0
+    line(projA(P0LO,p1,0), projA(P0HI,p1,0));            // floor, const phi1
+    line(projA(p0,P1LO,0), projA(p0,P1LO,ZBOX));         // back wall verticals
+    line(projA(P0HI,p1,0), projA(P0HI,p1,ZBOX));         // right wall verticals
+  }
+  for(let z=0;z<=ZBOX;z+=10){
+    line(projA(P0LO,P1LO,z), projA(P0HI,P1LO,z));
+    line(projA(P0HI,P1LO,z), projA(P0HI,P1HI,z));
+  }
+  // faint pane borders
+  c.strokeStyle='#e2e2e7'; c.lineWidth=1;
+  line(C.B0,C.BZ);
+
+  // ---- surface mesh ----
+  const M=58;
+  const quads=[];
+  const P=[], Z=[];
+  for(let i=0;i<=M;i++){
+    P.push([]); Z.push([]);
+    const p0=P0LO+(P0HI-P0LO)*i/M;
+    for(let j=0;j<=M;j++){
+      const p1=P1LO+(P1HI-P1LO)*j/M;
+      const L=loss(p0,p1);
+      Z[i].push(L); P[i].push(projA(p0,p1,L));
+    }
+  }
+  for(let i=0;i<M;i++) for(let j=0;j<M;j++){
+    const t0=(i+0.5)/M, t1=(j+0.5)/M;
+    const Lm=(Z[i][j]+Z[i+1][j]+Z[i][j+1]+Z[i+1][j+1])/4;
+    quads.push({i:i,j:j,k:depthKey(t0,t1,Lm/ZBOX),L:Lm});
+  }
+  quads.sort((a,b)=>a.k-b.k);
+  c.lineJoin='round';
+  for(const q of quads){
+    const i=q.i,j=q.j;
+    const a=P[i][j], b=P[i+1][j], d=P[i+1][j+1], e=P[i][j+1];
+    const col=cmap(tOf(q.L));
+    c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.lineTo(d[0],d[1]); c.lineTo(e[0],e[1]); c.closePath();
+    c.fillStyle='rgb('+(col[0]|0)+','+(col[1]|0)+','+(col[2]|0)+')';
+    c.fill();
+    c.strokeStyle='rgba('+Math.min(255,col[0]+38|0)+','+Math.min(255,col[1]+30|0)+','+Math.min(255,col[2]+26|0)+',0.85)';
+    c.lineWidth=0.55; c.stroke();
+  }
+
+  // ---- axes (drawn on top) ----
+  c.strokeStyle='#111'; c.lineWidth=2.6; c.lineCap='round';
+  line(C.L0,C.F0);            // phi1 axis  (front-left floor edge)
+  line(C.F0,C.R0);            // phi0 axis  (front-right floor edge)
+  line(C.L0,C.LZ);            // z axis
+
+  // z ticks
+  c.fillStyle='#6d6d75'; c.textAlign='right'; c.textBaseline='middle';
+  c.font='400 15px '+SANS;
+  for(let z=0;z<=70;z+=10){
+    const p=projA(P0LO,P1LO,z);
+    c.strokeStyle='#111'; c.lineWidth=2; c.beginPath(); c.moveTo(p[0],p[1]); c.lineTo(p[0]-6,p[1]); c.stroke();
+    c.fillText(String(z), p[0]-11, p[1]);
+  }
+  // z axis title
+  c.save(); c.translate(22, OY-ZPX*ZBOX*0.52); c.rotate(-Math.PI/2);
+  c.fillStyle='#111'; drawParts(c, labelLoss(19), 0, 0, 'center'); c.restore();
+
+  // phi1 ticks along L0 -> F0 (rotated along the edge)
+  const ang1=Math.atan2(e1[1],e1[0]);
+  for(const v of [-1,0,1]){
+    const p=projA(P0LO,v,0);
+    const nx=-e1[1], ny=e1[0]; const nn=Math.hypot(nx,ny);
+    c.strokeStyle='#111'; c.lineWidth=1.8;
+    c.beginPath(); c.moveTo(p[0],p[1]); c.lineTo(p[0]+nx/nn*8, p[1]+ny/nn*8); c.stroke();
+    c.save(); c.translate(p[0]+nx/nn*26, p[1]+ny/nn*26); c.rotate(ang1);
+    c.fillStyle='#6d6d75'; c.font='400 15px '+SANS; c.textAlign='center'; c.textBaseline='middle';
+    c.fillText(v.toFixed(1), 0, 0); c.restore();
+  }
+  // phi0 ticks along F0 -> R0
+  const ang0=Math.atan2(e0[1],e0[0]);
+  for(const v of [0,1,2]){
+    const p=projA(v,P1HI,0);
+    const nx=-e0[1], ny=e0[0]; const nn=Math.hypot(nx,ny);
+    c.strokeStyle='#111'; c.lineWidth=1.8;
+    c.beginPath(); c.moveTo(p[0],p[1]); c.lineTo(p[0]+nx/nn*7, p[1]+ny/nn*7); c.stroke();
+    c.save(); c.translate(p[0]+nx/nn*12, p[1]+ny/nn*12); c.rotate(ang0);
+    c.fillStyle='#6d6d75'; c.font='400 15px '+SANS; c.textAlign='left'; c.textBaseline='middle';
+    c.fillText(v.toFixed(1), 0, 0); c.restore();
+  }
+  // axis titles
+  const m1=projA(P0LO,0,0), m0=projA(1,P1HI,0);
+  c.save(); c.translate(m1[0]-56, m1[1]+30); c.rotate(ang1);
+  c.fillStyle='#111'; drawParts(c, labelSlope(19), 0, 0, 'center'); c.restore();
+  c.save(); c.translate(m0[0]+18, m0[1]+42); c.rotate(ang0);
+  c.fillStyle='#111'; drawParts(c, labelInt(19), 0, 0, 'center'); c.restore();
+}
+
+/* =================================================================== */
+/*  PANEL B  -  heat map + contours                                     */
+/* =================================================================== */
+const cvB=document.getElementById('cvB'), ctxB=cvB.getContext('2d');
+const BW=cvB.width, BH=cvB.height;
+const BL=82, BT=56, BS=Math.min(BW-BL-24, BH-BT-74);   // square plot
+const BR=BL+BS, BB=BT+BS;
+function xOf(p0){ return BL + (p0-P0LO)/(P0HI-P0LO)*BS; }
+function yOf(p1){ return BT + (p1-P1LO)/(P1HI-P1LO)*BS; }   // phi1 increases downward
+function p0Of(x){ return P0LO + (x-BL)/BS*(P0HI-P0LO); }
+function p1Of(y){ return P1LO + (y-BT)/BS*(P1HI-P1LO); }
+
+const bgB=document.createElement('canvas'); bgB.width=BW; bgB.height=BH;
+function drawPanelBBackground(){
+  const c=bgB.getContext('2d');
+  c.clearRect(0,0,BW,BH);
+  // heat map
+  const img=c.createImageData(BS,BS);
+  for(let py=0;py<BS;py++){
+    const p1=P1LO+(py+0.5)/BS*(P1HI-P1LO);
+    for(let px=0;px<BS;px++){
+      const p0=P0LO+(px+0.5)/BS*(P0HI-P0LO);
+      const col=cmap(tOf(loss(p0,p1)));
+      const o=(py*BS+px)*4;
+      img.data[o]=col[0]; img.data[o+1]=col[1]; img.data[o+2]=col[2]; img.data[o+3]=255;
+    }
+  }
+  c.putImageData(img,BL,BT);
+
+  // ---- exact elliptical contours ----
+  // L = LMIN + (phi-phi*)^T A (phi-phi*),  A = [[N,Sx],[Sx,Sxx]]
+  const tr=N+Sxx, dt=DET;
+  const l1=(tr+Math.sqrt(tr*tr-4*dt))/2, l2=(tr-Math.sqrt(tr*tr-4*dt))/2;
+  let v1=[Sx, l1-N]; let n1=Math.hypot(v1[0],v1[1]); v1=[v1[0]/n1,v1[1]/n1];
+  const v2=[-v1[1],v1[0]];
+  c.save(); c.beginPath(); c.rect(BL,BT,BS,BS); c.clip();
+  c.lineWidth=1.5; c.lineJoin='round';
+  const NL=20;
+  for(let k=1;k<=NL;k++){
+    const cc=(LMAX-LMIN)*k/NL;
+    const r1=Math.sqrt(cc/l1), r2=Math.sqrt(cc/l2);
+    c.beginPath();
+    for(let s=0;s<=260;s++){
+      const th=s/260*Math.PI*2;
+      const u=Math.cos(th)*r1*v1[0]+Math.sin(th)*r2*v2[0];
+      const v=Math.cos(th)*r1*v1[1]+Math.sin(th)*r2*v2[1];
+      const X=xOf(PHI0S+u), Y=yOf(PHI1S+v);
+      if(s===0) c.moveTo(X,Y); else c.lineTo(X,Y);
+    }
+    c.closePath();
+    c.strokeStyle='rgba(255,255,255,0.50)';
+    c.stroke();
+  }
+  c.restore();
+
+  // frame
+  c.strokeStyle='#000'; c.lineWidth=3; c.strokeRect(BL-1.5,BT-1.5,BS+3,BS+3);
+
+  // ticks + labels
+  c.fillStyle='#6d6d75'; c.font='400 15px '+SANS;
+  c.textAlign='center'; c.textBaseline='top';
+  for(const v of [0,1,2]){
+    c.save(); c.translate(xOf(v), BB+9); c.rotate(-0.30);
+    c.fillText(v.toFixed(1),0,0); c.restore();
+  }
+  c.textAlign='right'; c.textBaseline='middle';
+  for(const v of [-1,0,1]){
+    c.save(); c.translate(BL-10, yOf(v)); c.rotate(-0.30);
+    c.fillText(v.toFixed(1),0,0); c.restore();
+  }
+  // titles
+  c.fillStyle='#111';
+  drawParts(c, labelLoss(19), BL+BS/2, BT-20, 'center');
+  drawParts(c, labelInt(19), BL+BS/2, BB+50, 'center');
+  c.save(); c.translate(26, BT+BS/2); c.rotate(-Math.PI/2);
+  drawParts(c, labelSlope(19), 0, 0, 'center'); c.restore();
+}
+
+/* =================================================================== */
+/*  overlays                                                            */
+/* =================================================================== */
+function dot(c,x,y,r,fill,edge,lw){
+  c.beginPath(); c.arc(x,y,r,0,Math.PI*2);
+  c.fillStyle=fill; c.fill();
+  if(edge){ c.strokeStyle=edge; c.lineWidth=lw||1.4; c.stroke(); }
+}
+function cross(c,x,y,r){
+  c.strokeStyle='rgba(255,255,255,0.95)'; c.lineWidth=2.4; c.lineCap='round';
+  c.beginPath(); c.moveTo(x-r,y); c.lineTo(x+r,y); c.moveTo(x,y-r); c.lineTo(x,y+r); c.stroke();
+}
+
+// Liang-Barsky clip of a parameter-space segment to the plotted box (slightly enlarged)
+const CB0=[P0LO-0.02,P0HI+0.02], CB1=[P1LO-0.02,P1HI+0.02];
+function clipSeg(a,b){
+  let t0=0,t1=1;
+  const dx=b[0]-a[0], dy=b[1]-a[1];
+  const ps=[-dx,dx,-dy,dy], qs=[a[0]-CB0[0],CB0[1]-a[0],a[1]-CB1[0],CB1[1]-a[1]];
+  for(let k=0;k<4;k++){
+    if(Math.abs(ps[k])<1e-12){ if(qs[k]<0) return null; }
+    else { const r=qs[k]/ps[k];
+      if(ps[k]<0){ if(r>t1) return null; if(r>t0) t0=r; }
+      else      { if(r<t0) return null; if(r<t1) t1=r; } }
+  }
+  return [[a[0]+dx*t0,a[1]+dy*t0],[a[0]+dx*t1,a[1]+dy*t1]];
+}
+function inBox(p){ return p[0]>=CB0[0]-1e-9&&p[0]<=CB0[1]+1e-9&&p[1]>=CB1[0]-1e-9&&p[1]<=CB1[1]+1e-9; }
+function drawPathOn(c, toXY){
+  if(st.path.length<2) return;
+  c.lineJoin='round'; c.lineCap='round';
+  const segs=[];
+  for(let i=0;i<st.path.length-1;i++){
+    const cl=clipSeg(st.path[i],st.path[i+1]);
+    if(cl) segs.push(cl);
+  }
+  if(!segs.length) return;
+  const stroke=(col,w)=>{
+    c.beginPath();
+    for(const sgm of segs){
+      const p=toXY(sgm[0][0],sgm[0][1]), q=toXY(sgm[1][0],sgm[1][1]);
+      c.moveTo(p[0],p[1]); c.lineTo(q[0],q[1]);
+    }
+    c.strokeStyle=col; c.lineWidth=w; c.stroke();
+  };
+  stroke('rgba(0,0,0,0.45)',4.2);
+  stroke('#ffd166',2.0);
+  for(let i=0;i<st.path.length;i++){
+    if(!inBox(st.path[i])) continue;
+    const q=toXY(st.path[i][0],st.path[i][1]);
+    dot(c,q[0],q[1],2.5,'#ffd166','rgba(0,0,0,0.5)',1);
+  }
+}
+
+function drawA(){
+  ctxA.clearRect(0,0,AW,AH);
+  ctxA.drawImage(bgA,0,0);
+  const cur=projSurf(st.p0,st.p1);
+  // drop line to the floor
+  const foot=projA(st.p0,st.p1,0);
+  ctxA.setLineDash([3,4]); ctxA.strokeStyle='rgba(140,140,146,0.85)'; ctxA.lineWidth=1.1;
+  ctxA.beginPath(); ctxA.moveTo(cur[0],cur[1]); ctxA.lineTo(foot[0],foot[1]); ctxA.stroke();
+  ctxA.setLineDash([]);
+  dot(ctxA,foot[0],foot[1],2.6,'rgba(240,146,31,0.85)',null);
+
+  drawPathOn(ctxA,(a,b)=>projSurf(a,b));
+
+  for(const m of MARKERS){
+    const q=projSurf(m.p0,m.p1);
+    dot(ctxA,q[0],q[1],10,m.col,m.edge,1.6);
+  }
+  const qm=projSurf(PHI0S,PHI1S); cross(ctxA,qm[0],qm[1],5);
+  dot(ctxA,cur[0],cur[1],10.5,'#f0921f','#ffffff',2.4);
+  dot(ctxA,cur[0],cur[1],10.5,'rgba(0,0,0,0)','rgba(0,0,0,0.45)',1);
+}
+
+function drawB(){
+  ctxB.clearRect(0,0,BW,BH);
+  ctxB.drawImage(bgB,0,0);
+  ctxB.save(); ctxB.beginPath(); ctxB.rect(BL,BT,BS,BS); ctxB.clip();
+
+  drawPathOn(ctxB,(a,b)=>[xOf(a),yOf(b)]);
+
+  // negative-gradient direction at the current point
+  const g=grad(st.p0,st.p1), gn=Math.hypot(g[0],g[1]);
+  if(gn>1e-6){
+    const x0=xOf(st.p0), y0=yOf(st.p1);
+    const dx=-g[0]/gn, dy=-g[1]/gn;
+    const vx=dx*(BS/(P0HI-P0LO)), vy=dy*(BS/(P1HI-P1LO));
+    const vn=Math.hypot(vx,vy), Larr=Math.min(52, 16+gn*0.9);
+    const ex=x0+vx/vn*Larr, ey=y0+vy/vn*Larr;
+    ctxB.strokeStyle='rgba(255,255,255,0.92)'; ctxB.lineWidth=2.2; ctxB.lineCap='round';
+    ctxB.beginPath(); ctxB.moveTo(x0,y0); ctxB.lineTo(ex,ey); ctxB.stroke();
+    const a1=Math.atan2(ey-y0,ex-x0);
+    ctxB.beginPath(); ctxB.moveTo(ex,ey);
+    ctxB.lineTo(ex-9*Math.cos(a1-0.4), ey-9*Math.sin(a1-0.4));
+    ctxB.lineTo(ex-9*Math.cos(a1+0.4), ey-9*Math.sin(a1+0.4));
+    ctxB.closePath(); ctxB.fillStyle='rgba(255,255,255,0.92)'; ctxB.fill();
+  }
+
+  for(const m of MARKERS) dot(ctxB,xOf(m.p0),yOf(m.p1),10,m.col,m.edge,1.6);
+  cross(ctxB,xOf(PHI0S),yOf(PHI1S),5);
+  const cx=xOf(st.p0), cy=yOf(st.p1);
+  dot(ctxB,cx,cy,10.5,'#f0921f','#ffffff',2.4);
+  dot(ctxB,cx,cy,10.5,'rgba(0,0,0,0)','rgba(0,0,0,0.45)',1);
+  ctxB.restore();
+}
+
+/* =================================================================== */
+/*  inset : data, model line and residuals                              */
+/* =================================================================== */
+const cvC=document.getElementById('cvC'), ctxC=cvC.getContext('2d');
+const CW=cvC.width, CH=cvC.height, CL=30, CT=10, CRr=8, CB=26;
+const cx0=-0.08, cx1=2.0, cy0=-0.5, cy1=3.1;
+function cX(x){ return CL + (x-cx0)/(cx1-cx0)*(CW-CL-CRr); }
+function cY(y){ return CH-CB - (y-cy0)/(cy1-cy0)*(CH-CT-CB); }
+function drawC(){
+  const c=ctxC; c.clearRect(0,0,CW,CH);
+  c.fillStyle='#fff'; c.fillRect(0,0,CW,CH);
+  // grid
+  c.strokeStyle='#ececf1'; c.lineWidth=1;
+  for(let v=0;v<=2;v+=0.5){ c.beginPath(); c.moveTo(cX(v),CT); c.lineTo(cX(v),CH-CB); c.stroke(); }
+  for(let v=0;v<=3;v+=1){ c.beginPath(); c.moveTo(CL,cY(v)); c.lineTo(CW-CRr,cY(v)); c.stroke(); }
+  // axes
+  c.strokeStyle='#444'; c.lineWidth=1.3;
+  c.beginPath(); c.moveTo(CL,CT); c.lineTo(CL,CH-CB); c.lineTo(CW-CRr,CH-CB); c.stroke();
+  c.fillStyle='#8a8a92'; c.font='400 10px '+SANS; c.textAlign='center'; c.textBaseline='top';
+  for(const v of [0,1,2]) c.fillText(v.toFixed(0), cX(v), CH-CB+4);
+  c.textAlign='right'; c.textBaseline='middle';
+  for(const v of [0,1,2,3]) c.fillText(v.toFixed(0), CL-4, cY(v));
+  c.save(); c.translate(10,(CT+CH-CB)/2); c.rotate(-Math.PI/2);
+  c.textAlign='center'; c.textBaseline='middle'; c.fillStyle='#55555d';
+  c.font='italic 11px '+SERIF; c.fillText('y',0,0); c.restore();
+  c.textAlign='center'; c.textBaseline='bottom'; c.fillStyle='#55555d';
+  c.font='italic 11px '+SERIF; c.fillText('x',(CL+CW-CRr)/2, CH-2);
+
+  c.save(); c.beginPath(); c.rect(CL,CT,CW-CL-CRr,CH-CT-CB); c.clip();
+  // best fit line (dashed)
+  c.setLineDash([4,3]); c.strokeStyle='#2c8b80'; c.lineWidth=1.4;
+  c.beginPath(); c.moveTo(cX(cx0),cY(PHI0S+PHI1S*cx0)); c.lineTo(cX(cx1),cY(PHI0S+PHI1S*cx1)); c.stroke();
+  c.setLineDash([]);
+  // residuals
+  c.strokeStyle='rgba(206,46,22,0.85)'; c.lineWidth=1.6;
+  for(let i=0;i<N;i++){
+    const yhat=st.p0+st.p1*DX[i];
+    c.beginPath(); c.moveTo(cX(DX[i]),cY(DY[i])); c.lineTo(cX(DX[i]),cY(yhat)); c.stroke();
+  }
+  // current model line
+  c.strokeStyle='#f0921f'; c.lineWidth=2.2;
+  c.beginPath(); c.moveTo(cX(cx0),cY(st.p0+st.p1*cx0)); c.lineTo(cX(cx1),cY(st.p0+st.p1*cx1)); c.stroke();
+  // data
+  for(let i=0;i<N;i++) dot(c,cX(DX[i]),cY(DY[i]),3.4,'#1b1b1d','#fff',1);
+  c.restore();
+}
+
+/* =================================================================== */
+/*  UI                                                                  */
+/* =================================================================== */
+const s0=document.getElementById('s0'), s1=document.getElementById('s1'), slr=document.getElementById('slr');
+const v0=document.getElementById('v0'), v1=document.getElementById('v1'), vlr=document.getElementById('vlr');
+const vL=document.getElementById('vL'), vG=document.getElementById('vG'), statusEl=document.getElementById('status');
+
+function clampP(){
+  st.p0=Math.min(P0HI,Math.max(P0LO,st.p0));
+  st.p1=Math.min(P1HI,Math.max(P1LO,st.p1));
+}
+function refresh(){
+  clampP();
+  s0.value=st.p0; s1.value=st.p1;
+  v0.textContent=st.p0.toFixed(3); v1.textContent=st.p1.toFixed(3);
+  vlr.textContent=Number(st.lr).toFixed(3);
+  const L=loss(st.p0,st.p1), g=grad(st.p0,st.p1);
+  vL.textContent=L.toFixed(2);
+  vG.textContent='∇L = ('+g[0].toFixed(2)+', '+g[1].toFixed(2)+')   |∇L| = '+Math.hypot(g[0],g[1]).toFixed(2);
+  statusEl.innerHTML=st.msg;
+  drawA(); drawB(); drawC();
+}
+
+s0.addEventListener('input',()=>{ st.p0=parseFloat(s0.value); stopRun(); st.path=[]; st.msg=''; refresh(); });
+s1.addEventListener('input',()=>{ st.p1=parseFloat(s1.value); stopRun(); st.path=[]; st.msg=''; refresh(); });
+slr.addEventListener('input',()=>{ st.lr=parseFloat(slr.value); describeRate(); refresh(); });
+
+function describeRate(){
+  const a=st.lr;
+  let t;
+  if(a>=ALPHA_CRIT) t='<span class="warn">α ≥ 2/λ<sub>max</sub> — the updates grow without bound: descent diverges.</span>';
+  else if(a>0.75*ALPHA_CRIT) t='<span class="ok">Stable, but close to the limit — expect strong overshoot and oscillation across the valley.</span>';
+  else if(a<0.008) t='<span class="ok">Stable but small — many steps are needed to crawl along the shallow valley.</span>';
+  else t='<span class="ok">Stable.</span> Steps zig-zag across the steep direction while creeping along the shallow one.';
+  st.msg=t;
+}
+
+document.querySelectorAll('button[data-p0]').forEach(b=>{
+  b.addEventListener('click',()=>{ stopRun(); st.p0=parseFloat(b.dataset.p0); st.p1=parseFloat(b.dataset.p1);
+    st.path=[]; st.msg=''; refresh(); });
+});
+document.getElementById('btnMin').addEventListener('click',()=>{
+  stopRun(); st.p0=PHI0S; st.p1=PHI1S; st.path=[]; st.msg=''; refresh();
+});
+document.getElementById('btnClear').addEventListener('click',()=>{ stopRun(); st.path=[]; st.msg=''; refresh(); });
+document.getElementById('btnStep').addEventListener('click',()=>{ stopRun(); gdStep(); refresh(); });
+document.getElementById('btnRun').addEventListener('click',()=>{ startRun(); });
+
+/* ---------------- gradient descent ---------------- */
+let timer=null;
+function gdStep(){
+  if(st.path.length===0) st.path.push([st.p0,st.p1]);
+  const g=grad(st.p0,st.p1);
+  st.p0 = st.p0 - st.lr*g[0];
+  st.p1 = st.p1 - st.lr*g[1];
+  st.path.push([st.p0,st.p1]);
+  st.iter++;
+  return Math.hypot(g[0],g[1]);
+}
+function stopRun(){ if(timer){clearInterval(timer); timer=null;} st.running=false;
+  document.getElementById('btnRun').textContent='Run descent'; }
+function startRun(){
+  if(st.running){ stopRun(); return; }
+  st.path=[[st.p0,st.p1]]; st.iter=0; st.running=true;
+  document.getElementById('btnRun').textContent='Stop';
+  const MAXIT=300;
+  const per=Math.max(1,Math.min(6,Math.round(0.014/st.lr)));
+  timer=setInterval(()=>{
+    let gn=0;
+    for(let k=0;k<per;k++){
+      gn=gdStep();
+      const Lk=loss(st.p0,st.p1);
+      if(!isFinite(Lk)||Lk>4000||gn<0.02||st.iter>=MAXIT) break;
+    }
+    const L=loss(st.p0,st.p1);
+    if(!isFinite(L) || L>4000 || Math.abs(st.p0)>60 || Math.abs(st.p1)>60){
+      stopRun();
+      st.msg='<span class="warn">Diverged after '+st.iter+' steps.</span> With α = '+st.lr.toFixed(3)+
+             ' ≥ 2/λ<sub>max</sub> = '+ALPHA_CRIT.toFixed(4)+
+             ' each update overshoots the valley by more than it started, so the loss explodes.';
+      refresh(); return;
+    }
+    if(gn<0.02 || st.iter>=MAXIT){
+      stopRun();
+      const d=Math.hypot(st.p0-PHI0S,st.p1-PHI1S);
+      st.msg = (gn<0.02)
+        ? '<span class="ok">Converged in '+st.iter+' steps.</span> Reached <em>L</em> = '+L.toFixed(3)+
+          ' (minimum '+LMIN.toFixed(3)+'), distance to the optimum = '+d.toFixed(4)+'.'
+        : 'Stopped at the '+MAXIT+'-step limit: <em>L</em> = '+L.toFixed(3)+', still '+d.toFixed(3)+
+          ' from the optimum — the step size is too small for this elongated valley.';
+      refresh(); return;
+    }
+    st.msg='Step '+st.iter+' — <b><em>L</em> = '+L.toFixed(3)+'</b>, |∇<em>L</em>| = '+gn.toFixed(2);
+    refresh();
+  },70);
+}
+
+/* ---------------- pointer dragging ---------------- */
+function cssPos(cv,ev){
+  const r=cv.getBoundingClientRect();
+  return [(ev.clientX-r.left)*cv.width/r.width, (ev.clientY-r.top)*cv.height/r.height];
+}
+// panel B : direct inverse mapping
+let dragB=false;
+cvB.addEventListener('pointerdown',e=>{
+  const q=cssPos(cvB,e);
+  if(q[0]<BL-14||q[0]>BR+14||q[1]<BT-14||q[1]>BB+14) return;
+  dragB=true; cvB.setPointerCapture(e.pointerId); stopRun(); st.path=[]; st.msg='';
+  st.p0=p0Of(q[0]); st.p1=p1Of(q[1]); refresh();
+});
+cvB.addEventListener('pointermove',e=>{ if(!dragB) return;
+  const q=cssPos(cvB,e); st.p0=p0Of(q[0]); st.p1=p1Of(q[1]); refresh(); });
+cvB.addEventListener('pointerup',e=>{ if(!dragB) return; dragB=false;
+  if(document.getElementById('chkAuto').checked) startRun(); });
+
+// panel A : find the surface point whose projection is nearest the cursor
+function invertA(mx,my){
+  let best=[st.p0,st.p1], bd=Infinity;
+  let lo0=P0LO, hi0=P0HI, lo1=P1LO, hi1=P1HI, n=26;
+  for(let pass=0;pass<4;pass++){
+    for(let i=0;i<=n;i++){
+      const a=lo0+(hi0-lo0)*i/n;
+      for(let j=0;j<=n;j++){
+        const b=lo1+(hi1-lo1)*j/n;
+        const q=projSurf(a,b);
+        const d=(q[0]-mx)*(q[0]-mx)+(q[1]-my)*(q[1]-my);
+        if(d<bd){ bd=d; best=[a,b]; }
+      }
+    }
+    const w0=(hi0-lo0)/n*2.2, w1=(hi1-lo1)/n*2.2;
+    lo0=Math.max(P0LO,best[0]-w0); hi0=Math.min(P0HI,best[0]+w0);
+    lo1=Math.max(P1LO,best[1]-w1); hi1=Math.min(P1HI,best[1]+w1);
+    n=12;
+  }
+  return {p:best, d:Math.sqrt(bd)};
+}
+let dragA=false;
+cvA.addEventListener('pointerdown',e=>{
+  const q=cssPos(cvA,e);
+  const r=invertA(q[0],q[1]);
+  if(r.d>46) return;
+  dragA=true; cvA.setPointerCapture(e.pointerId); stopRun(); st.path=[]; st.msg='';
+  st.p0=r.p[0]; st.p1=r.p[1]; refresh();
+});
+cvA.addEventListener('pointermove',e=>{ if(!dragA) return;
+  const q=cssPos(cvA,e); const r=invertA(q[0],q[1]); st.p0=r.p[0]; st.p1=r.p[1]; refresh(); });
+cvA.addEventListener('pointerup',e=>{ if(!dragA) return; dragA=false;
+  if(document.getElementById('chkAuto').checked) startRun(); });
+
+/* ---------------- init ---------------- */
+document.getElementById('acrit').textContent=ALPHA_CRIT.toFixed(4);
+document.getElementById('kappa').textContent=(LAM_MAX/LAM_MIN).toFixed(1);
+drawPanelABackground();
+drawPanelBBackground();
+st.lr=parseFloat(slr.value);
+describeRate();
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nonlinear latent variable model</title>
+<style>
+  :root{
+    --ink:#1b1b1f;
+    --muted:#5c5f66;
+    --line:#d9d6d0;
+    --brown:#9a4a20;
+    --teal:#2f8f8f;
+    --teal-lt:#9fdcd9;
+    --bg:#ffffff;
+    --panel:#faf8f5;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f2efe9;color:var(--ink);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1120px;margin:0 auto;padding:22px 18px 48px;}
+  h1{font-size:21px;font-weight:650;margin:0 0 4px;letter-spacing:.1px}
+  .sub{margin:0 0 16px;color:var(--muted);font-size:14px;line-height:1.5;max-width:860px}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 1px 3px rgba(0,0,0,.05);padding:10px 10px 4px;}
+  canvas#fig{width:100%;height:auto;display:block;touch-action:none;cursor:crosshair}
+  .controls{margin-top:14px;display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
+  @media (max-width:800px){.controls{grid-template-columns:1fr}}
+  .box{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px 16px;}
+  .box h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    margin:0 0 10px;font-weight:700}
+  .ctl{margin:0 0 13px}
+  .ctl:last-child{margin-bottom:0}
+  .lab{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:3px}
+  .lab .nm{color:var(--ink)}
+  .lab .vl{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;color:var(--muted)}
+  input[type=range]{width:100%;margin:0;accent-color:#b3541e;height:18px}
+  #sigma{accent-color:#7a7f87}
+  .btns{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+  button{font:inherit;font-size:13px;padding:7px 13px;border-radius:7px;border:1px solid #c9c4bc;
+    background:#fff;color:var(--ink);cursor:pointer}
+  button:hover{background:#f4f1ec}
+  button.primary{background:#2f8f8f;border-color:#2f8f8f;color:#fff}
+  button.primary:hover{background:#28807f}
+  canvas#post{width:100%;height:auto;display:block;margin-top:2px}
+  .read{font-size:12.8px;line-height:1.55;color:var(--muted);margin-top:8px}
+  .read b{color:var(--ink);font-weight:600}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace}
+  .note{font-size:12.6px;color:var(--muted);line-height:1.6;margin:16px 0 0;max-width:1000px}
+  .note code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;background:#eae6df;
+    padding:1px 4px;border-radius:3px}
+  .hint{font-size:12.4px;color:var(--muted);margin:6px 2px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The nonlinear latent variable model behind the VAE</h1>
+  <p class="sub">A latent <i>z</i> ~ Norm[0,1] is pushed through a nonlinear decoder
+    <b>f</b>[<i>z</i>,&phi;] to give the mean of a spherical Gaussian over the data
+    <b>x</b> = (<i>x</i><sub>1</sub>,&thinsp;<i>x</i><sub>2</sub>). Every slice of the joint
+    Pr(<b>x</b>,&thinsp;<i>z</i>|&phi;) is a simple Gaussian, but adding them all up
+    &mdash; marginalizing over <i>z</i> &mdash; gives a curved, non&#8209;Gaussian marginal
+    Pr(<b>x</b>|&phi;) with no closed form. That intractable integral is why VAEs need variational inference.</p>
+
+  <div class="card"><canvas id="fig"></canvas></div>
+  <p class="hint">Drag the white ring inside the right-hand panel to move the observation <b>x</b>.</p>
+
+  <div class="controls">
+    <div class="box">
+      <h2>Controls</h2>
+      <div class="btns">
+        <button id="anim" class="primary">&#9654;&nbsp; Animate marginalization over z</button>
+        <button id="reset">Reset view</button>
+      </div>
+      <div class="ctl">
+        <div class="lab"><span class="nm">Slice&nbsp;A &mdash; latent value <i>z</i><sub>A</sub></span><span class="vl" id="zAv"></span></div>
+        <input type="range" id="zA" min="-3" max="3" step="0.01" value="-2.16">
+      </div>
+      <div class="ctl">
+        <div class="lab"><span class="nm">Slice&nbsp;B &mdash; latent value <i>z</i><sub>B</sub></span><span class="vl" id="zBv"></span></div>
+        <input type="range" id="zB" min="-3" max="3" step="0.01" value="0.45">
+      </div>
+      <div class="ctl">
+        <div class="lab"><span class="nm">Decoder noise &sigma;</span><span class="vl" id="sgv"></span></div>
+        <input type="range" id="sigma" min="0.12" max="0.85" step="0.01" value="0.40">
+      </div>
+      <div class="read" id="slicereadout"></div>
+    </div>
+
+    <div class="box">
+      <h2>Posterior over the latent, Pr(z | x, &phi;)</h2>
+      <canvas id="post"></canvas>
+      <div class="read" id="readout"></div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>What is computed.</b> The decoder is a genuine tanh network
+    <code>f(z) = V&middot;tanh(Wz + b) + c</code> mapping the scalar latent to a point in the plane; the traced
+    teal curve is its image. Each brown slice plane shows the joint density
+    <code>Pr(x, z) = Norm<sub>x</sub>[f(z), &sigma;&sup2;I] &middot; Norm<sub>z</sub>[0,1]</code>
+    on the same colour scale &mdash; which is why slices far from <i>z</i>&nbsp;=&nbsp;0 are dimmer: the prior down-weights them.
+    The right panel is the numerical quadrature
+    <code>Pr(x|&phi;) = &int; Pr(x|z,&phi;) Pr(z) dz</code> over 161 latent samples, and the posterior plot is
+    <code>Pr(z|x,&phi;) &prop; Pr(x|z,&phi;) Pr(z)</code> evaluated along the dashed line of constant <b>x</b> drawn through the cube.
+    Occlusion in the cube is solved exactly, so the curve is dashed precisely where a slice plane hides it.
+  </p>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ====================================================================
+   1. Geometry of the parallel projection (matched to the source figure)
+   ==================================================================== */
+const W = 1050, H = 700;
+const LO = -3, HI = 3, SPAN = HI - LO;
+
+// cube origin = corner (x1=LO, x2=LO, z=LO); edge vectors span the full 6-unit range
+const O   = [134, 102];
+const EX1 = [223, -77];   // +x1  : up and to the right
+const EX2 = [  0, 308];   // +x2  : straight down
+const EZ  = [412, 160];   // +z   : down and to the right (towards viewer)
+
+// Because the projection is 2-D, EZ is a combination of EX1 and EX2:
+//   moving +1 in z looks exactly like moving +AZ1 in x1 and +AZ2 in x2.
+const _det = EX1[0]*EX2[1] - EX1[1]*EX2[0];
+const AZ1  = (EZ[0]*EX2[1] - EZ[1]*EX2[0]) / _det;
+const AZ2  = (EX1[0]*EZ[1] - EX1[1]*EZ[0]) / _det;
+
+function P(x1, x2, z){
+  const u = (x1-LO)/SPAN, v = (x2-LO)/SPAN, w = (z-LO)/SPAN;
+  return [O[0] + EX1[0]*u + EX2[0]*v + EZ[0]*w,
+          O[1] + EX1[1]*u + EX2[1]*v + EZ[1]*w];
+}
+
+// right-hand marginal panel (slightly tilted rectangle, as in the source figure)
+const RO = [792, 272], RU = [223, -14], RV = [0, 363];
+function Q(x1, x2){
+  const u = (x1-LO)/SPAN, v = (x2-LO)/SPAN;
+  return [RO[0] + RU[0]*u + RV[0]*v, RO[1] + RU[1]*u + RV[1]*v];
+}
+const _rdet = RU[0]*RV[1] - RU[1]*RV[0];
+function Qinv(sx, sy){                        // screen -> (x1,x2)
+  const dx = sx - RO[0], dy = sy - RO[1];
+  const u = ( dx*RV[1] - dy*RV[0]) / _rdet;
+  const v = (-dx*RU[1] + dy*RU[0]) / _rdet;
+  return [LO + u*SPAN, LO + v*SPAN, u, v];
+}
+
+/* ====================================================================
+   2. The model:  z ~ N(0,1),  x ~ N(f(z), sigma^2 I)
+      f is a 1 -> 6 -> 2 tanh network (weights fixed below).
+   ==================================================================== */
+const Wh = [1.00, 1.00, 1.00, 1.00, 0.95];        // hidden weights on z
+const bh = [0.50, -1.90, 2.90, 1.55, -1.0925];    // hidden biases
+const V1 = [1.90, -0.45, -0.55, 0.00, 0.00];      // output row for x1
+const V2 = [0.00,  0.00,  0.00, -1.85, 1.75];     // output row for x2
+const c1 = -0.15, c2 = 1.55;
+
+function fdec(z){
+  let a=c1, b=c2;
+  for(let k=0;k<5;k++){
+    const h = Math.tanh(Wh[k]*z + bh[k]);
+    a += V1[k]*h; b += V2[k]*h;
+  }
+  return [a,b];
+}
+function fprime(z){
+  const e = 1e-4, p = fdec(z+e), m = fdec(z-e);
+  return [(p[0]-m[0])/(2*e), (p[1]-m[1])/(2*e)];
+}
+const SQ2PI = Math.sqrt(2*Math.PI);
+function prior(z){ return Math.exp(-0.5*z*z)/SQ2PI; }
+
+let sigma = 0.40;
+
+function condAt(x1,x2,z){                        // Pr(x|z,phi)
+  const m = fdec(z), s2 = 2*sigma*sigma;
+  const d = (x1-m[0])*(x1-m[0]) + (x2-m[1])*(x2-m[1]);
+  return Math.exp(-d/s2) / (2*Math.PI*sigma*sigma);
+}
+
+/* ---- latent quadrature grid (used for the marginal and the sweep) ---- */
+const NZ = 161;
+const zGrid = new Float64Array(NZ), zW = new Float64Array(NZ);
+const dz = SPAN/(NZ-1);
+for(let k=0;k<NZ;k++){
+  zGrid[k] = LO + k*dz;
+  zW[k] = prior(zGrid[k]) * dz * ((k===0||k===NZ-1)?0.5:1);   // trapezoid
+}
+
+/* ====================================================================
+   3. Colour map  (dark brown -> red -> orange -> white, as in the figure)
+   ==================================================================== */
+function buildCmap(stops){
+  const lut = new Uint8Array(256*3);
+  for(let i=0;i<256;i++){
+    const t = i/255;
+    let s=0; while(s<stops.length-2 && t>stops[s+1][0]) s++;
+    const a=stops[s], b=stops[s+1];
+    const f=Math.min(1,Math.max(0,(t-a[0])/(b[0]-a[0])));
+    lut[i*3  ] = a[1][0] + (b[1][0]-a[1][0])*f;
+    lut[i*3+1] = a[1][1] + (b[1][1]-a[1][1])*f;
+    lut[i*3+2] = a[1][2] + (b[1][2]-a[1][2])*f;
+  }
+  return lut;
+}
+const CMAP = buildCmap([
+  [0.00,[ 18,  7,  6]], [0.10,[ 40, 13,  9]], [0.28,[ 94, 28, 14]],
+  [0.46,[145, 53, 17]], [0.62,[192, 90, 30]], [0.76,[224,137, 71]],
+  [0.88,[244,189,141]], [1.00,[255,249,240]]
+]);
+const CZERO = 'rgb(18,7,6)';
+
+function fieldToCanvas(field, nx, ny, vmax, gamma, target){
+  const cn = target || document.createElement('canvas');
+  cn.width = nx; cn.height = ny;
+  const c2 = cn.getContext('2d');
+  const im = c2.createImageData(nx, ny);
+  const d = im.data;
+  const inv = 1/vmax;
+  for(let p=0;p<nx*ny;p++){
+    let t = field[p]*inv;
+    t = t<0?0:(t>1?1:t);
+    if(gamma!==1) t = Math.pow(t, gamma);
+    const idx = (t*255)|0, o=p*4, q=idx*3;
+    d[o]=CMAP[q]; d[o+1]=CMAP[q+1]; d[o+2]=CMAP[q+2]; d[o+3]=255;
+  }
+  c2.putImageData(im,0,0);
+  return cn;
+}
+
+/* ====================================================================
+   4. Density fields
+   ==================================================================== */
+// ---- slice planes (joint density on an x1 x x2 grid at fixed z) ----
+const SN = 176;
+const sx = new Float64Array(SN), sy = new Float64Array(SN);
+for(let i=0;i<SN;i++){ sx[i] = LO + (i+0.5)*SPAN/SN; sy[i] = LO + (i+0.5)*SPAN/SN; }
+const sliceField = [new Float64Array(SN*SN), new Float64Array(SN*SN), new Float64Array(SN*SN)];
+const sliceCv = [null,null,null];
+
+function buildSlice(slot, z){
+  const m = fdec(z), s2 = 2*sigma*sigma;
+  const w = prior(z)/(2*Math.PI*sigma*sigma);
+  const gx = new Float64Array(SN), gy = new Float64Array(SN);
+  for(let i=0;i<SN;i++){ const d=sx[i]-m[0]; gx[i]=Math.exp(-d*d/s2); }
+  for(let j=0;j<SN;j++){ const d=sy[j]-m[1]; gy[j]=Math.exp(-d*d/s2); }
+  const F = sliceField[slot];
+  for(let j=0;j<SN;j++){
+    const g = gy[j]*w, off=j*SN;
+    if(g < 1e-14){ F.fill(0, off, off+SN); continue; }
+    for(let i=0;i<SN;i++) F[off+i] = g*gx[i];
+  }
+  sliceCv[slot] = fieldToCanvas(F, SN, SN, jointVmax(), 0.72, sliceCv[slot]);
+}
+function jointVmax(){ return (1/(2*Math.PI*sigma*sigma)) * prior(0); }
+
+// ---- marginal panel ----
+const MX = 168, MY = 260;
+const mx1 = new Float64Array(MX), mx2 = new Float64Array(MY);
+for(let i=0;i<MX;i++) mx1[i] = LO + (i+0.5)*SPAN/MX;
+for(let j=0;j<MY;j++) mx2[j] = LO + (j+0.5)*SPAN/MY;
+const margAcc = new Float64Array(MX*MY);
+const margFull = new Float64Array(MX*MY);
+let margMax = 1, margCv = null;
+const _gx = new Float64Array(MX), _gy = new Float64Array(MY);
+
+function addSliceTo(acc, z, wt){
+  const m = fdec(z), s2 = 2*sigma*sigma;
+  const nrm = wt/(2*Math.PI*sigma*sigma);
+  for(let i=0;i<MX;i++){ const d=mx1[i]-m[0]; _gx[i]=Math.exp(-d*d/s2); }
+  for(let j=0;j<MY;j++){ const d=mx2[j]-m[1]; _gy[j]=Math.exp(-d*d/s2); }
+  for(let j=0;j<MY;j++){
+    const g=_gy[j]*nrm; if(g<1e-13) continue;
+    const off=j*MX;
+    for(let i=0;i<MX;i++) acc[off+i] += g*_gx[i];
+  }
+}
+function buildMarginal(){
+  margFull.fill(0);
+  for(let k=0;k<NZ;k++) addSliceTo(margFull, zGrid[k], zW[k]);
+  margMax = 0;
+  for(let p=0;p<margFull.length;p++) if(margFull[p]>margMax) margMax=margFull[p];
+}
+function marginalAt(x1,x2){
+  let s=0;
+  for(let k=0;k<NZ;k++) s += condAt(x1,x2,zGrid[k]) * zW[k];
+  return s;
+}
+
+/* ---- posterior over z for a given x ---- */
+const PN = 361;
+const pz = new Float64Array(PN), pp = new Float64Array(PN);
+for(let k=0;k<PN;k++) pz[k] = LO + k*SPAN/(PN-1);
+let post = {mean:0, sd:1, max:1, modes:1, evid:0};
+
+function buildPosterior(x1,x2){
+  let mx=-1;
+  for(let k=0;k<PN;k++){
+    pp[k] = condAt(x1,x2,pz[k]) * prior(pz[k]);
+    if(pp[k]>mx) mx=pp[k];
+  }
+  let s=0; const h=SPAN/(PN-1);
+  for(let k=0;k<PN;k++) s += pp[k]*h*((k===0||k===PN-1)?0.5:1);
+  const evid = s;
+  if(s<=0){ for(let k=0;k<PN;k++) pp[k]=prior(pz[k]); s=1; }
+  else     { for(let k=0;k<PN;k++) pp[k]/=s; }
+  let mean=0, m2=0, pmax=0;
+  for(let k=0;k<PN;k++){
+    const w=pp[k]*h*((k===0||k===PN-1)?0.5:1);
+    mean += pz[k]*w; m2 += pz[k]*pz[k]*w;
+    if(pp[k]>pmax) pmax=pp[k];
+  }
+  let modes=0;
+  for(let k=1;k<PN-1;k++)
+    if(pp[k]>pp[k-1] && pp[k]>=pp[k+1] && pp[k] > 0.18*pmax) modes++;
+  post = {mean:mean, sd:Math.sqrt(Math.max(0,m2-mean*mean)), max:pmax,
+          modes:Math.max(1,modes), evid:evid};
+}
+
+/* ====================================================================
+   5. State
+   ==================================================================== */
+let zA = -2.16, zB = 0.45;
+let pt = [1.28, -0.45];
+let dragging = false;
+let animating = false, animT0 = 0, animIdx = 0, animZ = LO;
+const ANIM_MS = 4200;
+
+/* ====================================================================
+   6. Canvas plumbing
+   ==================================================================== */
+const cv = document.getElementById('fig');
+const ctx = cv.getContext('2d');
+const pcv = document.getElementById('post');
+const pctx = pcv.getContext('2d');
+const PW = 470, PH = 162;
+let sc = 1, psc = 1;
+
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth || W;
+  cv.width  = Math.round(cssW*dpr);
+  cv.height = Math.round(cssW*H/W*dpr);
+  cv.style.height = (cssW*H/W) + 'px';
+  sc = cssW/W*dpr;
+
+  const pw = pcv.clientWidth || PW;
+  pcv.width = Math.round(pw*dpr);
+  pcv.height = Math.round(pw*PH/PW*dpr);
+  pcv.style.height = (pw*PH/PW)+'px';
+  psc = pw/PW*dpr;
+  draw();
+}
+
+/* ---- typography helpers (upright / italic / bold-italic runs + subscripts) ---- */
+const SERIF = '"Latin Modern Roman","Times New Roman",Times,serif';
+function fontFor(f, size){
+  if(f==='it') return 'italic '+size+'px '+SERIF;
+  if(f==='bi') return 'bold italic '+size+'px '+SERIF;
+  if(f==='bu') return 'bold '+size+'px '+SERIF;
+  return size+'px '+SERIF;
+}
+function richW(c, parts, size){
+  let w=0;
+  for(const p of parts){ c.font = fontFor(p.f, p.sub? size*0.72 : size); w += c.measureText(p.t).width; }
+  return w;
+}
+function rich(c, parts, x, y, size, align, halo){
+  const w = richW(c, parts, size);
+  const x0 = x - (align==='center'? w/2 : align==='right'? w : 0);
+  if(halo){
+    let cx=x0;
+    c.save(); c.strokeStyle=halo; c.lineWidth=2.6; c.lineJoin='round'; c.miterLimit=2;
+    for(const p of parts){
+      const s = p.sub ? size*0.72 : size;
+      c.font = fontFor(p.f, s);
+      c.strokeText(p.t, cx, y + (p.sub? size*0.23 : 0));
+      cx += c.measureText(p.t).width;
+    }
+    c.restore();
+  }
+  let cx = x0;
+  for(const p of parts){
+    const s = p.sub ? size*0.72 : size;
+    c.font = fontFor(p.f, s);
+    c.fillText(p.t, cx, y + (p.sub? size*0.23 : 0));
+    cx += c.measureText(p.t).width;
+  }
+  return w;
+}
+const L_X1 = [{t:'x',f:'it'},{t:'1',f:'it',sub:1}];
+const L_X2 = [{t:'x',f:'it'},{t:'2',f:'it',sub:1}];
+const L_Z  = [{t:'z',f:'it'}];
+const L_JOINT = [{t:'Pr(',f:'up'},{t:'x',f:'bi'},{t:', ',f:'up'},{t:'z',f:'it'},
+                 {t:'|',f:'up'},{t:'ϕ',f:'bi'},{t:')',f:'up'}];
+const L_MARG  = [{t:'Pr(',f:'up'},{t:'x',f:'bi'},{t:'|',f:'up'},{t:'ϕ',f:'bi'},{t:')',f:'up'}];
+
+/* ====================================================================
+   7. Occlusion:  a point (x1,x2,z) is hidden by a slice plane at zp>z
+      iff its projection falls inside that plane's parallelogram.
+   ==================================================================== */
+function occluded(x1,x2,z,planes){
+  for(let i=0;i<planes.length;i++){
+    const zp = planes[i];
+    if(zp <= z + 1e-9) continue;
+    const d = z - zp;                       // negative: sample is behind
+    const a = x1 + d*AZ1, b = x2 + d*AZ2;
+    if(a>=LO && a<=HI && b>=LO && b<=HI) return true;
+  }
+  return false;
+}
+
+// stroke a 3-D polyline, splitting it into visible / hidden runs
+function stroke3(samples, planes, st){
+  let run=[], occ=null;
+  const flush = ()=>{
+    if(run.length<2) { run=[]; return; }
+    ctx.save();
+    if(occ){ ctx.strokeStyle = st.hidden; ctx.lineWidth = st.hw!==undefined?st.hw:st.lw;
+             ctx.setLineDash(st.dash||[7,6]); ctx.globalAlpha = st.halpha!==undefined?st.halpha:0.85; }
+    else   { ctx.strokeStyle = st.color;  ctx.lineWidth = st.lw; ctx.setLineDash(st.vdash||[]); }
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath();
+    for(let i=0;i<run.length;i++){
+      const s=P(run[i][0],run[i][1],run[i][2]);
+      if(i===0) ctx.moveTo(s[0],s[1]); else ctx.lineTo(s[0],s[1]);
+    }
+    ctx.stroke(); ctx.restore();
+    run=[];
+  };
+  for(const s of samples){
+    const o = occluded(s[0],s[1],s[2],planes);
+    if(occ===null){ occ=o; run=[s]; }
+    else if(o===occ){ run.push(s); }
+    else { run.push(s); const keep=s; flush(); occ=o; run=[keep]; }
+  }
+  flush();
+}
+
+/* ====================================================================
+   8. Drawing the figure
+   ==================================================================== */
+const BROWN = '#9a4a20', TEAL='#8ed5d2', TEALD='#2b7d7d';
+
+function curveSamples(z0,z1,n){
+  const out=[];
+  for(let i=0;i<=n;i++){
+    const z = z0 + (z1-z0)*i/n, m = fdec(z);
+    out.push([m[0], m[1], z]);
+  }
+  return out;
+}
+
+function drawPlane(z, slot){
+  const org = P(LO, LO, z);
+  ctx.save();
+  ctx.translate(org[0], org[1]);
+  ctx.transform(EX1[0]/SN, EX1[1]/SN, EX2[0]/SN, EX2[1]/SN, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(sliceCv[slot], 0, 0);
+  ctx.restore();
+  // border
+  ctx.save();
+  ctx.strokeStyle = BROWN; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+  ctx.beginPath();
+  const c=[P(LO,LO,z),P(HI,LO,z),P(HI,HI,z),P(LO,HI,z)];
+  ctx.moveTo(c[0][0],c[0][1]);
+  for(let i=1;i<4;i++) ctx.lineTo(c[i][0],c[i][1]);
+  ctx.closePath(); ctx.stroke(); ctx.restore();
+}
+
+const CUBE_EDGES = (function(){
+  const E=[], v=[LO,HI];
+  for(const a of v) for(const b of v) E.push([[a,b,LO],[a,b,HI]]);
+  for(const a of v) for(const c of v) E.push([[a,LO,c],[a,HI,c]]);
+  for(const b of v) for(const c of v) E.push([[LO,b,c],[HI,b,c]]);
+  return E;
+})();
+
+function drawCube(planes){
+  for(const e of CUBE_EDGES){
+    const s=[];
+    for(let i=0;i<=48;i++){
+      const t=i/48;
+      s.push([e[0][0]+(e[1][0]-e[0][0])*t, e[0][1]+(e[1][1]-e[0][1])*t, e[0][2]+(e[1][2]-e[0][2])*t]);
+    }
+    stroke3(s, planes, {color:BROWN, lw:1.5, hidden:'rgba(154,74,32,0.42)', hw:1.1, dash:[5,5]});
+  }
+}
+
+function arrowHead(c, x, y, dx, dy, size, color){
+  const L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+  const px=-dy, py=dx;
+  c.save(); c.fillStyle=color; c.beginPath();
+  c.moveTo(x, y);
+  c.lineTo(x-dx*size + px*size*0.46, y-dy*size + py*size*0.46);
+  c.lineTo(x-dx*size*0.72, y-dy*size*0.72);
+  c.lineTo(x-dx*size - px*size*0.46, y-dy*size - py*size*0.46);
+  c.closePath(); c.fill(); c.restore();
+}
+
+function drawDot(c, x, y, r){
+  c.save();
+  c.fillStyle = TEALD; c.strokeStyle='#e8f6f5'; c.lineWidth=2;
+  c.beginPath(); c.arc(x,y,r,0,7); c.fill(); c.stroke(); c.restore();
+}
+
+function drawFigure(){
+  ctx.setTransform(sc,0,0,sc,0,0);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
+
+  const planes = animating ? [animZ] : [Math.min(zA,zB), Math.max(zA,zB)];
+  const slots  = animating ? [0]     : (zA<=zB ? [0,1] : [1,0]);
+
+  /* ---- slice planes, far to near ---- */
+  for(let i=0;i<planes.length;i++) drawPlane(planes[i], slots[i]);
+
+  /* ---- cube wireframe ---- */
+  drawCube(planes);
+
+  /* ---- decoder curve f(z) through the cube ---- */
+  const cs = curveSamples(-3.42, 3.42, 420);
+  stroke3(cs, planes, {color:TEAL, lw:4.2, hidden:'rgba(142,213,210,0.95)', hw:3.0, dash:[9,8]});
+  // arrow head at the high-z end
+  {
+    const e=fdec(3.42), d=fprime(3.42);
+    const p0=P(e[0],e[1],3.42);
+    const p1=P(e[0]+d[0]*0.01, e[1]+d[1]*0.01, 3.42+0.01);
+    arrowHead(ctx, p0[0], p0[1], p1[0]-p0[0], p1[1]-p0[1], 22, TEAL);
+  }
+
+  /* ---- line of constant x through the cube + posterior profile ---- */
+  if(pt){
+    // (i) the line of constant x threaded through the cube: the joint density
+    //     along it, renormalised, IS the posterior over z.
+    const lineS=[];
+    for(let i=0;i<=200;i++){ const z=LO+SPAN*i/200; lineS.push([pt[0],pt[1],z]); }
+    stroke3(lineS, planes, {color:'rgba(35,95,100,0.75)', lw:1.5, vdash:[5,5],
+                            hidden:'rgba(205,238,238,0.75)', hw:1.3, dash:[5,5]});
+    const zc = Math.max(LO,Math.min(HI,post.mean));
+    const pm = P(pt[0],pt[1],zc);
+    ctx.save(); ctx.fillStyle='#ffffff'; ctx.strokeStyle='#1f6e6e'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(pm[0],pm[1],4.6,0,7); ctx.fill(); ctx.stroke(); ctx.restore();
+
+    // (ii) that profile, drawn as a ribbon standing on the z axis itself
+    const hmax = 1.5;
+    const prof=[];
+    for(let i=0;i<=240;i++){
+      const z=LO+SPAN*i/240;
+      const k=Math.round((z-LO)/SPAN*(PN-1));
+      prof.push(P(LO, HI - hmax*pp[k]/post.max, z));
+    }
+    const b0=P(LO,HI,LO), b1=P(LO,HI,HI);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(b0[0],b0[1]);
+    for(const q of prof) ctx.lineTo(q[0],q[1]);
+    ctx.lineTo(b1[0],b1[1]); ctx.closePath();
+    ctx.fillStyle='rgba(74,190,188,0.38)'; ctx.fill();
+    ctx.strokeStyle='#33a5a2'; ctx.lineWidth=2.0; ctx.setLineDash([]);
+    ctx.beginPath();
+    for(let i=0;i<prof.length;i++){ if(i===0) ctx.moveTo(prof[i][0],prof[i][1]); else ctx.lineTo(prof[i][0],prof[i][1]); }
+    ctx.stroke();
+    // mean stem on the axis
+    const ta=P(LO,HI,zc), tb=P(LO,HI-hmax*1.03,zc);
+    ctx.strokeStyle='#1f6e6e'; ctx.lineWidth=1.6; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(ta[0],ta[1]); ctx.lineTo(tb[0],tb[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#1f6e6e';
+    ctx.beginPath(); ctx.arc(ta[0],ta[1],3.6,0,7); ctx.fill();
+    let kb=0; for(let k=0;k<PN;k++) if(pp[k]>pp[kb]) kb=k;
+    const bi=Math.round((pz[kb]-LO)/SPAN*240);
+    ctx.fillStyle='#14615f';
+    rich(ctx, [{t:'Pr(',f:'up'},{t:'z',f:'it'},{t:'|',f:'up'},{t:'x',f:'bi'},{t:',',f:'up'},
+               {t:'ϕ',f:'bi'},{t:')',f:'up'}],
+         prof[bi][0], prof[bi][1]-11, 19, 'center', 'rgba(255,255,255,0.92)');
+    ctx.restore();
+  }
+
+  /* ---- dots where the curve meets each slice ---- */
+  if(!animating){
+    for(const zz of [zA,zB]){
+      const m=fdec(zz), s=P(m[0],m[1],zz);
+      drawDot(ctx, s[0], s[1], 7);
+    }
+  } else {
+    const m=fdec(animZ), s=P(m[0],m[1],animZ);
+    drawDot(ctx, s[0], s[1], 7);
+  }
+
+  /* ---- cube axis labels ---- */
+  ctx.fillStyle='#1b1b1f';
+  rich(ctx, L_X1, 232, 52, 27, 'center');
+  rich(ctx, L_X2, 104, 262, 27, 'right');
+  rich(ctx, L_Z , 296, 506, 27, 'center');
+  rich(ctx, L_JOINT, 738, 520, 26, 'right');
+
+  /* ================= right panel : the marginal ================= */
+  const src = animating ? margAcc : margFull;
+  margCv = fieldToCanvas(src, MX, MY, margMax, 0.80, margCv);
+  ctx.save();
+  ctx.beginPath();
+  const rc=[Q(LO,LO),Q(HI,LO),Q(HI,HI),Q(LO,HI)];
+  ctx.moveTo(rc[0][0],rc[0][1]); for(let i=1;i<4;i++) ctx.lineTo(rc[i][0],rc[i][1]);
+  ctx.closePath(); ctx.clip();
+  ctx.save();
+  ctx.translate(RO[0],RO[1]);
+  ctx.transform(RU[0]/MX, RU[1]/MX, RV[0]/MY, RV[1]/MY, 0, 0);
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  ctx.drawImage(margCv,0,0);
+  ctx.restore();
+
+  // decoder curve projected into the marginal panel
+  ctx.strokeStyle=TEAL; ctx.lineWidth=3.4; ctx.lineCap='round'; ctx.setLineDash([]);
+  ctx.beginPath();
+  for(let i=0;i<=300;i++){
+    const z=-3.25+6.5*i/300, m=fdec(z), s=Q(m[0],m[1]);
+    if(i===0) ctx.moveTo(s[0],s[1]); else ctx.lineTo(s[0],s[1]);
+  }
+  ctx.stroke();
+  {
+    const e=fdec(3.25), d=fprime(3.25), p0=Q(e[0],e[1]);
+    const p1=Q(e[0]+d[0]*0.02, e[1]+d[1]*0.02);
+    arrowHead(ctx, p0[0], p0[1], p1[0]-p0[0], p1[1]-p0[1], 19, TEAL);
+  }
+  if(!animating){
+    for(const zz of [zA,zB]){ const m=fdec(zz), s=Q(m[0],m[1]); drawDot(ctx, s[0], s[1], 6); }
+  } else {
+    const m=fdec(animZ), s=Q(m[0],m[1]); drawDot(ctx, s[0], s[1], 6);
+  }
+  if(pt){
+    const s=Q(pt[0],pt[1]);
+    ctx.save();
+    ctx.strokeStyle='rgba(255,255,255,0.95)'; ctx.lineWidth=2.4;
+    ctx.beginPath(); ctx.arc(s[0],s[1],9,0,7); ctx.stroke();
+    ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(s[0],s[1],11.3,0,7); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,0.95)';
+    ctx.beginPath(); ctx.arc(s[0],s[1],2.4,0,7); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+  // panel frame
+  ctx.save(); ctx.strokeStyle='#2a2320'; ctx.lineWidth=1.6; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(rc[0][0],rc[0][1]);
+  for(let i=1;i<4;i++) ctx.lineTo(rc[i][0],rc[i][1]);
+  ctx.closePath(); ctx.stroke(); ctx.restore();
+
+  // panel labels
+  ctx.fillStyle='#1b1b1f';
+  rich(ctx, L_X1, (rc[0][0]+rc[1][0])/2, rc[0][1]-14, 27, 'center');
+  rich(ctx, L_X2, 784, 520, 27, 'right');
+  rich(ctx, L_MARG, (rc[3][0]+rc[2][0])/2, rc[3][1]+34, 26, 'center');
+
+  /* ================= marginalize annotation ================= */
+  const a0=[576,576], a1=[762,648];
+  ctx.save();
+  ctx.strokeStyle='#c2c2c2'; ctx.lineWidth=11; ctx.lineCap='butt'; ctx.setLineDash([]);
+  const dx=a1[0]-a0[0], dy=a1[1]-a0[1], dl=Math.hypot(dx,dy);
+  ctx.beginPath(); ctx.moveTo(a0[0],a0[1]);
+  ctx.lineTo(a1[0]-dx/dl*24, a1[1]-dy/dl*24); ctx.stroke();
+  arrowHead(ctx, a1[0], a1[1], dx, dy, 30, '#c2c2c2');
+  ctx.restore();
+  ctx.fillStyle='#1b1b1f';
+  ctx.font = '25px '+SERIF;
+  ctx.fillText('Marginalize over', 424, 600);
+  rich(ctx, [{t:'latent variable, ',f:'up'},{t:'z',f:'it'}], 424, 637, 25, 'left');
+
+  /* progress caption while sweeping */
+  if(animating){
+    ctx.fillStyle='#2b7d7d';
+    ctx.font='italic 22px '+SERIF;
+    ctx.fillText('∫  up to  z = '+animZ.toFixed(2), 150, 660);
+  }
+}
+
+/* ====================================================================
+   9. Posterior mini-plot
+   ==================================================================== */
+function drawPost(){
+  pctx.setTransform(psc,0,0,psc,0,0);
+  pctx.clearRect(0,0,PW,PH);
+  const L=44, R=PW-14, T=12, B=PH-38;
+  const X = z => L + (z-LO)/SPAN*(R-L);
+  let vmax = 0;
+  for(let k=0;k<PN;k++) vmax=Math.max(vmax,pp[k]);
+  vmax = Math.max(vmax, 0.42)*1.12;
+  const Y = p => B - p/vmax*(B-T);
+
+  // axis
+  pctx.strokeStyle='#cfcac2'; pctx.lineWidth=1; pctx.setLineDash([]);
+  pctx.beginPath(); pctx.moveTo(L,B); pctx.lineTo(R,B); pctx.stroke();
+  pctx.fillStyle='#8b8f96'; pctx.font='11px "Segoe UI",sans-serif'; pctx.textAlign='center';
+  for(let z=-3;z<=3;z++){
+    pctx.beginPath(); pctx.moveTo(X(z),B); pctx.lineTo(X(z),B+4); pctx.stroke();
+    pctx.fillText(String(z), X(z), B+16);
+  }
+  pctx.fillStyle='#8b8f96'; pctx.font='12px "Segoe UI",sans-serif';
+  pctx.fillText('latent variable  z', (L+R)/2, B+32);
+  pctx.textAlign='left';
+
+  // prior
+  pctx.strokeStyle='#b6b0a6'; pctx.lineWidth=1.4; pctx.setLineDash([4,4]);
+  pctx.beginPath();
+  for(let k=0;k<PN;k++){ const x=X(pz[k]), y=Y(prior(pz[k])); if(k===0)pctx.moveTo(x,y); else pctx.lineTo(x,y); }
+  pctx.stroke(); pctx.setLineDash([]);
+
+  // posterior
+  if(pt){
+    pctx.beginPath();
+    pctx.moveTo(X(pz[0]),B);
+    for(let k=0;k<PN;k++) pctx.lineTo(X(pz[k]),Y(pp[k]));
+    pctx.lineTo(X(pz[PN-1]),B); pctx.closePath();
+    pctx.fillStyle='rgba(47,143,143,0.22)'; pctx.fill();
+    pctx.strokeStyle='#2f8f8f'; pctx.lineWidth=2.1;
+    pctx.beginPath();
+    for(let k=0;k<PN;k++){ const x=X(pz[k]),y=Y(pp[k]); if(k===0)pctx.moveTo(x,y); else pctx.lineTo(x,y); }
+    pctx.stroke();
+    // mean
+    pctx.strokeStyle='#1f6e6e'; pctx.lineWidth=1.5; pctx.setLineDash([3,3]);
+    pctx.beginPath(); pctx.moveTo(X(post.mean),B); pctx.lineTo(X(post.mean),T+2); pctx.stroke();
+    pctx.setLineDash([]);
+  }
+  // slice markers
+  if(!animating){
+    const mk=(z,txt)=>{
+      pctx.strokeStyle='#b3541e'; pctx.lineWidth=1.6; pctx.setLineDash([]);
+      pctx.beginPath(); pctx.moveTo(X(z),B); pctx.lineTo(X(z),B-9); pctx.stroke();
+      pctx.fillStyle='#b3541e'; pctx.font='bold 10px "Segoe UI",sans-serif'; pctx.textAlign='center';
+      pctx.fillText(txt, X(z), B-12);
+    };
+    mk(zA,'A'); mk(zB,'B');
+  } else {
+    pctx.strokeStyle='#2f8f8f'; pctx.lineWidth=1.8;
+    pctx.beginPath(); pctx.moveTo(X(animZ),B); pctx.lineTo(X(animZ),T); pctx.stroke();
+  }
+  // y label
+  pctx.save();
+  pctx.translate(13, (T+B)/2); pctx.rotate(-Math.PI/2);
+  pctx.fillStyle='#8b8f96'; pctx.font='12px "Segoe UI",sans-serif'; pctx.textAlign='center';
+  pctx.fillText('density', 0, 0);
+  pctx.restore();
+  pctx.textAlign='left';
+}
+
+/* ====================================================================
+   10. Read-outs
+   ==================================================================== */
+function updateReadouts(){
+  document.getElementById('zAv').textContent = 'z = '+zA.toFixed(2)+
+     '   f(z) = ('+fdec(zA)[0].toFixed(2)+', '+fdec(zA)[1].toFixed(2)+')';
+  document.getElementById('zBv').textContent = 'z = '+zB.toFixed(2)+
+     '   f(z) = ('+fdec(zB)[0].toFixed(2)+', '+fdec(zB)[1].toFixed(2)+')';
+  document.getElementById('sgv').textContent = sigma.toFixed(2);
+  const pa = prior(zA), pb = prior(zB);
+  document.getElementById('slicereadout').innerHTML =
+    'Each slice is a spherical Gaussian centred on <b>f</b>[<i>z</i>,&phi;], weighted by the prior: '+
+    'Pr(<i>z</i><sub>A</sub>)&nbsp;=&nbsp;<b>'+pa.toFixed(3)+'</b>, '+
+    'Pr(<i>z</i><sub>B</sub>)&nbsp;=&nbsp;<b>'+pb.toFixed(3)+'</b>. '+
+    'Slices near <i>z</i>&nbsp;=&nbsp;0 are brighter because the prior gives them more mass.';
+
+  const r = document.getElementById('readout');
+  if(!pt){ r.textContent=''; return; }
+  let verdict;
+  if(post.modes>1) verdict = 'The posterior is <b>multimodal</b> &mdash; two separate stretches of the curve pass near this <b>x</b>, so the latent is genuinely ambiguous.';
+  else if(post.sd<0.30) verdict = 'Sharp posterior: this <b>x</b> sits on the decoder curve, so it pins the latent down tightly.';
+  else if(post.sd>0.80) verdict = 'Broad posterior &mdash; <b>x</b> is far from the curve, so it barely constrains <i>z</i> and the posterior falls back towards the prior.';
+  else verdict = 'Moderate uncertainty: several nearby latent values explain this <b>x</b> about equally well.';
+  r.innerHTML =
+    '<b>x</b> = ('+pt[0].toFixed(2)+', '+pt[1].toFixed(2)+')&nbsp; &rarr;&nbsp; '+
+    'E[<i>z</i>|<b>x</b>] = <b>'+post.mean.toFixed(2)+'</b>, sd = <b>'+post.sd.toFixed(2)+'</b>, '+
+    'modes = <b>'+post.modes+'</b>.<br>'+
+    'Evidence Pr(<b>x</b>|&phi;) = <b>'+post.evid.toExponential(2)+'</b> (the intractable integral, here done by quadrature).<br>'+
+    verdict;
+}
+
+/* ====================================================================
+   11. Rebuild + draw
+   ==================================================================== */
+function rebuildSlices(){ buildSlice(0, Math.min(zA,zB)); buildSlice(1, Math.max(zA,zB)); }
+function draw(){
+  if(!animating) rebuildSlices();
+  if(pt) buildPosterior(pt[0],pt[1]);
+  drawFigure();
+  drawPost();
+  updateReadouts();
+}
+
+/* ====================================================================
+   12. Interaction
+   ==================================================================== */
+function toLogical(e){
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX-r.left)/r.width*W, (e.clientY-r.top)/r.height*H];
+}
+function setPointFrom(e){
+  const l = toLogical(e);
+  const q = Qinv(l[0],l[1]);
+  pt = [Math.max(LO,Math.min(HI,q[0])), Math.max(LO,Math.min(HI,q[1]))];
+  draw();
+}
+cv.addEventListener('pointerdown', e=>{
+  const l = toLogical(e); const q = Qinv(l[0],l[1]);
+  if(q[2]>=-0.03 && q[2]<=1.03 && q[3]>=-0.03 && q[3]<=1.03){
+    dragging = true; cv.setPointerCapture(e.pointerId); setPointFrom(e); e.preventDefault();
+  }
+});
+cv.addEventListener('pointermove', e=>{
+  if(dragging){ setPointFrom(e); return; }
+  const l = toLogical(e); const q = Qinv(l[0],l[1]);
+  cv.style.cursor = (q[2]>=0&&q[2]<=1&&q[3]>=0&&q[3]<=1) ? 'grab' : 'default';
+});
+cv.addEventListener('pointerup',   ()=>{ dragging=false; });
+cv.addEventListener('pointercancel',()=>{ dragging=false; });
+
+const elA=document.getElementById('zA'), elB=document.getElementById('zB'),
+      elS=document.getElementById('sigma');
+elA.addEventListener('input', ()=>{ zA=+elA.value; if(animating) stopAnim(); draw(); });
+elB.addEventListener('input', ()=>{ zB=+elB.value; if(animating) stopAnim(); draw(); });
+elS.addEventListener('input', ()=>{
+  sigma=+elS.value;
+  buildMarginal();
+  if(animating) stopAnim();
+  draw();
+});
+
+document.getElementById('reset').addEventListener('click', ()=>{
+  stopAnim();
+  zA=-2.16; zB=0.45; sigma=0.40; pt=[1.28,-0.45];
+  elA.value=zA; elB.value=zB; elS.value=sigma;
+  buildMarginal(); draw();
+});
+
+const btn = document.getElementById('anim');
+function stopAnim(){
+  if(!animating) return;
+  animating=false; btn.innerHTML='&#9654;&nbsp; Animate marginalization over z';
+}
+btn.addEventListener('click', ()=>{
+  if(animating){ stopAnim(); draw(); return; }
+  animating=true; animIdx=0; animT0=performance.now();
+  margAcc.fill(0); animZ=zGrid[0];
+  btn.innerHTML='&#9632;&nbsp; Stop';
+  requestAnimationFrame(step);
+});
+function step(t){
+  if(!animating){ draw(); return; }
+  const frac = Math.min(1,(t-animT0)/ANIM_MS);
+  const target = Math.round(frac*(NZ-1));
+  while(animIdx<=target){ addSliceTo(margAcc, zGrid[animIdx], zW[animIdx]); animIdx++; }
+  animZ = zGrid[Math.min(NZ-1,target)];
+  buildSlice(0, animZ);
+  if(pt) buildPosterior(pt[0],pt[1]);
+  drawFigure(); drawPost();
+  if(frac>=1){ stopAnim(); draw(); return; }
+  requestAnimationFrame(step);
+}
+
+/* ====================================================================
+   13. Boot
+   ==================================================================== */
+window.addEventListener('resize', resize);
+buildMarginal();
+resize();
+})();
+</script>
+</body>
+</html>

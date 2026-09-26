@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reconstruction by Sinc Interpolation</title>
+<style>
+  :root{
+    --bg:#ffffff; --ink:#111318; --muted:#5c6470; --line:#d9dee6;
+    --blue:#2436d6; --green:#3fd41f; --green-d:#2aa513; --red:#ee1414; --gray:#9aa3af;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1500px;margin:0 auto;padding:18px 20px 30px;}
+  h1{font-size:19px;font-weight:650;margin:0 0 2px;letter-spacing:.2px}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 14px;line-height:1.45}
+  .figbox{border:1px solid var(--line);border-radius:10px;background:#fff;padding:6px 4px 0;}
+  svg{display:block;width:100%;height:auto}
+  .panelbar{display:flex;flex-wrap:wrap;gap:14px 26px;align-items:flex-start;
+    margin-top:14px;padding:13px 16px;border:1px solid var(--line);border-radius:10px;background:#fbfcfd}
+  .ctl{display:flex;flex-direction:column;gap:6px;font-size:13px}
+  .ctl .lab{font-weight:600;font-size:12.5px;letter-spacing:.2px}
+  input[type=range]{width:270px;accent-color:#2436d6}
+  .row{display:flex;align-items:center;gap:8px}
+  label.chk{display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;white-space:nowrap}
+  button{font:inherit;font-size:13px;padding:6px 13px;border:1px solid #c3cad6;border-radius:7px;
+    background:#fff;cursor:pointer;color:var(--ink)}
+  button:hover{background:#f0f3f8}
+  button.primary{background:#2436d6;border-color:#2436d6;color:#fff}
+  button.primary:hover{background:#1a2bb4}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace}
+  .status{font-size:12.8px;line-height:1.7;min-width:300px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:650;
+    letter-spacing:.3px}
+  .ok{background:#e4f8e2;color:#1c6a10;border:1px solid #b6e7ae}
+  .bad{background:#fdeaea;color:#a51111;border:1px solid #f4c0c0}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12.5px;color:var(--muted);
+    margin-top:12px;padding-left:2px}
+  .legend i{display:inline-block;width:26px;height:0;border-top-width:3px;border-top-style:solid;
+    vertical-align:middle;margin-right:7px}
+  .note{font-size:12.6px;color:var(--muted);margin-top:11px;line-height:1.55}
+  .eq{font-size:14px;margin-top:10px;color:#222}
+  em.v{font-family:"Times New Roman",Georgia,serif;font-style:italic;font-size:1.06em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Reconstruction of a continuous signal from its samples</h1>
+  <p class="sub">The sample train (left) is <b>convolved</b> with the sinc interpolation kernel (middle); the result (right) is the
+     sum of one scaled, shifted sinc per sample &mdash; a continuous curve that passes exactly through every sample tip.</p>
+
+  <div class="figbox">
+    <svg id="fig" viewBox="0 0 1470 366" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="Sample impulse train convolved with a sinc kernel equals the reconstructed continuous signal"></svg>
+  </div>
+
+  <div class="panelbar">
+    <div class="ctl">
+      <span class="lab">Sampling interval&nbsp; <span class="mono" id="tsOut">T<sub>s</sub> = 1.00</span></span>
+      <input id="ts" type="range" min="0.45" max="2.20" step="0.01" value="1.00">
+      <span style="font-size:11.5px;color:var(--muted)">dense sampling &larr;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; past the Nyquist limit</span>
+    </div>
+
+    <div class="ctl">
+      <span class="lab">Display</span>
+      <label class="chk"><input type="checkbox" id="copies" checked> show individual sinc copies (dashed green)</label>
+      <label class="chk"><input type="checkbox" id="orig" checked> show original band-limited signal <em class="v">x</em>(<em class="v">t</em>) (grey)</label>
+    </div>
+
+    <div class="ctl">
+      <span class="lab">Convolution sweep</span>
+      <div class="row">
+        <button id="play" class="primary">&#9654; Sweep the filter</button>
+        <button id="reset">Reset</button>
+      </div>
+      <span style="font-size:11.5px;color:var(--muted)">adds one sinc copy at a time, left to right</span>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="legend">
+    <span><i style="border-color:#2436d6"></i>samples <em class="v">x</em>(<em class="v">nT<sub>s</sub></em>)</span>
+    <span><i style="border-color:#3fd41f"></i>sinc kernel / scaled copies</span>
+    <span><i style="border-color:#ee1414"></i>reconstruction <em class="v">x&#770;</em>(<em class="v">t</em>) = sum of the copies</span>
+    <span><i style="border-color:#9aa3af;border-top-style:dashed"></i>original <em class="v">x</em>(<em class="v">t</em>)</span>
+  </div>
+
+  <p class="eq" style="text-align:center">
+    <em class="v">x&#770;</em>(<em class="v">t</em>) &nbsp;=&nbsp; &#8721;<sub>n</sub> &nbsp;<em class="v">x</em>(<em class="v">nT<sub>s</sub></em>)
+    &nbsp;sinc&#8202;( (<em class="v">t</em> &minus; <em class="v">nT<sub>s</sub></em>) / <em class="v">T<sub>s</sub></em> ),
+    &nbsp;&nbsp; sinc(<em class="v">u</em>) = sin(&pi;<em class="v">u</em>) / (&pi;<em class="v">u</em>)
+  </p>
+
+  <p class="note">
+    <b>Click any blue arrow in the right-hand panel</b> to remove that sample's sinc copy from the sum: the red curve
+    immediately stops passing through that sample, showing that reconstruction is a linear superposition in which every
+    sample carries its own interpolation function. The test signal is exactly band-limited to
+    <span class="mono">f<sub>max</sub> = 0.5</span> (time unit <span class="mono">T&#8320; = 1</span>), so the Nyquist condition here is
+    <span class="mono">T<sub>s</sub> &le; 1</span>.
+  </p>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Geometry / maths
+ * ------------------------------------------------------------------ */
+var SCALE = 37;        /* px per unit of time - identical in all three panels */
+var BASE  = 268;       /* y of the t-axis */
+var VS    = 150;       /* px per unit amplitude, panels A and C */
+var VSB   = 132;       /* px per unit amplitude, kernel panel B */
+
+var PA = { x0: 40,  w: 460 };
+var PB = { x0: 560, w: 370 };
+var PC = { x0: 985, w: 460 };
+PA.t0 = -3.4;  PA.t1 = PA.t0 + PA.w / SCALE;
+PC.t0 = PA.t0; PC.t1 = PA.t1;
+PB.t0 = -(PB.w / 2) / SCALE; PB.t1 = -PB.t0;
+
+function XA(t){ return PA.x0 + (t - PA.t0) * SCALE; }
+function XB(t){ return PB.x0 + (t - PB.t0) * SCALE; }
+function XC(t){ return PC.x0 + (t - PC.t0) * SCALE; }
+function Y (v){ return BASE - v * VS;  }
+function YB(v){ return BASE - v * VSB; }
+
+/* sinc(u) = sin(pi*u)/(pi*u) */
+function sinc(u){
+  var a = Math.abs(u);
+  if (a < 1e-9) return 1 - (Math.PI * Math.PI * u * u) / 6;
+  var p = Math.PI * a;
+  return Math.sin(p) / p;
+}
+
+/* The original continuous signal: a sum of sincs on a unit grid T0 = 1.
+   This is *exactly* band-limited to |f| <= 1/(2*T0) = 0.5, so the Nyquist
+   sampling interval is exactly T0 = 1.  The coefficients were chosen so that
+   sampling at Ts = 1 reproduces the sample pattern of the reference figure. */
+var CN0 = -2;
+var CN  = [0.28, 0.25, 0.65, 1.00, 0.72, 0.45, -0.22, -0.25, 0.20, 0.55];
+function xorig(t){
+  var s = 0;
+  for (var i = 0; i < CN.length; i++) s += CN[i] * sinc(t - (CN0 + i));
+  return s;
+}
+
+/* ------------------------------------------------------------------ *
+ *  State
+ * ------------------------------------------------------------------ */
+var state = { Ts: 1.00, copies: true, orig: true, excluded: {}, sweep: null };
+var timer = null;
+
+/* ------------------------------------------------------------------ *
+ *  Small SVG helpers
+ * ------------------------------------------------------------------ */
+function poly(pts, attrs){
+  if (!pts.length) return "";
+  var d = "M";
+  for (var i = 0; i < pts.length; i++){
+    d += (i ? "L" : "") + pts[i][0].toFixed(2) + " " + pts[i][1].toFixed(2);
+  }
+  return '<path d="' + d + '" fill="none" ' + attrs + '/>';
+}
+function axis(x0, x1, y, label){
+  var hl = 20, hw = 9;
+  return '<line x1="' + x0 + '" y1="' + y + '" x2="' + (x1 - hl + 3) + '" y2="' + y +
+         '" stroke="#111318" stroke-width="4.2"/>' +
+         '<path d="M' + (x1 - hl) + ' ' + (y - hw) + 'L' + x1 + ' ' + y + 'L' + (x1 - hl) + ' ' + (y + hw) +
+         'Z" fill="#111318"/>' +
+         '<text x="' + (x1 + 16) + '" y="' + (y + 30) + '" class="ax">' + label + '</text>';
+}
+/* vertical impulse arrow of signed height v (in signal units) */
+function impulse(x, v, colour, opacity){
+  var y0 = BASE, y1 = Y(v), up = v >= 0, hw = 7.2;
+  var hl = up ? 15 : -15;
+  if (Math.abs(y1 - y0) < 20) hl = (up ? 1 : -1) * Math.max(5, Math.abs(y1 - y0) * 0.6);
+  var tail = y1 + hl;
+  return '<g opacity="' + opacity + '">' +
+         '<line x1="' + x.toFixed(2) + '" y1="' + y0 + '" x2="' + x.toFixed(2) + '" y2="' + tail.toFixed(2) +
+         '" stroke="' + colour + '" stroke-width="3.6"/>' +
+         '<path d="M' + (x - hw).toFixed(2) + ' ' + tail.toFixed(2) + 'L' + x.toFixed(2) + ' ' + y1.toFixed(2) +
+         'L' + (x + hw).toFixed(2) + ' ' + tail.toFixed(2) + 'Z" fill="' + colour + '"/></g>';
+}
+
+/* ------------------------------------------------------------------ *
+ *  Main draw
+ * ------------------------------------------------------------------ */
+function samplesFor(Ts){
+  var out = [], kMin = Math.ceil((PA.t0 - 1.6) / Ts), kMax = Math.floor((PA.t1 + 1.6) / Ts);
+  for (var k = kMin; k <= kMax; k++) out.push({ k: k, t: k * Ts, v: xorig(k * Ts) });
+  return out;
+}
+
+function draw(){
+  var Ts = state.Ts, S = samplesFor(Ts), i, k, t, px, s = [];
+
+  var limit = (state.sweep === null) ? S.length : state.sweep;
+  var active = [];
+  for (i = 0; i < S.length; i++){
+    if (i < limit && !state.excluded[S[i].k]) active.push(S[i]);
+  }
+
+  s.push('<defs>' +
+    '<clipPath id="clipA"><rect x="' + (PA.x0 - 6) + '" y="46" width="' + (PA.w + 12) + '" height="300"/></clipPath>' +
+    '<clipPath id="clipB"><rect x="' + (PB.x0 - 6) + '" y="46" width="' + (PB.w + 12) + '" height="300"/></clipPath>' +
+    '<clipPath id="clipC"><rect x="' + (PC.x0 - 6) + '" y="46" width="' + (PC.w + 12) + '" height="300"/></clipPath>' +
+    '</defs>' +
+    '<style>' +
+      '.ax{font-family:"Times New Roman",Georgia,serif;font-style:italic;font-size:27px;fill:#111318;text-anchor:middle}' +
+      '.tick{font-family:"Times New Roman",Georgia,serif;font-style:italic;font-size:23px;fill:#111318;text-anchor:middle}' +
+      '.ttl{font-family:"Segoe UI",Arial,sans-serif;font-size:14px;fill:#5c6470;text-anchor:middle;font-style:normal}' +
+      '.cap{font-family:"Segoe UI",Arial,sans-serif;font-size:12.5px;fill:#828a96;text-anchor:middle;font-style:normal}' +
+      '.one{font-family:"Times New Roman",Georgia,serif;font-size:25px;fill:#111318;text-anchor:end}' +
+      '.hit{cursor:pointer}' +
+    '</style>');
+
+  /* ---------------- panel titles ---------------- */
+  s.push('<text class="ttl" x="' + (PA.x0 + PA.w / 2) + '" y="34">sampled signal &#160; &#8721; x(nT' +
+         '<tspan font-size="11" dy="4">s</tspan><tspan dy="-4">)&#160;&#948;(t &#8722; nT</tspan>' +
+         '<tspan font-size="11" dy="4">s</tspan><tspan dy="-4">)</tspan></text>');
+  s.push('<text class="ttl" x="' + (PB.x0 + PB.w / 2) + '" y="34">reconstruction kernel &#160; sinc(t / T' +
+         '<tspan font-size="11" dy="4">s</tspan><tspan dy="-4">)</tspan></text>');
+  s.push('<text class="ttl" x="' + (PC.x0 + PC.w / 2) + '" y="34">reconstructed signal &#160; x&#770;(t)</text>');
+
+  /* ================= PANEL A : impulse train ================= */
+  s.push('<g clip-path="url(#clipA)">');
+  for (i = 0; i < S.length; i++){
+    var xa = XA(S[i].t);
+    if (xa < PA.x0 + 4 || xa > PA.x0 + PA.w - 22) continue;
+    if (Math.abs(S[i].v) < 0.03) continue;              /* visually empty sample */
+    s.push(impulse(xa, S[i].v, "#2436d6", 1));
+  }
+  s.push('</g>');
+  s.push(axis(PA.x0, PA.x0 + PA.w, BASE, "t"));
+
+  /* tick labels -Ts, 0, Ts, 2Ts - thinned out when the samples get close together */
+  var gap = Ts * SCALE, keep;
+  if (gap >= 30)      keep = [-1, 0, 1, 2];
+  else if (gap >= 17) keep = [0, 2];
+  else                keep = [0];
+  var lab = [[-1, '&#8722;T<tspan font-size="15" dy="5">s</tspan>'], [0, "0"],
+             [1, 'T<tspan font-size="15" dy="5">s</tspan>'], [2, '2T<tspan font-size="15" dy="5">s</tspan>']];
+  for (i = 0; i < lab.length; i++){
+    k = lab[i][0]; t = k * Ts; px = XA(t);
+    if (keep.indexOf(k) < 0) continue;
+    if (px < PA.x0 + 2 || px > PA.x0 + PA.w - 24) continue;
+    s.push('<line x1="' + px.toFixed(1) + '" y1="' + (BASE - 8) + '" x2="' + px.toFixed(1) + '" y2="' + (BASE + 9) +
+           '" stroke="#111318" stroke-width="2"/>');
+    var v0 = xorig(t), ly = (v0 < -0.02) ? Y(v0) + 32 : BASE + 30;
+    s.push('<text class="tick" x="' + px.toFixed(1) + '" y="' + ly.toFixed(1) + '">' + lab[i][1] + '</text>');
+  }
+
+  /* ================= convolution symbol ================= */
+  var opx = (PA.x0 + PA.w + PB.x0) / 2 + 8;
+  s.push('<circle cx="' + opx + '" cy="' + (BASE - 6) + '" r="9.5" fill="none" stroke="#111318" stroke-width="3.4"/>');
+  s.push('<text class="cap" x="' + opx + '" y="' + (BASE - 30) + '">convolve</text>');
+
+  /* ================= PANEL B : the sinc kernel ================= */
+  var kp = [];
+  for (px = 0; px <= PB.w; px += 1){
+    t = PB.t0 + px / SCALE;
+    kp.push([PB.x0 + px, YB(sinc(t / Ts))]);
+  }
+  s.push('<g clip-path="url(#clipB)">' +
+         poly(kp, 'stroke="#3fd41f" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"') + '</g>');
+
+  var xb0 = XB(0);
+  s.push('<line x1="' + xb0 + '" y1="' + (BASE + 26) + '" x2="' + xb0 + '" y2="98" stroke="#111318" stroke-width="4.2"/>' +
+         '<path d="M' + (xb0 - 9) + ' 98L' + xb0 + ' 78L' + (xb0 + 9) + ' 98Z" fill="#111318"/>');
+  s.push('<line x1="' + (xb0 - 8) + '" y1="' + YB(1) + '" x2="' + (xb0 + 8) + '" y2="' + YB(1) +
+         '" stroke="#111318" stroke-width="2.6"/>');
+  s.push('<text class="one" x="' + (xb0 - 13) + '" y="' + (YB(1) + 9) + '">1</text>');
+  s.push(axis(PB.x0, PB.x0 + PB.w, BASE, "t"));
+  s.push('<text class="cap" x="' + (PB.x0 + PB.w / 2) + '" y="' + (BASE + 68) +
+         '">zero crossings every T<tspan font-size="10" dy="3">s</tspan><tspan dy="-3">&#160;: the kernel is 1 at its own sample and 0 at all the others</tspan></text>');
+
+  /* ================= equals sign ================= */
+  var eqx = (PB.x0 + PB.w + PC.x0) / 2;
+  s.push('<line x1="' + (eqx - 13) + '" y1="' + (BASE - 14) + '" x2="' + (eqx + 13) + '" y2="' + (BASE - 14) + '" stroke="#111318" stroke-width="4"/>');
+  s.push('<line x1="' + (eqx - 13) + '" y1="' + (BASE + 2)  + '" x2="' + (eqx + 13) + '" y2="' + (BASE + 2)  + '" stroke="#111318" stroke-width="4"/>');
+
+  /* ================= PANEL C : superposition ================= */
+  s.push('<g clip-path="url(#clipC)">');
+
+  if (state.orig){
+    var op = [];
+    for (px = 0; px <= PC.w; px += 1){ t = PC.t0 + px / SCALE; op.push([PC.x0 + px, Y(xorig(t))]); }
+    s.push(poly(op, 'stroke="#9aa3af" stroke-width="2" stroke-dasharray="4 5"'));
+  }
+
+  if (state.copies){
+    for (i = 0; i < S.length; i++){
+      if (i >= limit) continue;
+      var sm = S[i], off = !!state.excluded[sm.k];
+      var cp = [];
+      for (px = 0; px <= PC.w; px += 1){
+        t = PC.t0 + px / SCALE;
+        cp.push([PC.x0 + px, Y(sm.v * sinc((t - sm.t) / Ts))]);
+      }
+      var newest = (state.sweep !== null && i === limit - 1);
+      s.push(poly(cp, 'stroke="' + (off ? "#c9ced6" : (newest ? "#2aa513" : "#3fd41f")) +
+                 '" stroke-width="' + (newest ? 3.2 : 1.9) +
+                 '" stroke-dasharray="' + (newest ? "none" : "7 5") +
+                 '" opacity="' + (off ? 0.5 : 0.92) + '"'));
+    }
+  }
+
+  /* red reconstruction = sum of the active copies */
+  var rp = [];
+  for (px = 0; px <= PC.w; px += 1){
+    t = PC.t0 + px / SCALE;
+    var r = 0;
+    for (i = 0; i < active.length; i++) r += active[i].v * sinc((t - active[i].t) / Ts);
+    rp.push([PC.x0 + px, Y(r)]);
+  }
+  s.push(poly(rp, 'stroke="#ee1414" stroke-width="4.2" stroke-linejoin="round" stroke-linecap="round"'));
+
+  /* blue sample arrows (clickable) */
+  var hitRects = [];
+  for (i = 0; i < S.length; i++){
+    var sc = S[i], xc = XC(sc.t);
+    if (xc < PC.x0 + 4 || xc > PC.x0 + PC.w - 22) continue;
+    if (Math.abs(sc.v) < 0.03) continue;
+    var dead = !!state.excluded[sc.k] || i >= limit;
+    s.push(impulse(xc, sc.v, dead ? "#aab1bc" : "#2436d6", dead ? 0.5 : 1));
+    var yTop = Math.min(BASE, Y(sc.v)) - 10, hgt = Math.abs(Y(sc.v) - BASE) + 20;
+    hitRects.push('<rect class="hit" data-k="' + sc.k + '" x="' + (xc - 11).toFixed(1) + '" y="' + yTop.toFixed(1) +
+           '" width="22" height="' + hgt.toFixed(1) + '" fill="transparent" pointer-events="all"><title>sample at t = ' +
+           sc.t.toFixed(2) + ', value = ' + sc.v.toFixed(3) + ' — click to toggle its sinc copy</title></rect>');
+  }
+
+  if (state.sweep !== null && state.sweep > 0 && state.sweep <= S.length){
+    var cur = S[state.sweep - 1], xs = XC(cur.t);
+    s.push('<line x1="' + xs.toFixed(1) + '" y1="86" x2="' + xs.toFixed(1) + '" y2="' + (BASE + 52) +
+           '" stroke="#2aa513" stroke-width="1.6" stroke-dasharray="5 5" opacity="0.9"/>');
+  }
+  s.push(hitRects.join(""));
+  s.push('</g>');
+  s.push(axis(PC.x0, PC.x0 + PC.w, BASE, "t"));
+
+  document.getElementById("fig").innerHTML = s.join("");
+
+  var hits = document.querySelectorAll("#fig .hit");
+  for (i = 0; i < hits.length; i++){
+    hits[i].addEventListener("click", function(ev){
+      var kk = ev.currentTarget.getAttribute("data-k");
+      if (state.excluded[kk]) delete state.excluded[kk]; else state.excluded[kk] = true;
+      stopSweep();
+      draw();
+    });
+  }
+
+  updateStatus(S, active);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Status read-out
+ * ------------------------------------------------------------------ */
+function updateStatus(S, active){
+  var Ts = state.Ts, i, px, t;
+  var se = 0, n = 0, peak = 0;
+  for (px = 0; px <= PC.w; px += 2){
+    t = PC.t0 + px / SCALE;
+    var r = 0;
+    for (i = 0; i < active.length; i++) r += active[i].v * sinc((t - active[i].t) / Ts);
+    var o = xorig(t);
+    se += (r - o) * (r - o); n++;
+    if (Math.abs(o) > peak) peak = Math.abs(o);
+  }
+  var rms = Math.sqrt(se / n) / (peak || 1) * 100;
+  var fs = 1 / Ts, ok = Ts <= 1.0001;
+  var nOff = 0, kk;
+  for (kk in state.excluded) if (Object.prototype.hasOwnProperty.call(state.excluded, kk)) nOff++;
+
+  document.getElementById("tsOut").innerHTML = "T<sub>s</sub> = " + Ts.toFixed(2);
+  document.getElementById("status").innerHTML =
+    '<span class="pill ' + (ok ? "ok" : "bad") + '">' +
+      "f<sub>s</sub> = " + fs.toFixed(2) + (ok ? " &#8805; " : " &lt; ") + "2f<sub>max</sub> = 1.00 &#160;&#8226;&#160; " +
+      (ok ? "Nyquist satisfied" : "undersampled &#8594; aliasing") +
+    '</span><br>' +
+    '<span class="mono">samples in view: ' + S.length + (nOff ? "&#160;&#160;(" + nOff + " switched off)" : "") + '</span><br>' +
+    '<span class="mono">error vs. original: ' + rms.toFixed(1) + "% of peak</span>" +
+    (state.sweep !== null ? '<br><span class="mono">sweep: ' + state.sweep + " / " + S.length + " copies added</span>" : "");
+}
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+function stopSweep(){
+  if (timer){ clearInterval(timer); timer = null; }
+  state.sweep = null;
+  document.getElementById("play").innerHTML = "&#9654; Sweep the filter";
+}
+function startSweep(){
+  var total = samplesFor(state.Ts).length;
+  state.sweep = 0;
+  document.getElementById("play").innerHTML = "&#9632; Stop";
+  timer = setInterval(function(){
+    state.sweep++;
+    if (state.sweep > total){ stopSweep(); }
+    draw();
+  }, 330);
+  draw();
+}
+
+document.getElementById("ts").addEventListener("input", function(e){
+  state.Ts = parseFloat(e.target.value);
+  state.excluded = {};
+  stopSweep();
+  draw();
+});
+document.getElementById("copies").addEventListener("change", function(e){ state.copies = e.target.checked; draw(); });
+document.getElementById("orig").addEventListener("change",   function(e){ state.orig   = e.target.checked; draw(); });
+document.getElementById("play").addEventListener("click", function(){
+  if (timer){ stopSweep(); draw(); } else { startSweep(); }
+});
+document.getElementById("reset").addEventListener("click", function(){
+  stopSweep();
+  state.excluded = {}; state.Ts = 1.00; state.copies = true; state.orig = true;
+  document.getElementById("ts").value = "1.00";
+  document.getElementById("copies").checked = true;
+  document.getElementById("orig").checked = true;
+  draw();
+});
+
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reprojection Error</title>
+<style>
+  :root{
+    --bg:#f4f5f7;
+    --panel:#ffffff;
+    --ink:#16181d;
+    --muted:#5c6470;
+    --line:#d7dbe2;
+    --accent:#1f6feb;
+    --red:#e8112d;
+    --cyan:#35b7e8;
+    --green:#12c012;
+    --orange:#f2a01e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px; line-height:1.45;
+  }
+  .wrap{max-width:1420px;margin:0 auto;padding:18px 20px 34px}
+  header h1{font-size:21px;margin:0 0 4px;letter-spacing:-0.01em}
+  header p{margin:0 0 14px;color:var(--muted);max-width:1000px}
+  .layout{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .stage{
+    flex:1 1 640px; min-width:520px; background:#fff;
+    border:1px solid var(--line); border-radius:10px; padding:8px 8px 4px;
+    box-shadow:0 1px 2px rgba(16,20,28,.05);
+  }
+  canvas{width:100%;height:auto;display:block;cursor:default;touch-action:none}
+  .stagefoot{color:var(--muted);font-size:12.5px;padding:4px 6px 8px}
+  .panel{
+    flex:0 0 366px; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:14px 15px 16px; box-shadow:0 1px 2px rgba(16,20,28,.05);
+  }
+  .panel h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    margin:16px 0 8px;border-bottom:1px solid var(--line);padding-bottom:5px}
+  .panel h2:first-child{margin-top:0}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 78px;font-size:12.5px;color:var(--muted)}
+  .row input[type=range]{flex:1 1 auto;min-width:0;accent-color:var(--accent)}
+  .row .val{flex:0 0 66px;text-align:right;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+  .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  button{
+    font:inherit;font-size:12.5px;padding:6px 10px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--line);background:#fbfcfd;color:var(--ink);
+  }
+  button:hover{background:#eef2f7;border-color:#b9c2ce}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#1a5fd0}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-bottom:4px}
+  .seg button{border:0;border-radius:0;flex:1 1 50%;background:#fff;padding:7px 4px}
+  .seg button.on{background:var(--accent);color:#fff}
+  table.res{width:100%;border-collapse:collapse;font-size:12.5px;
+    font-variant-numeric:tabular-nums}
+  table.res th{font-weight:600;color:var(--muted);text-align:right;padding:2px 3px;font-size:11.5px}
+  table.res th:first-child{text-align:left}
+  table.res td{padding:3px;text-align:right;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  table.res td:first-child{text-align:left;font-family:inherit}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;
+    border:1px solid #222;margin-right:5px;vertical-align:baseline}
+  .bar{height:5px;border-radius:3px;background:#eceff3;overflow:hidden;margin-top:3px}
+  .bar > i{display:block;height:100%;background:#ff2020}
+  .total{
+    margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fafbfc;
+  }
+  .total.hi{border-color:#ff9c9c;background:#fff5f5}
+  .formula{font-family:"Times New Roman",Times,serif;font-size:15px;text-align:center;margin:2px 0 7px}
+  .bignum{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .sub{color:var(--muted);font-size:11.5px}
+  .chk{display:flex;align-items:center;gap:7px;margin:5px 0;font-size:12.5px;color:#39414d}
+  .chk input{accent-color:var(--accent)}
+  .note{font-size:12px;color:var(--muted);margin-top:9px}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;margin:2px 0 0}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .sw{width:14px;height:14px;border-radius:3px;border:1px solid #333}
+  #status{font-size:12px;color:var(--accent);min-height:16px;margin-top:6px}
+  @media (max-width:980px){ .panel{flex:1 1 100%} .stage{min-width:0;flex:1 1 100%} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Reprojection error — the objective function of camera calibration</h1>
+    <p>Three scene points <b>P</b><sub>1</sub>,&nbsp;<b>P</b><sub>2</sub>,&nbsp;<b>P</b><sub>3</sub> project through the real camera onto its image plane, giving the <b>observed</b> image points <b>p</b><sub>i</sub>.
+    Projecting the same 3D points with the <b>estimated</b> camera model (K&#770;, R&#770;, T&#770;) gives the predicted points <b>p&#8242;</b><sub>i</sub>.
+    The red segment between each pair is the 2D residual; calibration/bundle adjustment minimises the sum of their squared lengths.</p>
+  </header>
+
+  <div class="layout">
+    <div class="stage">
+      <canvas id="cv" width="920" height="670"></canvas>
+      <div class="stagefoot">
+        <b>Drag:</b> an observed point <b>p</b><sub>i</sub> (move the measurement) &middot; a predicted point <b>p&#8242;</b><sub>i</sub> (shifts the estimated principal point — all three move together) &middot; a 3D point <b>P</b><sub>i</sub> &middot; empty space to orbit the view.
+      </div>
+    </div>
+
+    <aside class="panel">
+      <h2>Error display</h2>
+      <div class="seg">
+        <button id="modeInd" class="on">Individual residuals</button>
+        <button id="modeAgg">Total (sum of squares)</button>
+      </div>
+
+      <table class="res" id="restable">
+        <thead><tr><th>point</th><th>r<sub>u</sub></th><th>r<sub>v</sub></th><th>&#8214;r&#8214; (px)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="total" id="totalbox">
+        <div class="formula">E = &Sigma;<sub>i</sub> &#8214; <b>p</b><sub>i</sub> &minus; &pi;(K&#770;,R&#770;,T&#770;;&nbsp;<b>P</b><sub>i</sub>) &#8214;<sup>2</sup></div>
+        <div><span class="bignum" id="sse">0.0</span> <span class="sub">px&sup2;</span></div>
+        <div class="sub">RMS residual <span id="rms">0.0</span> px &nbsp;&middot;&nbsp; max <span id="maxr">0.0</span> px</div>
+      </div>
+
+      <h2>Estimated rotation R&#770;</h2>
+      <div class="row"><label>yaw</label><input type="range" id="yaw" min="-7" max="7" step="0.05" value="3.0"><span class="val" id="yawv"></span></div>
+      <div class="row"><label>pitch</label><input type="range" id="pitch" min="-7" max="7" step="0.05" value="-2.0"><span class="val" id="pitchv"></span></div>
+      <div class="row"><label>roll</label><input type="range" id="roll" min="-7" max="7" step="0.05" value="1.2"><span class="val" id="rollv"></span></div>
+
+      <h2>Estimated centre T&#770;</h2>
+      <div class="row"><label>t<sub>x</sub></label><input type="range" id="tx" min="-0.6" max="0.6" step="0.005" value="0.05"><span class="val" id="txv"></span></div>
+      <div class="row"><label>t<sub>y</sub></label><input type="range" id="ty" min="-0.6" max="0.6" step="0.005" value="-0.04"><span class="val" id="tyv"></span></div>
+      <div class="row"><label>t<sub>z</sub></label><input type="range" id="tz" min="-0.9" max="0.9" step="0.005" value="0.14"><span class="val" id="tzv"></span></div>
+
+      <h2>Estimated intrinsics K&#770;</h2>
+      <div class="row"><label>focal f&#770;</label><input type="range" id="f" min="390" max="660" step="1" value="550"><span class="val" id="fv"></span></div>
+      <div class="row"><label>c&#770;<sub>x</sub></label><input type="range" id="cx" min="220" max="460" step="1" value="340"><span class="val" id="cxv"></span></div>
+      <div class="row"><label>c&#770;<sub>y</sub></label><input type="range" id="cy" min="145" max="385" step="1" value="265"><span class="val" id="cyv"></span></div>
+      <div class="sub">true camera: f = 520 px, c = (340, 265) px, R = I, T = 0. Image size 680&times;530 px.</div>
+
+      <div class="btns">
+        <button class="primary" id="fit">Fit camera (minimise E)</button>
+        <button id="truth">Set estimate = truth</button>
+        <button id="perturb">Perturb</button>
+        <button id="noise">Add measurement noise</button>
+        <button id="reset">Reset figure</button>
+      </div>
+      <div id="status"></div>
+
+      <h2>Show</h2>
+      <div class="chk"><input type="checkbox" id="showRays" checked><label for="showRays">projection rays through the image plane</label></div>
+      <div class="chk"><input type="checkbox" id="showEst" checked><label for="showEst">estimated camera pose (ghost frame)</label></div>
+      <div class="chk"><input type="checkbox" id="showSensor" checked><label for="showSensor">image-plane border &amp; axes</label></div>
+
+      <h2>Legend</h2>
+      <div class="legend">
+        <span><i class="sw" style="background:#f2a01e"></i>scene / image triangle</span>
+        <span><i class="sw" style="background:#ff2020"></i>residual <b>r</b><sub>i</sub></span>
+        <span><i class="sw" style="background:#12c012"></i>camera frame X<sub>L</sub>Y<sub>L</sub>Z<sub>L</sub></span>
+      </div>
+      <div class="note">With no measurement noise the observed points lie exactly on the dashed rays from the true camera centre; a grey ring marks that exact piercing point whenever an observation has been displaced. The predicted points do not — that gap is what the optimiser drives to zero.</div>
+    </aside>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Geometry conventions
+   ------------------------------------------------------------
+   World frame == TRUE camera frame (right handed):
+     +Z forward (optical axis), +Y up, +X to the left.
+   True camera:  R = I, centre C = (0,0,0), K = [f 0 cx; 0 f cy; 0 0 1]
+   Image plane is drawn as the physical plane Z = 1 (one focal length,
+   in normalised units), so pixel (u,v) sits at
+       ( (u-cx)/f , (v-cy)/f , 1 ).
+   Observed points therefore lie exactly on the ray C->P.
+   The estimated camera has its own R,C,K; its predictions are pixel
+   coordinates and are drawn on the SAME sensor, which is where the
+   residual is measured.
+   ============================================================ */
+
+/* ---------- small vector / matrix helpers ---------- */
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const len=a=>Math.hypot(a[0],a[1],a[2]);
+const unit=a=>{const l=len(a)||1;return [a[0]/l,a[1]/l,a[2]/l];};
+const mv=(M,v)=>[M[0][0]*v[0]+M[0][1]*v[1]+M[0][2]*v[2],
+                 M[1][0]*v[0]+M[1][1]*v[1]+M[1][2]*v[2],
+                 M[2][0]*v[0]+M[2][1]*v[1]+M[2][2]*v[2]];
+const mm=(A,B)=>{const C=[[0,0,0],[0,0,0],[0,0,0]];
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++){let s=0;for(let k=0;k<3;k++)s+=A[i][k]*B[k][j];C[i][j]=s;}return C;};
+const transp=A=>[[A[0][0],A[1][0],A[2][0]],[A[0][1],A[1][1],A[2][1]],[A[0][2],A[1][2],A[2][2]]];
+const Rx=t=>[[1,0,0],[0,Math.cos(t),-Math.sin(t)],[0,Math.sin(t),Math.cos(t)]];
+const Ry=t=>[[Math.cos(t),0,Math.sin(t)],[0,1,0],[-Math.sin(t),0,Math.cos(t)]];
+const Rz=t=>[[Math.cos(t),-Math.sin(t),0],[Math.sin(t),Math.cos(t),0],[0,0,1]];
+const D2R=Math.PI/180;
+
+/* ---------- the true camera ---------- */
+const KT={f:520, cx:340, cy:265, W:680, H:530};
+
+/* ---------- state ---------- */
+const DEFAULT_P=[[-1.02,0.442,3.40],[-0.168,-0.616,2.80],[0.66,0.352,2.20]];
+let P=DEFAULT_P.map(p=>p.slice());          // 3D scene points (world = true cam frame)
+let obsOff=[[0,0],[0,0],[0,0]];             // measurement offset added to the true projection (px)
+
+const EST_DEFAULT={yaw:3.0,pitch:-2.0,roll:1.2,tx:0.05,ty:-0.04,tz:0.14,f:550,cx:340,cy:265};
+let est=Object.assign({},EST_DEFAULT);
+
+const VIEW_DEFAULT={az:-(Math.PI-31*D2R), el:27*D2R, dist:6.5, fov:34*D2R};
+const view={az:VIEW_DEFAULT.az, el:VIEW_DEFAULT.el, dist:VIEW_DEFAULT.dist,
+            target:[0,0,1.55], fov:VIEW_DEFAULT.fov};
+let zoomK=1, panX=0, panY=0;                 // screen-space framing (set by fitView)
+let mode='ind';                              // 'ind' | 'agg'
+const show={rays:true, est:true, sensor:true};
+
+/* ---------- projection with the two cameras ---------- */
+function projTrue(p){                        // world point -> pixels
+  return [KT.f*p[0]/p[2]+KT.cx, KT.f*p[1]/p[2]+KT.cy];
+}
+function estR(){ return mm(Rz(est.roll*D2R), mm(Rx(est.pitch*D2R), Ry(est.yaw*D2R))); }
+function estC(){ return [est.tx,est.ty,est.tz]; }
+function projEst(p,R,C){
+  R=R||estR(); C=C||estC();
+  const xc=mv(R,sub(p,C));
+  const z=Math.max(xc[2],0.05);
+  return [est.f*xc[0]/z+est.cx, est.f*xc[1]/z+est.cy];
+}
+function pix2world(u,v){ return [(u-KT.cx)/KT.f,(v-KT.cy)/KT.f,1]; }
+
+function observed(i){ const t=projTrue(P[i]); return [t[0]+obsOff[i][0], t[1]+obsOff[i][1]]; }
+function predicted(i){ return projEst(P[i]); }
+function residual(i){ const o=observed(i),q=predicted(i); return [q[0]-o[0], q[1]-o[1]]; }
+
+/* ---------- view camera ---------- */
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const CW=920, CH=670;
+let B=null, SCALE=1;
+function updateBasis(){
+  const d=[Math.cos(view.el)*Math.sin(view.az), Math.sin(view.el), Math.cos(view.el)*Math.cos(view.az)];
+  const eye=add(view.target, mul(d,view.dist));
+  const f=unit(mul(d,-1));
+  const r=unit(cross(f,[0,1,0]));
+  const u=cross(r,f);
+  SCALE=(CH/2)/Math.tan(view.fov/2);
+  B={eye,f,r,u};
+}
+function proj(p){
+  const d=sub(p,B.eye);
+  const z=dot(d,B.f);
+  const zz=Math.max(z,0.02);
+  return {x:CW/2+panX+dot(d,B.r)*SCALE*zoomK/zz, y:CH/2+panY-dot(d,B.u)*SCALE*zoomK/zz, z};
+}
+function screenRay(sx,sy){
+  const a=(sx-CW/2-panX)/(SCALE*zoomK), b=-(sy-CH/2-panY)/(SCALE*zoomK);
+  const dir=unit(add(add(mul(B.r,a), mul(B.u,b)), B.f));
+  return {o:B.eye, d:dir};
+}
+/* frame every important element with a margin (labels need room) */
+function fitView(){
+  zoomK=1; panX=0; panY=0; updateBasis();
+  const pts=[[0,0,0]].concat(P);
+  for(const c of [[0,0],[KT.W,0],[KT.W,KT.H],[0,KT.H]]) pts.push(pix2world(c[0],c[1]));
+  for(let i=0;i<3;i++){ const o=observed(i),q=predicted(i);
+    pts.push(pix2world(o[0],o[1]),pix2world(q[0],q[1])); }
+  pts.push([0.5,0,0],[0,0.5,0],[0,0,0.5]);             // triad tips
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(const p of pts){ const s=proj(p);
+    x0=Math.min(x0,s.x);x1=Math.max(x1,s.x);y0=Math.min(y0,s.y);y1=Math.max(y1,s.y); }
+  const mL=62,mR=74,mT=54,mB=54;
+  zoomK=Math.min((CW-mL-mR)/Math.max(x1-x0,1),(CH-mT-mB)/Math.max(y1-y0,1));
+  // recompute the box at the new zoom (it scales about the canvas centre) and centre it
+  const cx0=CW/2+(x0-CW/2)*zoomK, cx1=CW/2+(x1-CW/2)*zoomK;
+  const cy0=CH/2+(y0-CH/2)*zoomK, cy1=CH/2+(y1-CH/2)*zoomK;
+  panX=(mL+(CW-mR))/2-(cx0+cx1)/2;
+  panY=(mT+(CH-mB))/2-(cy0+cy1)/2;
+}
+function hitImagePlane(sx,sy){               // intersect with plane Z = 1
+  const {o,d}=screenRay(sx,sy);
+  if(Math.abs(d[2])<1e-6) return null;
+  const t=(1-o[2])/d[2];
+  if(t<=0) return null;
+  return add(o,mul(d,t));
+}
+
+/* ---------- drawing primitives ---------- */
+function mvTo(p){const s=proj(p);ctx.moveTo(s.x,s.y);}
+function lnTo(p){const s=proj(p);ctx.lineTo(s.x,s.y);}
+function line(a,b,color,w,dash){
+  ctx.save(); ctx.setLineDash(dash||[]); ctx.strokeStyle=color; ctx.lineWidth=w;
+  ctx.lineCap='round'; ctx.beginPath(); mvTo(a); lnTo(b); ctx.stroke(); ctx.restore();
+}
+function poly(pts,fill,stroke,w){
+  ctx.beginPath(); mvTo(pts[0]); for(let i=1;i<pts.length;i++) lnTo(pts[i]); ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=w||3;ctx.lineJoin='round';ctx.stroke();}
+}
+function disc(p,r,fill,stroke,w){
+  const s=proj(p);
+  ctx.beginPath(); ctx.arc(s.x,s.y,r,0,7); ctx.fillStyle=fill; ctx.fill();
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=w||2;ctx.stroke();}
+  return s;
+}
+function arrow3(a,b,color,w,head){
+  const A=proj(a),Bp=proj(b);
+  const dx=Bp.x-A.x, dy=Bp.y-A.y, L=Math.hypot(dx,dy)||1;
+  const ux=dx/L, uy=dy/L, h=head||13;
+  ctx.save(); ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=w; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(Bp.x-ux*h*0.85,Bp.y-uy*h*0.85); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(Bp.x,Bp.y);
+  ctx.lineTo(Bp.x-ux*h+uy*h*0.42, Bp.y-uy*h-ux*h*0.42);
+  ctx.lineTo(Bp.x-ux*h-uy*h*0.42, Bp.y-uy*h+ux*h*0.42);
+  ctx.closePath(); ctx.fill(); ctx.restore();
+}
+/* math-style label: base + optional prime + subscript, with white halo */
+function mathLabel(sx,sy,base,sub_,opt){
+  opt=opt||{};
+  const size=opt.size||23, small=Math.round(size*0.68);
+  const bold=opt.bold===false?'':'bold ';
+  const fam='"Times New Roman",Times,serif';
+  const fB=`${bold}${opt.italic?'italic ':''}${size}px ${fam}`;
+  const fS=`${bold}${opt.italic?'italic ':''}${small}px ${fam}`;
+  ctx.font=fB; const w1=ctx.measureText(base).width;
+  const pr=opt.prime?'′':''; const wp=pr?ctx.measureText(pr).width:0;
+  ctx.font=fS; const w2=sub_?ctx.measureText(sub_).width:0;
+  const total=w1+wp+w2;
+  let x=sx;
+  if(opt.align==='center') x=sx-total/2;
+  else if(opt.align==='right') x=sx-total;
+  const y=sy;
+  ctx.save();
+  ctx.lineJoin='round'; ctx.miterLimit=2;
+  ctx.strokeStyle='rgba(255,255,255,0.95)'; ctx.lineWidth=5;
+  ctx.fillStyle=opt.color||'#111';
+  ctx.textBaseline='alphabetic';
+  ctx.font=fB; ctx.strokeText(base,x,y); ctx.fillText(base,x,y);
+  if(pr){ ctx.font=fB; ctx.strokeText(pr,x+w1,y-size*0.30); ctx.fillText(pr,x+w1,y-size*0.30); }
+  if(sub_){ ctx.font=fS; ctx.strokeText(sub_,x+w1+wp,y+size*0.26); ctx.fillText(sub_,x+w1+wp,y+size*0.26); }
+  ctx.restore();
+  return total;
+}
+function plainLabel(sx,sy,txt,opt){
+  opt=opt||{};
+  ctx.save();
+  ctx.font=opt.font||'600 13px -apple-system,Segoe UI,Roboto,sans-serif';
+  ctx.textAlign=opt.align||'left'; ctx.textBaseline=opt.baseline||'alphabetic';
+  ctx.lineJoin='round'; ctx.miterLimit=2;
+  ctx.strokeStyle='rgba(255,255,255,0.95)'; ctx.lineWidth=4; ctx.strokeText(txt,sx,sy);
+  ctx.fillStyle=opt.color||'#333'; ctx.fillText(txt,sx,sy);
+  ctx.restore();
+}
+
+/* ---------- colours ---------- */
+const COL=['#e8112d','#35b7e8','#12c012'];
+const ORANGE='rgba(244,166,35,0.92)';
+const ORANGE2='rgba(244,166,35,0.88)';
+const INK='#111318';
+const GREEN='#12c012';
+
+/* ---------- main draw ---------- */
+let hover=null, drag=null;
+function draw(){
+  updateBasis();
+  ctx.clearRect(0,0,CW,CH);
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
+
+  const C0=[0,0,0];
+  const obs=[0,1,2].map(i=>observed(i));
+  const prd=[0,1,2].map(i=>predicted(i));
+  const obs3=obs.map(o=>pix2world(o[0],o[1]));
+  const prd3=prd.map(o=>pix2world(o[0],o[1]));
+
+  /* sensor corners on the plane Z = 1 */
+  const corner=[pix2world(0,KT.H),pix2world(KT.W,KT.H),pix2world(KT.W,0),pix2world(0,0)];
+
+  /* --- 1. scene triangle (farthest) --- */
+  poly(P,ORANGE,INK,4);
+
+  /* --- 2. projection rays, full length (they pass behind the plane) --- */
+  if(show.rays){
+    for(let i=0;i<3;i++) line(C0,P[i],'#22262e',1.8,[9,7]);
+  }
+
+  /* --- 3. image plane: translucent white so whatever is behind it greys out --- */
+  poly(corner,'rgba(255,255,255,0.80)', show.sensor?INK:null, 3);
+
+  /* --- 4. the part of each ray in FRONT of the plane, drawn crisply --- */
+  if(show.rays){
+    for(let i=0;i<3;i++){
+      const hit=mul(P[i],1/P[i][2]);
+      line(C0,hit,'#22262e',1.8,[9,7]);
+    }
+  }
+
+  /* --- 5. optical axis --- */
+  const pp=pix2world(KT.cx,KT.cy);
+  if(show.sensor) line(C0,pp,INK,1.8,[]);
+
+  /* --- 6. estimated camera pose (ghost frame) --- */
+  if(show.est){
+    const Re=estR(), Ce=estC(), Rt=transp(Re), ax=0.42;
+    for(const a of [[ax,0,0],[0,ax,0],[0,0,ax*1.25]]){
+      const e=add(Ce,mv(Rt,a));
+      ctx.save(); ctx.setLineDash([5,4]);
+      arrow3(Ce,e,'rgba(118,122,134,0.95)',2,9); ctx.restore();
+    }
+  }
+
+  /* --- 7. image triangle through the observed points --- */
+  poly(obs3,ORANGE2,INK,3.0);
+
+  /* --- 8. image (pixel) axes at the principal point --- */
+  if(show.sensor){
+    const ax=0.19;
+    arrow3(pp, add(pp,[ax,0,0]), GREEN, 3, 10);
+    arrow3(pp, add(pp,[0,ax,0]), GREEN, 3, 10);
+    const su=proj(add(pp,[ax,0,0])), sv=proj(add(pp,[0,ax,0]));
+    plainLabel(su.x-3,su.y+15,'u',{color:'#0a8a0a',font:'italic bold 15px "Times New Roman",serif',align:'center'});
+    plainLabel(sv.x-11,sv.y+3,'v',{color:'#0a8a0a',font:'italic bold 15px "Times New Roman",serif',align:'center'});
+  }
+
+  /* --- 8b. when an observation carries noise, mark where the ray really pierces
+         the plane, so the measurement offset stays readable --- */
+  for(let i=0;i<3;i++){
+    if(Math.hypot(obsOff[i][0],obsOff[i][1])<1.5) continue;
+    const foot=mul(P[i],1/P[i][2]);
+    const sf=proj(foot), so=proj(obs3[i]);
+    ctx.save();
+    ctx.setLineDash([2,3]); ctx.strokeStyle='#8b9099'; ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.moveTo(sf.x,sf.y); ctx.lineTo(so.x,so.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(sf.x,sf.y,4.5,0,7); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* --- 9. residuals, image points, 3D points and their labels --- */
+  const sObs=obs3.map(proj), sPrd=prd3.map(proj), sP=P.map(proj);
+  for(let i=0;i<3;i++){
+    ctx.save();
+    ctx.strokeStyle='#ff1010'; ctx.lineWidth=(mode==='agg')?3.6:2.9; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(sObs[i].x,sObs[i].y); ctx.lineTo(sPrd[i].x,sPrd[i].y); ctx.stroke();
+    ctx.restore();
+  }
+  for(let i=0;i<3;i++){
+    const hi=(hover&&hover.i===i);
+    disc(prd3[i], hi&&hover.kind==='prd'?8:6.5, COL[i], '#111', 1.8);
+    disc(obs3[i], hi&&hover.kind==='obs'?9.5:8, COL[i], '#111', 2.2);
+  }
+  for(let i=0;i<3;i++){
+    const hi=(hover&&hover.i===i&&hover.kind==='P');
+    disc(P[i], hi?17:15, COL[i], '#111', 3);
+  }
+
+  // collision aware label placement
+  const obst=sObs.concat(sPrd,sP,[proj(pp),proj(C0)]);
+  for(let i=0;i<3;i++) obst.push({x:(sObs[i].x+sPrd[i].x)/2,y:(sObs[i].y+sPrd[i].y)/2});
+  const cen={x:(sObs[0].x+sObs[1].x+sObs[2].x)/3, y:(sObs[0].y+sObs[1].y+sObs[2].y)/3};
+  const cenP={x:(sP[0].x+sP[1].x+sP[2].x)/3, y:(sP[0].y+sP[1].y+sP[2].y)/3};
+  function place(anchor,pref,radius){
+    let best=null,bs=-1e9;
+    const a0=Math.atan2(pref.y,pref.x);
+    for(let k=0;k<13;k++){
+      const step=Math.ceil(k/2)*(Math.PI/7)*(k%2?1:-1);
+      const a=a0+step;
+      const q={x:anchor.x+Math.cos(a)*radius, y:anchor.y+Math.sin(a)*radius};
+      let d=1e9; for(const o of obst) d=Math.min(d,Math.hypot((o.x-q.x)*0.5,o.y-q.y));
+      const sc=Math.min(d,34)-Math.abs(step)*7;
+      if(sc>bs){bs=sc;best=q;}
+    }
+    obst.push(best); return best;
+  }
+  const nrm=(v)=>{const l=Math.hypot(v.x,v.y)||1;return{x:v.x/l,y:v.y/l};};
+  for(let i=0;i<3;i++){
+    const rv={x:sPrd[i].x-sObs[i].x, y:sPrd[i].y-sObs[i].y};
+    const away=nrm({x:sObs[i].x-cen.x, y:sObs[i].y-cen.y});
+    const q1=place(sObs[i],away,27);
+    mathLabel(q1.x,q1.y+7,'p',String(i+1),{align:'center',color:'#111',size:21});
+    const segL=Math.hypot(rv.x,rv.y);
+    const q2=place(sPrd[i],nrm(segL>6?rv:away),Math.max(24,42-segL));
+    mathLabel(q2.x,q2.y+7,'p',String(i+1),{align:'center',prime:true,color:'#111',size:21});
+    if(mode==='ind'){
+      const r=residual(i), m=Math.hypot(r[0],r[1]);
+      const per=nrm({x:-rv.y,y:rv.x});
+      const mid={x:(sObs[i].x+sPrd[i].x)/2,y:(sObs[i].y+sPrd[i].y)/2};
+      const q3=place(mid,per,Math.max(27,40-segL*0.6));
+      plainLabel(q3.x,q3.y+4,m.toFixed(1)+' px',
+                 {color:'#d00000',font:'700 11.5px sans-serif',align:'center'});
+    }
+  }
+  for(let i=0;i<3;i++){
+    const away=nrm({x:sP[i].x-cenP.x, y:sP[i].y-cenP.y});
+    const q=place(sP[i],away,36);
+    mathLabel(q.x,q.y+9,'P',String(i+1),{align:'center',size:25});
+  }
+
+  /* --- 10. camera frame triad at the true centre --- */
+  const A=0.45;
+  arrow3(C0,[A,0,0],GREEN,6,17);
+  arrow3(C0,[0,A,0],GREEN,6,17);
+  arrow3(C0,[0,0,A],GREEN,6,17);
+  disc(C0,4.5,'#0a8a0a','#0a8a0a',1);
+  const sx1=proj([A,0,0]), sy1=proj([0,A,0]), sz1=proj([0,0,A]);
+  mathLabel(sx1.x-10,sx1.y+24,'X','L',{align:'center',italic:true,bold:false,size:23,color:'#111'});
+  mathLabel(sy1.x-19,sy1.y-2,'Y','L',{align:'center',italic:true,bold:false,size:23,color:'#111'});
+  mathLabel(sz1.x-14,sz1.y+34,'Z','L',{align:'center',italic:true,bold:false,size:23,color:'#111'});
+  const s0=proj(C0);
+  plainLabel(s0.x-4,s0.y+30,'true camera centre',{color:'#555',font:'600 12px sans-serif',align:'center'});
+  if(show.est) plainLabel(s0.x-4,s0.y+48,'dashed grey = estimated pose (K\u0302, R\u0302, T\u0302)',
+                          {color:'#8a8f99',font:'600 11.5px sans-serif',align:'center'});
+
+  /* --- 11. on-canvas readout --- */
+  drawReadout();
+}
+
+function drawReadout(){
+  const rs=[0,1,2].map(i=>residual(i));
+  const E=rs.reduce((a,r)=>a+r[0]*r[0]+r[1]*r[1],0);
+  ctx.save();
+  const w=mode==='agg'?286:228, h=mode==='agg'?70:52, x=14, y=14;
+  ctx.fillStyle='rgba(255,255,255,0.93)'; ctx.strokeStyle=mode==='agg'?'#ff9c9c':'#d7dbe2';
+  ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.roundRect(x,y,w,h,8); ctx.fill(); ctx.stroke();
+  if(mode==='agg'){
+    ctx.fillStyle='#333'; ctx.font='14px "Times New Roman",serif';
+    ctx.fillText('E = Σᵢ ‖ pᵢ − π(K̂,R̂,T̂; Pᵢ) ‖²', x+13, y+24);
+    ctx.fillStyle='#c00'; ctx.font='700 24px ui-monospace,Consolas,monospace';
+    ctx.fillText(E.toFixed(1), x+13, y+55);
+    ctx.fillStyle='#666'; ctx.font='12px sans-serif';
+    ctx.fillText('px²   (RMS '+Math.sqrt(E/3).toFixed(1)+' px)', x+13+ctx.measureText(E.toFixed(1)).width+52, y+55);
+  }else{
+    ctx.fillStyle='#555'; ctx.font='600 12px sans-serif';
+    ctx.fillText('per-point residual ‖rᵢ‖', x+13, y+21);
+    ctx.fillStyle='#c00'; ctx.font='700 17px ui-monospace,Consolas,monospace';
+    ctx.fillText(rs.map(r=>Math.hypot(r[0],r[1]).toFixed(1)).join('   '), x+13, y+43);
+  }
+  ctx.restore();
+}
+
+/* ---------- panel sync ---------- */
+const $=id=>document.getElementById(id);
+const sliders=['yaw','pitch','roll','tx','ty','tz','f','cx','cy'];
+function syncSliders(){
+  for(const k of sliders){ $(k).value=est[k]; }
+  updateSliderText();
+}
+function updateSliderText(){
+  $('yawv').textContent=(+est.yaw).toFixed(2)+'°';
+  $('pitchv').textContent=(+est.pitch).toFixed(2)+'°';
+  $('rollv').textContent=(+est.roll).toFixed(2)+'°';
+  $('txv').textContent=(+est.tx).toFixed(3);
+  $('tyv').textContent=(+est.ty).toFixed(3);
+  $('tzv').textContent=(+est.tz).toFixed(3);
+  $('fv').textContent=(+est.f).toFixed(0)+' px';
+  $('cxv').textContent=(+est.cx).toFixed(0);
+  $('cyv').textContent=(+est.cy).toFixed(0);
+}
+function updatePanel(){
+  const rs=[0,1,2].map(i=>residual(i));
+  const mags=rs.map(r=>Math.hypot(r[0],r[1]));
+  const E=rs.reduce((a,r)=>a+r[0]*r[0]+r[1]*r[1],0);
+  const mx=Math.max(...mags,1e-9);
+  const scale=Math.max(mx,20);
+  const tb=$('restable').querySelector('tbody');
+  tb.innerHTML=rs.map((r,i)=>
+    `<tr><td><span class="dot" style="background:${COL[i]}"></span>p<sub>${i+1}</sub>
+       <div class="bar"><i style="width:${(mags[i]/scale*100).toFixed(1)}%"></i></div></td>
+     <td>${r[0].toFixed(1)}</td><td>${r[1].toFixed(1)}</td><td><b>${mags[i].toFixed(1)}</b></td></tr>`).join('');
+  $('sse').textContent=E.toFixed(1);
+  $('rms').textContent=Math.sqrt(E/3).toFixed(1);
+  $('maxr').textContent=mx.toFixed(1);
+  $('totalbox').classList.toggle('hi',mode==='agg');
+  $('restable').style.opacity=mode==='agg'?0.35:1;
+  updateSliderText();
+}
+function render(){ draw(); updatePanel(); }
+
+for(const k of sliders){
+  $(k).addEventListener('input',e=>{ est[k]=parseFloat(e.target.value); stopFit(); render(); });
+}
+$('modeInd').onclick=()=>{mode='ind';$('modeInd').classList.add('on');$('modeAgg').classList.remove('on');render();};
+$('modeAgg').onclick=()=>{mode='agg';$('modeAgg').classList.add('on');$('modeInd').classList.remove('on');render();};
+$('showRays').onchange=e=>{show.rays=e.target.checked;draw();};
+$('showEst').onchange=e=>{show.est=e.target.checked;draw();};
+$('showSensor').onchange=e=>{show.sensor=e.target.checked;draw();};
+$('truth').onclick=()=>{stopFit();est={yaw:0,pitch:0,roll:0,tx:0,ty:0,tz:0,f:KT.f,cx:KT.cx,cy:KT.cy};
+  syncSliders();render();$('status').textContent='Estimate = truth: residuals are now only the measurement noise.';};
+$('perturb').onclick=()=>{stopFit();
+  est.yaw+=(Math.random()-0.5)*4; est.pitch+=(Math.random()-0.5)*4; est.roll+=(Math.random()-0.5)*4;
+  est.tx+=(Math.random()-0.5)*0.3; est.ty+=(Math.random()-0.5)*0.3; est.tz+=(Math.random()-0.5)*0.5;
+  est.f+=(Math.random()-0.5)*70;
+  for(const k of sliders){ const el=$(k); est[k]=Math.min(+el.max,Math.max(+el.min,est[k])); }
+  syncSliders();render();$('status').textContent='Estimated camera perturbed.';};
+$('noise').onclick=()=>{stopFit();
+  obsOff=obsOff.map(()=>[ (Math.random()-0.5)*26, (Math.random()-0.5)*26 ]);
+  render();$('status').textContent='Noise added: the observations no longer lie on the true rays (grey rings mark those).';};
+$('reset').onclick=()=>{stopFit();P=DEFAULT_P.map(p=>p.slice());obsOff=[[0,0],[0,0],[0,0]];
+  est=Object.assign({},EST_DEFAULT);
+  view.az=VIEW_DEFAULT.az;view.el=VIEW_DEFAULT.el;view.dist=VIEW_DEFAULT.dist;
+  syncSliders();fitView();render();$('status').textContent='';};
+
+/* ---------- Levenberg–Marquardt fit of the 9 camera parameters ---------- */
+const PK=['f','cx','cy','yaw','pitch','roll','tx','ty','tz'];
+const FDH=[0.5,0.5,0.5,1e-3,1e-3,1e-3,1e-4,1e-4,1e-4];
+function getP(){ return PK.map(k=>est[k]); }
+function setP(v){ PK.forEach((k,i)=>est[k]=v[i]); }
+function resVec(v){
+  const keep=getP(); setP(v);
+  const out=[]; for(let i=0;i<3;i++){const r=residual(i);out.push(r[0],r[1]);}
+  setP(keep); return out;
+}
+const sumsq=r=>r.reduce((a,x)=>a+x*x,0);
+function solve(A,b){
+  const n=b.length, M=A.map((row,i)=>row.concat([b[i]]));
+  for(let c=0;c<n;c++){
+    let piv=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[piv][c])) piv=r;
+    if(Math.abs(M[piv][c])<1e-12) return null;
+    [M[c],M[piv]]=[M[piv],M[c]];
+    for(let r=0;r<n;r++){ if(r===c) continue; const fct=M[r][c]/M[c][c];
+      for(let k=c;k<=n;k++) M[r][k]-=fct*M[c][k]; }
+  }
+  return M.map((row,i)=>row[n]/row[i]);
+}
+let lambda=1e-3, fitTimer=null;
+function lmStep(){
+  const v=getP(), r0=resVec(v), E0=sumsq(r0);
+  if(E0<1e-8) return true;
+  const n=9, m=6, J=[];
+  for(let j=0;j<n;j++){
+    const vp=v.slice(); vp[j]+=FDH[j];
+    const rp=resVec(vp);
+    J.push(rp.map((x,k)=>(x-r0[k])/FDH[j]));       // J[j][k] = d r_k / d p_j
+  }
+  const A=[],b=[];
+  for(let i=0;i<n;i++){
+    b.push(-J[i].reduce((a,x,k)=>a+x*r0[k],0));
+    A.push([]);
+    for(let j=0;j<n;j++) A[i].push(J[i].reduce((a,x,k)=>a+x*J[j][k],0));
+  }
+  for(let tries=0;tries<40;tries++){
+    const Ad=A.map((row,i)=>row.map((x,j)=>i===j?x*(1+lambda)+1e-6*(1+x):x));
+    const dp=solve(Ad,b);
+    if(dp && dp.every(x=>isFinite(x))){
+      const vn=v.map((x,i)=>x+dp[i]);
+      const En=sumsq(resVec(vn));
+      if(En<E0){ setP(vn); lambda=Math.max(lambda*0.35,1e-10); return En<1e-7; }
+    }
+    lambda*=6;
+    if(lambda>1e14) return true;                 // genuinely stuck at a minimum
+  }
+  return false;
+}
+function stopFit(){ if(fitTimer){clearInterval(fitTimer);fitTimer=null;$('fit').textContent='Fit camera (minimise E)';} }
+$('fit').onclick=()=>{
+  if(fitTimer){ stopFit(); $('status').textContent='Fit stopped.'; return; }
+  lambda=1e-3; let it=0;
+  $('fit').textContent='Stop';
+  $('status').textContent='Minimising E by Levenberg–Marquardt…';
+  fitTimer=setInterval(()=>{
+    const done=lmStep(); it++;
+    for(const k of sliders){ const el=$(k); if(est[k]<+el.min)est[k]=+el.min; if(est[k]>+el.max)est[k]=+el.max; }
+    syncSliders(); render();
+    if(done||it>=90){
+      stopFit();
+      const E=[0,1,2].reduce((a,i)=>{const r=residual(i);return a+r[0]*r[0]+r[1]*r[1];},0);
+      $('status').textContent='Converged after '+it+' iterations — E = '+E.toFixed(2)+' px².'+(E<0.01?' (3 points = 6 equations for 9 unknowns, so the model can absorb even the noise; real calibration uses many more points.)':'');
+    }
+  },28);
+};
+
+/* ---------- picking & dragging ---------- */
+function handles(){
+  const H=[];
+  for(let i=0;i<3;i++){
+    const o=observed(i), q=predicted(i);
+    H.push({kind:'obs',i,s:proj(pix2world(o[0],o[1])),r:14});
+    H.push({kind:'prd',i,s:proj(pix2world(q[0],q[1])),r:13});
+  }
+  for(let i=0;i<3;i++) H.push({kind:'P',i,s:proj(P[i]),r:20});
+  return H;
+}
+function pick(mx,my){
+  const H=handles(); let best=null,bd=1e9;
+  for(const h of H){
+    const d=Math.hypot(h.s.x-mx,h.s.y-my);
+    if(d<h.r && d<bd){bd=d;best=h;}
+  }
+  return best;
+}
+function evPos(e){
+  const rect=cv.getBoundingClientRect();
+  return {x:(e.clientX-rect.left)*CW/rect.width, y:(e.clientY-rect.top)*CH/rect.height};
+}
+cv.addEventListener('pointermove',e=>{
+  const m=evPos(e);
+  if(!drag){
+    const h=pick(m.x,m.y);
+    const changed=(!!h!==!!hover)||(h&&hover&&(h.kind!==hover.kind||h.i!==hover.i));
+    hover=h;
+    cv.style.cursor=h?'grab':'move';
+    if(changed) draw();
+    return;
+  }
+  cv.setPointerCapture(e.pointerId);
+  if(drag.kind==='orbit'){
+    view.az+=(m.x-drag.x)*0.006;
+    view.el=Math.max(-0.35,Math.min(0.9,view.el-(m.y-drag.y)*0.005));
+    drag.x=m.x; drag.y=m.y; draw(); return;
+  }
+  if(drag.kind==='obs'){
+    const hit=hitImagePlane(m.x,m.y);
+    if(hit){
+      const u=hit[0]*KT.f+KT.cx, v=hit[1]*KT.f+KT.cy;
+      const t=projTrue(P[drag.i]);
+      obsOff[drag.i]=[u-t[0],v-t[1]];
+      stopFit(); render();
+      $('status').textContent='Observed point p'+(drag.i+1)+' moved — this is the measured feature location.';
+    }
+    return;
+  }
+  if(drag.kind==='prd'){
+    const hit=hitImagePlane(m.x,m.y);
+    if(hit){
+      const u=hit[0]*KT.f+KT.cx, v=hit[1]*KT.f+KT.cy;
+      est.cx=u-drag.zero[0]; est.cy=v-drag.zero[1];
+      est.cx=Math.min(+$('cx').max,Math.max(+$('cx').min,est.cx));
+      est.cy=Math.min(+$('cy').max,Math.max(+$('cy').min,est.cy));
+      stopFit(); syncSliders(); render();
+      $('status').textContent='Predictions are coupled by the camera model: dragging p′'+(drag.i+1)+' shifts ĉ, so all three move.';
+    }
+    return;
+  }
+  if(drag.kind==='P'){
+    const z=Math.max(drag.depth,0.3);
+    const dx=(m.x-drag.x)*z/(SCALE*zoomK), dy=-(m.y-drag.y)*z/(SCALE*zoomK);
+    let np=add(drag.p0, add(mul(B.r,dx), mul(B.u,dy)));
+    if(np[2]<1.35) np=mul(np,1.35/np[2]);       // keep the point behind the image plane
+    P[drag.i]=np;
+    stopFit(); render();
+    $('status').textContent='3D point P'+(drag.i+1)+' moved — both its observation and its prediction follow.';
+  }
+});
+cv.addEventListener('pointerdown',e=>{
+  const m=evPos(e); const h=pick(m.x,m.y);
+  if(h){
+    drag={kind:h.kind,i:h.i,x:m.x,y:m.y};
+    if(h.kind==='P'){ drag.p0=P[h.i].slice(); drag.depth=proj(P[h.i]).z; }
+    if(h.kind==='prd'){ drag.cx0=est.cx; drag.cy0=est.cy; drag.R=estR(); drag.C=estC();
+      // base prediction must be evaluated with the principal point removed
+      const keep=[est.cx,est.cy];
+      drag.R=estR(); drag.C=estC();
+      est.cx=0; est.cy=0; drag.zero=projEst(P[h.i],drag.R,drag.C); est.cx=keep[0]; est.cy=keep[1];
+    }
+    cv.style.cursor='grabbing';
+  } else {
+    drag={kind:'orbit',x:m.x,y:m.y};
+    cv.style.cursor='grabbing';
+  }
+  cv.setPointerCapture(e.pointerId);
+});
+function endDrag(){ drag=null; cv.style.cursor=hover?'grab':'move'; }
+cv.addEventListener('pointerup',endDrag);
+cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('pointerleave',()=>{ if(!drag){hover=null;draw();} });
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  view.dist=Math.max(4.5,Math.min(22,view.dist*(1+Math.sign(e.deltaY)*0.08)));
+  draw();
+},{passive:false});
+
+/* ---------- hi-dpi ---------- */
+function fixDPR(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=CW*dpr; cv.height=CH*dpr;
+  cv.style.aspectRatio=CW+' / '+CH;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+if(!CanvasRenderingContext2D.prototype.roundRect){
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){
+    this.moveTo(x+r,y); this.arcTo(x+w,y,x+w,y+h,r); this.arcTo(x+w,y+h,x,y+h,r);
+    this.arcTo(x,y+h,x,y,r); this.arcTo(x,y,x+w,y,r); this.closePath(); return this;
+  };
+}
+window.addEventListener('resize',fixDPR);
+syncSliders(); fitView(); fixDPR(); render();
+</script>
+</body>
+</html>

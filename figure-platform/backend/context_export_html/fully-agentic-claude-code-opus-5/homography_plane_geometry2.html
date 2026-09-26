@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planar Homography Geometry</title>
+<style>
+  :root{
+    --ink:#111; --sub:#555; --line:#d8dbe0; --card:#ffffff;
+    --accent:#0b62d0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f4f5f7;color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1420px;margin:0 auto;padding:22px 20px 40px;}
+  header h1{font-size:23px;margin:0 0 4px;letter-spacing:-0.01em;}
+  header p{margin:0 0 16px;color:var(--sub);font-size:14px;max-width:1000px;line-height:1.55;}
+  .layout{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;}
+  .figcard{flex:1 1 660px;min-width:470px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:10px 12px 12px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .tabs{display:flex;gap:8px;margin:2px 0 6px;}
+  .tab{font:600 13px/1 inherit;padding:8px 13px;border-radius:8px;border:1px solid var(--line);
+    background:#f7f8fa;color:#333;cursor:pointer;}
+  .tab.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+  svg#scene text{paint-order:stroke;stroke:#fff;stroke-width:5px;stroke-linejoin:round;}
+  svg#scene{display:block;width:100%;height:auto;background:#fff;border-radius:8px;
+    touch-action:none;cursor:default;user-select:none;}
+  .caption{font-size:13px;color:var(--sub);line-height:1.55;margin:8px 4px 2px;min-height:38px;}
+  aside{flex:0 1 366px;min-width:322px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:14px 16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  aside h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--sub);
+    margin:16px 0 8px;font-weight:700;}
+  aside h2:first-child{margin-top:2px;}
+  .ctrl{margin:9px 0 12px;}
+  .ctrl label{display:flex;justify-content:space-between;font-size:12.5px;color:#333;margin-bottom:4px;}
+  .ctrl label b{font-variant-numeric:tabular-nums;font-weight:600;color:#000;}
+  input[type=range]{width:100%;accent-color:var(--accent);}
+  .readout{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:13px;}
+  .readout span.k{color:var(--sub);}
+  .readout span.v{font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;}
+  .mat{display:flex;align-items:stretch;gap:6px;justify-content:center;margin:6px 0 4px;}
+  .brk{width:9px;border:2px solid #222;border-right:none;border-radius:2px;}
+  .brk.r{border:2px solid #222;border-left:none;}
+  .cells{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 14px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;padding:6px 2px;}
+  .cells div{text-align:right;font-variant-numeric:tabular-nums;}
+  .eqline{font-size:13.5px;text-align:center;color:#222;margin:8px 0;line-height:1.8;}
+  .eqline .dead{color:#bfc4ca;text-decoration:line-through;}
+  .eqline i,.eqline em{font-family:"Times New Roman",Times,serif;}
+  .note{font-size:12px;color:var(--sub);line-height:1.5;}
+  .chip{display:inline-block;font-size:11.5px;padding:3px 8px;border-radius:99px;background:#eef7ee;
+    color:#186c18;border:1px solid #cfe7cf;font-family:ui-monospace,Menlo,Consolas,monospace;}
+  .chip.bad{background:#fdeeee;color:#a11;border-color:#f2caca;}
+  .hint{font-size:12.5px;color:var(--sub);line-height:1.65;margin:2px 0 0;}
+  .hint b{color:#222;}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:5px;}
+  .warn{font-size:12.5px;color:#a11;margin-top:8px;display:none;}
+  .warn.on{display:block;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Why a plane in the scene gives a 3&times;3 homography</h1>
+    <p>The world frame is placed <i>on</i> the planar surface with its <b>Z</b>&#8209;axis along the surface normal, so
+      every scene point is <i>(X,&nbsp;Y,&nbsp;0)</i>. That zero third coordinate deletes the third column of the
+      3&times;4 camera matrix, and the projection collapses to one invertible 3&times;3 matrix <b>H</b> taking
+      <i>(X,&nbsp;Y)</i> straight to the image point <i>(x,&nbsp;y)</i>. Every line, quadrilateral and number below is
+      computed from the real pinhole geometry.</p>
+  </header>
+
+  <div class="layout">
+    <div class="figcard">
+      <div class="tabs">
+        <button class="tab active" id="tab3d">&#9312; 3D projection rays</button>
+        <button class="tab" id="tabflat">&#9313; Flattened 2D &rarr; 2D map</button>
+      </div>
+      <svg id="scene" viewBox="0 0 1000 480" aria-label="Homography geometry figure"></svg>
+      <p class="caption" id="caption"></p>
+    </div>
+
+    <aside>
+      <h2>Drag &amp; explore</h2>
+      <p class="hint">
+        <span class="sw" style="background:#111"></span><b>Drag the camera centre</b> (black dot) around the scene.<br>
+        <span class="sw" style="background:#0fd8f4"></span><b>Drag the cyan point</b> across the planar surface.<br>
+        <span class="sw" style="background:#aab"></span>Drag empty space to orbit the illustration.
+      </p>
+
+      <h2>Scene controls</h2>
+      <div class="ctrl"><label>Plane slant &nbsp;(&minus; faces camera / + tips away) <b id="vTilt"></b></label>
+        <input type="range" id="sTilt" min="-32" max="22" step="1"></div>
+      <div class="ctrl"><label>Plane rotation about the vertical <b id="vSpin"></b></label>
+        <input type="range" id="sSpin" min="-60" max="60" step="1"></div>
+      <div class="ctrl"><label>Camera height <b id="vHt"></b></label>
+        <input type="range" id="sHt" min="7" max="15" step="0.05"></div>
+      <div class="ctrl"><label>Focal length&nbsp; <i>f</i> <b id="vF"></b></label>
+        <input type="range" id="sF" min="3.2" max="7" step="0.02"></div>
+
+      <h2>The collapse</h2>
+      <div class="eqline">
+        &lambda;&thinsp;(<i>x</i>,&thinsp;<i>y</i>,&thinsp;1)<sup>T</sup> =
+        <b>K</b>&thinsp;[&thinsp;<i>r</i><sub>1</sub>&nbsp;<i>r</i><sub>2</sub>&nbsp;<span class="dead"><i>r</i><sub>3</sub></span>&nbsp;<i>t</i>&thinsp;]
+        &thinsp;(<i>X</i>,&thinsp;<i>Y</i>,&thinsp;<span class="dead">0</span>,&thinsp;1)<sup>T</sup><br>
+        = <b>K</b>&thinsp;[&thinsp;<i>r</i><sub>1</sub>&nbsp;<i>r</i><sub>2</sub>&nbsp;<i>t</i>&thinsp;]
+        &thinsp;(<i>X</i>,&thinsp;<i>Y</i>,&thinsp;1)<sup>T</sup> =
+        <b>H</b>&thinsp;(<i>X</i>,&thinsp;<i>Y</i>,&thinsp;1)<sup>T</sup>
+      </div>
+      <div class="mat">
+        <div class="brk"></div>
+        <div class="cells" id="Hcells">
+          <div>0</div><div>0</div><div>0</div>
+          <div>0</div><div>0</div><div>0</div>
+          <div>0</div><div>0</div><div>0</div>
+        </div>
+        <div class="brk r"></div>
+      </div>
+      <p class="note" id="hnote" style="text-align:center"></p>
+
+      <h2>Live values</h2>
+      <div class="readout">
+        <span class="k">world point</span><span class="v" id="rWorld"></span>
+        <span class="k">image point</span><span class="v" id="rImg"></span>
+        <span class="k">camera centre</span><span class="v" id="rCam"></span>
+        <span class="k">plane normal</span><span class="v" id="rNorm"></span>
+      </div>
+      <p style="margin:10px 0 0"><span class="chip" id="chk"></span></p>
+      <p class="warn" id="warn">Part of the surface is no longer in front of the camera, so those rays are not drawn.</p>
+    </aside>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ */
+/* vector / matrix helpers                                             */
+/* ------------------------------------------------------------------ */
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const unit=a=>{const n=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/n,a[1]/n,a[2]/n];};
+function mm(A,B){const C=new Array(9);for(let i=0;i<3;i++)for(let j=0;j<3;j++){let s=0;
+  for(let k=0;k<3;k++)s+=A[i*3+k]*B[k*3+j];C[i*3+j]=s;}return C;}
+function mv(A,x){return [A[0]*x[0]+A[1]*x[1]+A[2]*x[2],
+                         A[3]*x[0]+A[4]*x[1]+A[5]*x[2],
+                         A[6]*x[0]+A[7]*x[1]+A[8]*x[2]];}
+function inv3(m){
+  const a=m[0],b=m[1],c=m[2],d=m[3],e=m[4],f=m[5],g=m[6],h=m[7],i=m[8];
+  const A=e*i-f*h, B=-(d*i-f*g), C=d*h-e*g;
+  const det=a*A+b*B+c*C; if(Math.abs(det)<1e-13) return null;
+  const D=-(b*i-c*h), E=a*i-c*g, F=-(a*h-b*g);
+  const G=b*f-c*e,   H=-(a*f-c*d), I=a*e-b*d;
+  return [A/det,D/det,G/det, B/det,E/det,H/det, C/det,F/det,I/det];
+}
+const rad=d=>d*Math.PI/180;
+function rotY(v,a){const c=Math.cos(a),s=Math.sin(a);return [c*v[0]+s*v[2],v[1],-s*v[0]+c*v[2]];}
+function rotZ(v,a){const c=Math.cos(a),s=Math.sin(a);return [c*v[0]-s*v[1],s*v[0]+c*v[1],v[2]];}
+function fmt(v,n){n=(n===undefined)?3:n;if(!isFinite(v))return "—";
+  let s=(Math.abs(v)<5e-4?0:v).toFixed(n); if(s==="-"+(0).toFixed(n))s=(0).toFixed(n); return s;}
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ------------------------------------------------------------------ */
+/* state                                                               */
+/* ------------------------------------------------------------------ */
+const PW=5.6, PD=3.8;               // the planar patch: X in [0,PW], Y in [0,PD]
+const NX=4,  NY=3;                  // grid cells drawn on it
+const Pc=[7.0,0.6,0];               // scene-space centre of the patch
+const S={
+  az:rad(-143), el:rad(29),         // viewpoint of the illustration (orthographic)
+  C:[-9.2,-1.2,11.5],               // pinhole camera centre, scene space
+  tilt:-14, spin:0, f:4.9,
+  X:3.9, Y:2.5,                     // the highlighted world point (X,Y,0)
+  mode:"3d"
+};
+const VW=1000, VH=480;
+const view={s:70, ox:600, oy:280, ready:false};
+
+/* ------------------------------------------------------------------ */
+/* the geometry                                                        */
+/* ------------------------------------------------------------------ */
+function geom(){
+  const t=rad(S.tilt), sp=rad(S.spin);
+  const eX=rotZ(rotY([0,-1,0],t),sp);        // world X axis, in the plane
+  const eY=rotZ(rotY([1,0,0],t),sp);        // world Y axis, in the plane
+  const nrm=cross(eX,eY);                   // world Z axis = surface normal
+  const O=sub(Pc,add(mul(eX,PW/2),mul(eY,PD/2)));   // world origin, on the surface
+  const P3=(X,Y,Z)=>add(O,add(mul(eX,X),add(mul(eY,Y),mul(nrm,Z||0))));
+
+  const C=S.C.slice();
+  const w=unit(sub(Pc,C));                  // optical axis (camera +Z), aimed at the patch
+  let u=cross(w,[0,0,1]);
+  if(Math.hypot(u[0],u[1],u[2])<1e-6) u=[1,0,0];
+  u=unit(u);                                // image +x
+  const v=cross(u,w);                       // image +y (up)
+
+  const f=S.f, sw=0.62*f, sh=0.50*f;        // drawn extent of the image plane (fixed field of view)
+  const cxp=sw/2, cyp=sh/2;                 // principal point: image origin at the lower-left corner
+  const K=[f,0,cxp, 0,f,cyp, 0,0,1];
+
+  const Rc=[u[0],u[1],u[2], v[0],v[1],v[2], w[0],w[1],w[2]];     // scene -> camera rotation
+  const B =[eX[0],eY[0],nrm[0], eX[1],eY[1],nrm[1], eX[2],eY[2],nrm[2]];  // world frame -> scene
+  const R=mm(Rc,B);                         // R = [r1 r2 r3]  (world frame -> camera)
+  const tt=mv(Rc,sub(O,C));                 // t
+  const M=[R[0],R[1],tt[0], R[3],R[4],tt[1], R[6],R[7],tt[2]];   // [r1 r2 t] : the third column dropped
+  const H=mm(K,M);
+  const Hi=inv3(H);
+
+  function proj3(P){                        // honest pinhole projection of a scene point
+    const d=sub(P,C), zc=dot(d,w);
+    return {x:cxp+f*dot(d,u)/zc, y:cyp+f*dot(d,v)/zc, z:zc};
+  }
+  const onPlane=(x,y)=>add(C,add(mul(w,f),add(mul(u,x-cxp),mul(v,y-cyp))));
+  function Hmap(X,Y){const p=mv(H,[X,Y,1]);return {x:p[0]/p[2],y:p[1]/p[2],w:p[2]};}
+  function Hinv(x,y){if(!Hi)return null;const p=mv(Hi,[x,y,1]);return {X:p[0]/p[2],Y:p[1]/p[2]};}
+
+  return {eX,eY,nrm,O,P3,C,u,v,w,f,sw,sh,cxp,cyp,K,R,tt,M,H,Hi,proj3,onPlane,Hmap,Hinv};
+}
+
+/* orthographic projection used to draw the illustration --------------*/
+function viewBasis(){
+  // when the surface slants away from the camera it also slants away from the reader,
+  // so the illustration's own viewpoint lifts a little to keep the surface open
+  const el=clamp(S.el+0.35*Math.max(0,rad(S.tilt)),rad(8),rad(58));
+  const ca=Math.cos(S.az), sa=Math.sin(S.az), ce=Math.cos(el), se=Math.sin(el);
+  return {r:[-sa,ca,0], up:[-se*ca,-se*sa,ce], eye:[ce*ca,ce*sa,se]};
+}
+let VB=viewBasis();
+const sxy=P=>[dot(P,VB.r),dot(P,VB.up)];
+const pr=P=>{const q=sxy(P);return [view.ox+view.s*q[0], view.oy-view.s*q[1]];};
+function unpr(px,py,n,d){              // screen point -> the scene point on plane  n.P = d
+  const a=(px-view.ox)/view.s, q=(view.oy-py)/view.s;
+  const den=dot(VB.eye,n); if(Math.abs(den)<1e-7) return null;
+  const c=(d-a*dot(VB.r,n)-q*dot(VB.up,n))/den;
+  return add(add(mul(VB.r,a),mul(VB.up,q)),mul(VB.eye,c));
+}
+
+/* ------------------------------------------------------------------ */
+/* svg string helpers                                                  */
+/* ------------------------------------------------------------------ */
+function L(p,q,at){return `<line x1="${p[0].toFixed(2)}" y1="${p[1].toFixed(2)}" x2="${q[0].toFixed(2)}" y2="${q[1].toFixed(2)}" ${at}/>`;}
+function POLY(list,at){return `<polygon points="${list.map(p=>p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ")}" ${at}/>`;}
+function TXT(x,y,s,at){return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" ${at||""}>${s}</text>`;}
+function DOT(p,r,at){return `<circle cx="${p[0].toFixed(2)}" cy="${p[1].toFixed(2)}" r="${r}" ${at}/>`;}
+const DEFS=`<defs>
+  <marker id="ar" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#e11d1d"/></marker>
+  <marker id="ag" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#12a012"/></marker>
+  <marker id="ab" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5.6" markerHeight="5.6" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#0b62d0"/></marker>
+  <marker id="abl" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="5.6" markerHeight="5.6" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#9bb6d8"/></marker>
+</defs>`;
+const SANS='font-family="Helvetica,Arial,sans-serif"';
+const SERIF='font-family="Times New Roman,Times,serif" font-style="italic"';
+
+/* ------------------------------------------------------------------ */
+/* auto-framing of the 3D view                                         */
+/* ------------------------------------------------------------------ */
+function frame(g,snap){
+  const pts=[sxy(g.C)];
+  [[0,0],[g.sw,0],[g.sw,g.sh],[0,g.sh]].forEach(q=>pts.push(sxy(g.onPlane(q[0],q[1]))));
+  [[0,0],[PW,0],[PW,PD],[0,PD]].forEach(c=>pts.push(sxy(g.P3(c[0],c[1],0))));
+  pts.push(sxy(add(g.O,mul(g.nrm,1.7))));               // tip of the Z axis
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  pts.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1]);});
+  const padL=152, padR=190, padT=50, padB=60;           // room for the text labels
+  const s=Math.min(84,(VW-padL-padR)/Math.max(0.3,x1-x0),(VH-padT-padB)/Math.max(0.3,y1-y0));
+  const ox=(padL+(VW-padR))/2 - s*(x0+x1)/2;
+  const oy=(padT+(VH-padB))/2 + s*(y0+y1)/2;
+  if(snap||!view.ready){view.s=s;view.ox=ox;view.oy=oy;view.ready=true;return true;}
+  const k=0.3;
+  view.s+=(s-view.s)*k; view.ox+=(ox-view.ox)*k; view.oy+=(oy-view.oy)*k;
+  return Math.abs(s-view.s)<0.05 && Math.abs(ox-view.ox)<0.4 && Math.abs(oy-view.oy)<0.4;
+}
+
+/* ------------------------------------------------------------------ */
+/* view 1 : the 3D figure                                              */
+/* ------------------------------------------------------------------ */
+function draw3D(g){
+  const o=[DEFS];
+  const corners=[[0,0],[PW,0],[PW,PD],[0,PD]];
+  const c3=corners.map(c=>g.P3(c[0],c[1],0));
+  const cp=c3.map(pr);
+  const im=corners.map(c=>g.proj3(g.P3(c[0],c[1],0)));
+  const Cp=pr(g.C);
+
+  /* --- the planar surface --- */
+  o.push(POLY(cp,'fill="#c9c9c9" fill-opacity="0.85" stroke="#111" stroke-width="4" stroke-linejoin="round"'));
+  let grid="";
+  for(let i=1;i<NX;i++) grid+=L(pr(g.P3(i*PW/NX,0,0)),pr(g.P3(i*PW/NX,PD,0)),'stroke="#6e6e6e" stroke-width="1.2"');
+  for(let j=1;j<NY;j++) grid+=L(pr(g.P3(0,j*PD/NY,0)),pr(g.P3(PW,j*PD/NY,0)),'stroke="#6e6e6e" stroke-width="1.2"');
+  o.push(grid);
+
+  /* --- the camera (image) plane --- */
+  const sc=[[0,0],[g.sw,0],[g.sw,g.sh],[0,g.sh]].map(q=>pr(g.onPlane(q[0],q[1])));
+  o.push(POLY(sc,'fill="#ffffff" fill-opacity="0.95" stroke="#111" stroke-width="4" stroke-linejoin="round"'));
+
+  /* --- image of the planar surface on the camera plane --- */
+  if(im.every(p=>p.z>1e-3)){
+    o.push(POLY(im.map(p=>pr(g.onPlane(p.x,p.y))),
+        'fill="#c9c9c9" fill-opacity="0.9" stroke="#111" stroke-width="2.8" stroke-linejoin="round"'));
+    let ig="";
+    const seg=(a,b)=>{const A=g.proj3(g.P3(a[0],a[1],0)), B=g.proj3(g.P3(b[0],b[1],0));
+      if(A.z>1e-3&&B.z>1e-3) ig+=L(pr(g.onPlane(A.x,A.y)),pr(g.onPlane(B.x,B.y)),'stroke="#6e6e6e" stroke-width="1"');};
+    for(let i=1;i<NX;i++) seg([i*PW/NX,0],[i*PW/NX,PD]);
+    for(let j=1;j<NY;j++) seg([0,j*PD/NY],[PW,j*PD/NY]);
+    o.push(ig);
+  }
+
+  /* --- projection rays through the four corners --- */
+  c3.forEach((P,i)=>{ if(im[i].z>1e-3)
+    o.push(L(Cp,pr(P),'stroke="#111" stroke-width="3.2" stroke-dasharray="13 9" stroke-linecap="round"'));});
+
+  /* --- the highlighted point, its ray and its image --- */
+  const Pw=g.P3(S.X,S.Y,0), ip=g.proj3(Pw);
+  if(ip.z>1e-3){
+    const ipp=pr(g.onPlane(ip.x,ip.y)), pwp=pr(Pw);
+    o.push(L(Cp,pwp,'stroke="#00c8ea" stroke-width="4.2" stroke-dasharray="14 10" stroke-linecap="round"'));
+    o.push(DOT(ipp,8.5,'fill="#0fd8f4" stroke="#0a7c8c" stroke-width="2"'));
+    o.push(DOT(pwp,8.5,'fill="#0fd8f4" stroke="#0a7c8c" stroke-width="2"'));
+    o.push(TXT(ipp[0]+14,ipp[1]-11,"(x,&#8202;y)",`${SERIF} font-size="25" fill="#00a8c8"`));
+    o.push(TXT(pwp[0]-10,pwp[1]+32,"(X,&#8202;Y,&#8202;0)",`${SERIF} font-size="25" fill="#00a8c8" text-anchor="middle"`));
+  }
+
+  /* --- world axes (red) at the origin corner of the surface --- */
+  const AX=1.25, Oo=g.O, Op=pr(Oo);
+  [[g.eX,"X"],[g.eY,"Y"],[g.nrm,"Z"]].forEach(a=>{
+    const q=pr(add(Oo,mul(a[0],AX)));
+    o.push(L(Op,q,'stroke="#e11d1d" stroke-width="4.4" marker-end="url(#ar)"'));
+    const dx=q[0]-Op[0], dy=q[1]-Op[1], n=Math.hypot(dx,dy)||1;
+    o.push(TXT(q[0]+21*dx/n, q[1]+21*dy/n+8, a[1], `${SERIF} font-size="26" fill="#111" text-anchor="middle"`));
+  });
+  const s0=0.38;
+  const ra=[add(Oo,mul(g.eX,s0)),add(Oo,add(mul(g.eX,s0),mul(g.eY,s0))),add(Oo,mul(g.eY,s0))].map(pr);
+  o.push(`<polyline points="${ra.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ")}" fill="none" stroke="#111" stroke-width="2"/>`);
+
+  /* --- image axes (green) at the image origin, the lower-left corner --- */
+  const iop=pr(g.onPlane(0,0));
+  const gx=pr(g.onPlane(0.40*g.sw,0)), gy=pr(g.onPlane(0,0.46*g.sh));
+  o.push(L(iop,gx,'stroke="#12a012" stroke-width="4.4" marker-end="url(#ag)"'));
+  o.push(L(iop,gy,'stroke="#12a012" stroke-width="4.4" marker-end="url(#ag)"'));
+  [[gx,iop,"x"],[gy,iop,"y"]].forEach(a=>{
+    const dx=a[0][0]-a[1][0], dy=a[0][1]-a[1][1], n=Math.hypot(dx,dy)||1;
+    o.push(TXT(a[0][0]+20*dx/n, a[0][1]+20*dy/n+8, a[2], `${SERIF} font-size="26" fill="#111" text-anchor="middle"`));
+  });
+
+  /* --- camera centre --- */
+  o.push(DOT(Cp,14,'fill="#111"'));
+  o.push(TXT(Cp[0]-22,Cp[1]-32,"Camera",`${SANS} font-size="24" fill="#111" text-anchor="end"`));
+  o.push(TXT(Cp[0]-22,Cp[1]-6,"centre",`${SANS} font-size="24" fill="#111" text-anchor="end"`));
+
+  /* --- "Camera plane", set along its top edge --- */
+  const tA=sc[3], tB=sc[2], mid=[(tA[0]+tB[0])/2,(tA[1]+tB[1])/2];
+  const ang=Math.atan2(tB[1]-tA[1],tB[0]-tA[0])*180/Math.PI;
+  o.push(`<text x="${mid[0].toFixed(1)}" y="${(mid[1]-13).toFixed(1)}" ${SANS} font-size="24" fill="#111"
+     text-anchor="middle" transform="rotate(${ang.toFixed(1)} ${mid[0].toFixed(1)} ${(mid[1]-13).toFixed(1)})">Camera plane</text>`);
+
+  /* --- "planar surface" --- */
+  let far=cp[0]; cp.forEach(p=>{if(p[0]>far[0])far=p;});
+  o.push(TXT(Math.min(far[0]+16,VW-176), far[1]+28,"planar surface",
+      `${SANS} font-size="24" fill="#111"`));
+  return o.join("");
+}
+
+/* ------------------------------------------------------------------ */
+/* view 2 : the flattened 2D -> 2D map                                 */
+/* ------------------------------------------------------------------ */
+function flatLayout(g){
+  const lb=372, ls=Math.min(292/PW,200/PD), lx=102;
+  const rb=372, rs=Math.min(288/g.sw,200/g.sh), rx=598;
+  return {lx,lb,ls,rx,rb,rs,
+    W2:(X,Y)=>[lx+ls*X, lb-ls*Y],
+    I2:(x,y)=>[rx+rs*x, rb-rs*y]};
+}
+function drawFlat(g){
+  const o=[DEFS], F=flatLayout(g), W2=F.W2, I2=F.I2;
+  const corners=[[0,0],[PW,0],[PW,PD],[0,PD]];
+
+  o.push(TXT(500,54,"&#955;&#8201;(x,&#8202;y,&#8202;1)<tspan font-style='normal' baseline-shift='super' font-size='16'>T</tspan> = H&#8201;(X,&#8202;Y,&#8202;1)<tspan font-style='normal' baseline-shift='super' font-size='16'>T</tspan>",
+      `${SERIF} font-size="27" fill="#111" text-anchor="middle"`));
+
+  /* --- left: the plane's own coordinates --- */
+  o.push(POLY(corners.map(c=>W2(c[0],c[1])),'fill="#c9c9c9" fill-opacity="0.85" stroke="#111" stroke-width="3.5" stroke-linejoin="round"'));
+  let gl="";
+  for(let i=1;i<NX;i++) gl+=L(W2(i*PW/NX,0),W2(i*PW/NX,PD),'stroke="#6e6e6e" stroke-width="1.2"');
+  for(let j=1;j<NY;j++) gl+=L(W2(0,j*PD/NY),W2(PW,j*PD/NY),'stroke="#6e6e6e" stroke-width="1.2"');
+  o.push(gl);
+  o.push(L(W2(0,0),W2(1.4,0),'stroke="#e11d1d" stroke-width="4" marker-end="url(#ar)"'));
+  o.push(L(W2(0,0),W2(0,1.4),'stroke="#e11d1d" stroke-width="4" marker-end="url(#ar)"'));
+  o.push(TXT(W2(1.4,0)[0]+16,W2(1.4,0)[1]+9,"X",`${SERIF} font-size="24" fill="#111"`));
+  o.push(TXT(W2(0,1.4)[0]-3,W2(0,1.4)[1]-14,"Y",`${SERIF} font-size="24" fill="#111" text-anchor="middle"`));
+  o.push(TXT(F.lx+F.ls*PW/2,104,"world plane&nbsp; Z = 0".replace("&nbsp;"," "),
+      `${SANS} font-size="20" fill="#111" text-anchor="middle"`));
+  o.push(TXT(F.lx+F.ls*PW/2,F.lb+34,"source: the surface's own (X, Y)",
+      `${SANS} font-size="16" fill="#666" text-anchor="middle"`));
+  const wp=W2(S.X,S.Y);
+  o.push(DOT(wp,8.5,'fill="#0fd8f4" stroke="#0a7c8c" stroke-width="2"'));
+  o.push(TXT(wp[0],wp[1]-18,`(${fmt(S.X,2)},&#8202;${fmt(S.Y,2)},&#8202;0)`,
+      `${SERIF} font-size="22" fill="#00a8c8" text-anchor="middle"`));
+
+  /* --- right: the image plane --- */
+  o.push(POLY([[0,0],[g.sw,0],[g.sw,g.sh],[0,g.sh]].map(q=>I2(q[0],q[1])),
+      'fill="#ffffff" stroke="#111" stroke-width="3.5" stroke-linejoin="round"'));
+  const hq=corners.map(c=>g.Hmap(c[0],c[1]));
+  const ok=hq.every(p=>p.w>0)||hq.every(p=>p.w<0);
+  if(ok){
+    o.push(POLY(hq.map(p=>I2(p.x,p.y)),'fill="#c9c9c9" fill-opacity="0.9" stroke="#111" stroke-width="2.8" stroke-linejoin="round"'));
+    let gr="";
+    const seg=(a,b)=>{const A=g.Hmap(a[0],a[1]),B=g.Hmap(b[0],b[1]);
+      if(A.w*B.w>0) gr+=L(I2(A.x,A.y),I2(B.x,B.y),'stroke="#6e6e6e" stroke-width="1.1"');};
+    for(let i=1;i<NX;i++) seg([i*PW/NX,0],[i*PW/NX,PD]);
+    for(let j=1;j<NY;j++) seg([0,j*PD/NY],[PW,j*PD/NY]);
+    o.push(gr);
+  }
+  o.push(L(I2(0,0),I2(0.30*g.sw,0),'stroke="#12a012" stroke-width="4" marker-end="url(#ag)"'));
+  o.push(L(I2(0,0),I2(0,0.34*g.sh),'stroke="#12a012" stroke-width="4" marker-end="url(#ag)"'));
+  o.push(TXT(I2(0.30*g.sw,0)[0]+15,I2(0,0)[1]+9,"x",`${SERIF} font-size="24" fill="#111"`));
+  o.push(TXT(I2(0,0)[0]-3,I2(0,0.34*g.sh)[1]-14,"y",`${SERIF} font-size="24" fill="#111" text-anchor="middle"`));
+  o.push(TXT(F.rx+F.rs*g.sw/2,104,"image plane",`${SANS} font-size="20" fill="#111" text-anchor="middle"`));
+  o.push(TXT(F.rx+F.rs*g.sw/2,F.rb+34,"image: the camera's (x, y)",
+      `${SANS} font-size="16" fill="#666" text-anchor="middle"`));
+  const ipt=g.Hmap(S.X,S.Y);
+  if(isFinite(ipt.x)&&isFinite(ipt.y)){
+    const ep=I2(ipt.x,ipt.y);
+    o.push(DOT(ep,8.5,'fill="#0fd8f4" stroke="#0a7c8c" stroke-width="2"'));
+    o.push(TXT(ep[0],ep[1]-18,`(${fmt(ipt.x,2)},&#8202;${fmt(ipt.y,2)})`,
+        `${SERIF} font-size="22" fill="#00a8c8" text-anchor="middle"`));
+  }
+
+  /* --- the two arrows between the panels --- */
+  const xa=F.lx+F.ls*PW+16, xb=F.rx-16;
+  o.push(`<path d="M ${xa} 202 C ${xa+40} 160, ${xb-40} 160, ${xb} 202" fill="none" stroke="#0b62d0" stroke-width="3.6" marker-end="url(#ab)"/>`);
+  o.push(TXT((xa+xb)/2,162,"H",`${SERIF} font-size="30" fill="#0b62d0" text-anchor="middle"`));
+  o.push(`<path d="M ${xb} 296 C ${xb-40} 340, ${xa+40} 340, ${xa} 296" fill="none" stroke="#9bb6d8" stroke-width="3" marker-end="url(#abl)"/>`);
+  o.push(TXT((xa+xb)/2,368,"H<tspan font-style='normal' baseline-shift='super' font-size='17'>&#8722;1</tspan>",
+      `${SERIF} font-size="26" fill="#7f9ec4" text-anchor="middle"`));
+  o.push(TXT(500,450,"one 3×3 matrix, no depth left — drag the cyan point in either panel",
+      `${SANS} font-size="17" fill="#666" text-anchor="middle"`));
+  return o.join("");
+}
+
+/* ------------------------------------------------------------------ */
+/* render                                                              */
+/* ------------------------------------------------------------------ */
+const svg=document.getElementById("scene");
+const $=id=>document.getElementById(id);
+let rafPending=false;
+function schedule(){ if(rafPending)return; rafPending=true;
+  requestAnimationFrame(()=>{rafPending=false;render();}); }
+
+function render(snap){
+  VB=viewBasis();
+  const g=geom();
+  let settled=true;
+  if(S.mode==="3d") settled=frame(g,snap);
+  svg.innerHTML = (S.mode==="3d") ? draw3D(g) : drawFlat(g);
+  if(!settled) schedule();
+
+  let H=g.H.slice();
+  const d=Math.abs(H[8])>1e-9?H[8]:(H.reduce((a,b)=>Math.abs(b)>Math.abs(a)?b:a,1));
+  H=H.map(x=>x/d);
+  const cells=$("Hcells").children;
+  for(let i=0;i<9;i++) cells[i].textContent=fmt(H[i],3);
+  $("hnote").innerHTML=Math.abs(g.H[8])>1e-9
+      ? "H&thinsp;: the 3&times;3 homography, scaled so h<sub>33</sub>&nbsp;=&nbsp;1 (overall scale is free)"
+      : "H, scaled by its largest entry";
+
+  const ip=g.Hmap(S.X,S.Y);
+  $("rWorld").textContent=`(${fmt(S.X,2)}, ${fmt(S.Y,2)}, 0)`;
+  $("rImg").textContent=`(${fmt(ip.x,3)}, ${fmt(ip.y,3)})`;
+  $("rCam").textContent=`(${fmt(S.C[0],2)}, ${fmt(S.C[1],2)}, ${fmt(S.C[2],2)})`;
+  $("rNorm").textContent=`(${fmt(g.nrm[0],2)}, ${fmt(g.nrm[1],2)}, ${fmt(g.nrm[2],2)})`;
+
+  let err=0, behind=false;
+  for(const c of [[0,0],[PW,0],[PW,PD],[0,PD],[S.X,S.Y]]){
+    const a=g.proj3(g.P3(c[0],c[1],0)), b=g.Hmap(c[0],c[1]);
+    if(a.z<=1e-3) behind=true; else err=Math.max(err,Math.abs(a.x-b.x),Math.abs(a.y-b.y));
+  }
+  const chip=$("chk");
+  chip.textContent="full 3×4 projection vs H : max Δ = "+err.toExponential(1);
+  chip.className="chip"+(err<1e-9?"":" bad");
+  $("warn").className="warn"+(behind?" on":"");
+
+  $("vTilt").textContent=S.tilt+"°";
+  $("vSpin").textContent=S.spin+"°";
+  $("vHt").textContent=S.C[2].toFixed(2);
+  $("vF").textContent=S.f.toFixed(2);
+  $("caption").innerHTML=(S.mode==="3d")
+    ? "Rays from the camera centre through the four corners of the planar surface pierce the camera plane and cut out the image of the surface. The cyan ray carries one point <i>(X,&thinsp;Y,&thinsp;0)</i> to its image <i>(x,&thinsp;y)</i>. Since the world frame sits on the surface with <i>Z</i> along the normal, every scene point has <i>Z</i>&nbsp;=&nbsp;0 &mdash; there is no depth coordinate left to lose."
+    : "The same projection with the depth dimension gone: the surface's own coordinates <i>(X,&thinsp;Y)</i> on the left, image coordinates <i>(x,&thinsp;y)</i> on the right, joined by the single 3&times;3 matrix <b>H</b>. Straight lines stay straight, the square grid becomes a foreshortened quadrilateral, and <b>H</b><sup>&minus;1</sup> maps straight back.";
+}
+
+/* ---- controls ---- */
+function bind(id,key){
+  const el=$(id);
+  el.value=(key==="ht")?S.C[2]:S[key];
+  el.addEventListener("input",()=>{const v=parseFloat(el.value);
+    if(key==="ht") S.C[2]=v; else S[key]=v; render();});
+}
+bind("sTilt","tilt"); bind("sSpin","spin"); bind("sHt","ht"); bind("sF","f");
+$("tab3d").addEventListener("click",()=>{S.mode="3d";$("tab3d").classList.add("active");
+  $("tabflat").classList.remove("active");render();});
+$("tabflat").addEventListener("click",()=>{S.mode="flat";$("tabflat").classList.add("active");
+  $("tab3d").classList.remove("active");render();});
+
+/* ---- pointer interaction ---- */
+let drag=null,last=null;
+function toView(ev){const b=svg.getBoundingClientRect();
+  return [(ev.clientX-b.left)*VW/b.width,(ev.clientY-b.top)*VH/b.height];}
+
+svg.addEventListener("pointerdown",ev=>{
+  const p=toView(ev), g=geom();
+  if(S.mode==="3d"){
+    const cp=pr(g.C), wp=pr(g.P3(S.X,S.Y,0));
+    if(Math.hypot(p[0]-cp[0],p[1]-cp[1])<26) drag="cam";
+    else if(Math.hypot(p[0]-wp[0],p[1]-wp[1])<24) drag="pt";
+    else {drag="orbit"; last=p;}
+  }else{
+    const F=flatLayout(g), wp=F.W2(S.X,S.Y), ipt=g.Hmap(S.X,S.Y), ep=F.I2(ipt.x,ipt.y);
+    if(Math.hypot(p[0]-wp[0],p[1]-wp[1])<44) drag="flatL";
+    else if(Math.hypot(p[0]-ep[0],p[1]-ep[1])<44) drag="flatR";
+    else if(p[0]<F.lx+F.ls*PW+34 && p[1]>104 && p[1]<F.lb+24) drag="flatL";
+    else if(p[0]>F.rx-34 && p[1]>104 && p[1]<F.rb+24) drag="flatR";
+    else drag=null;
+  }
+  if(drag){svg.setPointerCapture(ev.pointerId); onMove(ev);}
+});
+svg.addEventListener("pointermove",ev=>{if(drag) onMove(ev);});
+svg.addEventListener("pointerup",()=>{drag=null;last=null;});
+svg.addEventListener("pointercancel",()=>{drag=null;last=null;});
+
+function onMove(ev){
+  const p=toView(ev), g=geom();
+  if(drag==="cam"){
+    const q=unpr(p[0],p[1],[0,0,1],S.C[2]);
+    if(q){
+      // keep the camera outside the patch and in front of it
+      const dx=clamp(q[0],-16,Pc[0]-8), dy=clamp(q[1],-8,8);
+      S.C[0]=dx; S.C[1]=dy;
+    }
+  }else if(drag==="pt"){
+    const q=unpr(p[0],p[1],g.nrm,dot(g.nrm,g.O));
+    if(q){const d=sub(q,g.O);
+      S.X=clamp(dot(d,g.eX),0.12,PW-0.12); S.Y=clamp(dot(d,g.eY),0.12,PD-0.12);}
+  }else if(drag==="orbit"){
+    if(last){S.az=clamp(S.az+(p[0]-last[0])*0.004,rad(-175),rad(-110));
+             S.el=clamp(S.el-(p[1]-last[1])*0.004,rad(8),rad(50));}
+    last=p;
+  }else if(drag==="flatL"){
+    const F=flatLayout(g);
+    S.X=clamp((p[0]-F.lx)/F.ls,0.12,PW-0.12); S.Y=clamp((F.lb-p[1])/F.ls,0.12,PD-0.12);
+  }else if(drag==="flatR"){
+    const F=flatLayout(g), b=g.Hinv((p[0]-F.rx)/F.rs,(F.rb-p[1])/F.rs);
+    if(b){S.X=clamp(b.X,0.12,PW-0.12); S.Y=clamp(b.Y,0.12,PD-0.12);}
+  }
+  render();
+}
+
+render(true);
+</script>
+</body>
+</html>

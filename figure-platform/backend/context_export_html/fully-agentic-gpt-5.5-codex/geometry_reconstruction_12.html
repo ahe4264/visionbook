@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Two-Frame Geometry Reconstruction</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111318;
+      --muted: #5d6570;
+      --paper: #ffffff;
+      --panel: #f5f7fa;
+      --line: #d7dde5;
+      --red: #e91414;
+      --gray: #9b9b9b;
+      --blue: #1167b1;
+      --shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      overflow-x: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #edf1f6 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+    }
+
+    main {
+      min-width: 0;
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2vw, 22px);
+    }
+
+    .figure-frame {
+      width: min(100%, 1200px);
+      aspect-ratio: 1200 / 780;
+      max-height: calc(100vh - 44px);
+      overflow: hidden;
+      background: var(--paper);
+      border: 1px solid #ccd4df;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      user-select: none;
+      touch-action: none;
+    }
+
+    aside {
+      min-width: 0;
+      min-height: 100vh;
+      padding: 18px;
+      background: var(--panel);
+      border-left: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      margin: -6px 0 2px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .control-group,
+    .readout {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.78);
+      padding: 13px;
+    }
+
+    .control-group {
+      display: grid;
+      gap: 12px;
+    }
+
+    .group-title {
+      margin: 0;
+      font-weight: 750;
+      font-size: 13px;
+      color: #303742;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: #202631;
+    }
+
+    .label-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .value {
+      font-variant-numeric: tabular-nums;
+      color: var(--blue);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--blue);
+    }
+
+    .formula-stack {
+      display: grid;
+      gap: 8px;
+      font-family: "Cambria Math", Cambria, Georgia, serif;
+      font-size: 17px;
+      line-height: 1.35;
+    }
+
+    .formula-stack div {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid #e1e6ee;
+      padding-bottom: 5px;
+    }
+
+    .formula-stack div:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .formula-stack span:last-child {
+      color: var(--blue);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      align-self: center;
+      white-space: nowrap;
+    }
+
+    .reset {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #bfc8d4;
+      border-radius: 8px;
+      background: #fff;
+      color: #151a22;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
+    .reset:hover {
+      background: #eef4fb;
+    }
+
+    .plane {
+      fill: rgba(255, 255, 255, 0.94);
+      stroke: #101010;
+      stroke-width: 5;
+      stroke-linejoin: round;
+    }
+
+    .ray {
+      stroke: #111318;
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-dasharray: 18 16;
+      fill: none;
+    }
+
+    .camera-line {
+      stroke: #101010;
+      stroke-width: 2.6;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .gray-arrow {
+      stroke: var(--gray);
+      stroke-width: 5.5;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .thin-gray {
+      stroke: #b5b5b5;
+      stroke-width: 3;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .point-red,
+    .point-black {
+      stroke: #101010;
+      stroke-width: 4;
+    }
+
+    .point-red {
+      fill: var(--red);
+    }
+
+    .point-black {
+      fill: #111318;
+    }
+
+    .point-ghost {
+      fill: #fff;
+      stroke: #101010;
+      stroke-width: 2;
+      opacity: 0.72;
+    }
+
+    .math-label {
+      font-family: "Cambria Math", Cambria, Georgia, serif;
+      font-size: 50px;
+      font-weight: 750;
+      fill: #000;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 6px;
+      stroke-linejoin: round;
+    }
+
+    .math-label .small-super {
+      font-size: 28px;
+      baseline-shift: super;
+    }
+
+    .point-label {
+      font-family: "Cambria Math", Cambria, Georgia, serif;
+      font-size: 50px;
+      font-weight: 750;
+      fill: #000;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 6px;
+      stroke-linejoin: round;
+    }
+
+    .plane-label {
+      font-family: "Cambria Math", Cambria, Georgia, serif;
+      font-size: 46px;
+      font-weight: 750;
+      fill: #000;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 6px;
+      stroke-linejoin: round;
+    }
+
+    .frame-label {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 44px;
+      font-weight: 650;
+      fill: #000;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 7px;
+      stroke-linejoin: round;
+    }
+
+    .small-label {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      font-weight: 750;
+      fill: #2c3440;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        display: block;
+      }
+
+      main {
+        padding: 10px;
+      }
+
+      .figure-frame {
+        max-height: none;
+      }
+
+      aside {
+        min-height: 0;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .control-group {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+      }
+
+      .group-title {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .control-group {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 19px;
+      }
+
+      aside {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main aria-label="Interactive two-view reconstruction diagram">
+    <div class="figure-frame">
+      <svg id="scene" viewBox="0 0 1200 780" role="img" aria-labelledby="title desc">
+        <title id="title">Two-frame geometry of 3D reconstruction from a moving camera</title>
+        <desc id="desc">A target camera back-projects an image point into 3D, a rigid transform maps the point to a reference frame, and the point is projected onto the reference image plane.</desc>
+        <defs>
+          <marker id="arrow-gray" viewBox="0 0 12 12" refX="10.3" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 12 6 L 0 12 z" fill="#9b9b9b"></path>
+          </marker>
+          <marker id="arrow-black" viewBox="0 0 12 12" refX="10.2" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M 0 0 L 12 6 L 0 12 z" fill="#111318"></path>
+          </marker>
+          <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#111318" flood-opacity="0.12"></feDropShadow>
+          </filter>
+        </defs>
+
+        <path id="arrowBack" class="gray-arrow" marker-end="url(#arrow-gray)"></path>
+        <path id="arrowPose" class="gray-arrow" marker-end="url(#arrow-gray)"></path>
+        <path id="arrowProject" class="gray-arrow" marker-end="url(#arrow-gray)"></path>
+        <path id="arrowRotate" class="gray-arrow" marker-end="url(#arrow-gray)"></path>
+
+        <polygon id="targetPlane" class="plane" filter="url(#soft-shadow)"></polygon>
+        <polygon id="referencePlane" class="plane" filter="url(#soft-shadow)"></polygon>
+
+        <line id="targetSight" class="camera-line"></line>
+        <line id="referenceSight" class="camera-line"></line>
+        <line id="targetRay" class="ray"></line>
+        <line id="referenceRay" class="ray"></line>
+        <line id="baseline" class="thin-gray"></line>
+
+        <circle id="targetCamera" class="point-black" r="14"></circle>
+        <circle id="referenceCamera" class="point-black" r="14"></circle>
+        <circle id="targetImagePoint" class="point-red" r="13"></circle>
+        <circle id="referenceImagePoint" class="point-red" r="13"></circle>
+        <circle id="worldPoint" class="point-red" r="14"></circle>
+
+        <text id="pLabel" class="point-label">p</text>
+        <text id="pPrimeLabel" class="point-label">p'</text>
+        <text id="PLabel" class="point-label">P</text>
+
+        <text id="backFormula" class="math-label">
+          <tspan>P=zK</tspan><tspan class="small-super">-1</tspan><tspan>p</tspan>
+        </text>
+        <text id="transformFormula" class="math-label">P'=MP</text>
+        <text id="projectFormula" class="math-label">p'=KP'</text>
+        <text id="poseFormula" class="math-label">R, T</text>
+
+        <text id="l2Label" class="plane-label">l2</text>
+        <text id="l1Label" class="plane-label">l1</text>
+        <text id="targetFrameLabel" class="frame-label">Target frame</text>
+        <text id="referenceFrameLabel" class="frame-label">Reference frame</text>
+        <text id="targetCameraLabel" class="small-label">target camera</text>
+        <text id="referenceCameraLabel" class="small-label">reference camera</text>
+      </svg>
+    </div>
+  </main>
+
+  <aside aria-label="Geometry controls">
+    <h1>Two-View Reconstruction</h1>
+    <p class="subhead">The point p is fixed in the target image. Depth and relative pose update P, P', and p' live.</p>
+
+    <section class="control-group" aria-label="Depth control">
+      <p class="group-title">Depth along target ray</p>
+      <label for="depth">
+        <span class="label-row"><span>z</span><span id="depthValue" class="value"></span></span>
+        <input id="depth" type="range" min="2.2" max="6.1" step="0.01" value="4.55">
+      </label>
+    </section>
+
+    <section class="control-group" aria-label="Rotation controls">
+      <p class="group-title">Rotation R</p>
+      <label for="yaw">
+        <span class="label-row"><span>yaw</span><span id="yawValue" class="value"></span></span>
+        <input id="yaw" type="range" min="-52" max="-18" step="0.1" value="-36">
+      </label>
+      <label for="pitch">
+        <span class="label-row"><span>pitch</span><span id="pitchValue" class="value"></span></span>
+        <input id="pitch" type="range" min="-18" max="12" step="0.1" value="-4">
+      </label>
+      <label for="roll">
+        <span class="label-row"><span>roll</span><span id="rollValue" class="value"></span></span>
+        <input id="roll" type="range" min="-18" max="18" step="0.1" value="0">
+      </label>
+    </section>
+
+    <section class="control-group" aria-label="Translation controls">
+      <p class="group-title">Translation T</p>
+      <label for="baselineCtrl">
+        <span class="label-row"><span>baseline</span><span id="baselineValue" class="value"></span></span>
+        <input id="baselineCtrl" type="range" min="3.15" max="4.95" step="0.01" value="4.05">
+      </label>
+      <label for="verticalCtrl">
+        <span class="label-row"><span>vertical</span><span id="verticalValue" class="value"></span></span>
+        <input id="verticalCtrl" type="range" min="-0.8" max="0.55" step="0.01" value="-0.22">
+      </label>
+      <label for="forwardCtrl">
+        <span class="label-row"><span>forward</span><span id="forwardValue" class="value"></span></span>
+        <input id="forwardCtrl" type="range" min="-0.35" max="1.05" step="0.01" value="0.28">
+      </label>
+    </section>
+
+    <section class="readout" aria-label="Computed equations">
+      <div class="formula-stack">
+        <div><strong>P = zK<sup>-1</sup>p</strong><span id="pReadout"></span></div>
+        <div><strong>P' = RP + T</strong><span id="mReadout"></span></div>
+        <div><strong>p' = KP'</strong><span id="ppReadout"></span></div>
+      </div>
+    </section>
+
+    <button id="reset" class="reset" type="button">Reset geometry</button>
+  </aside>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const svg = document.getElementById("scene");
+      const ids = [
+        "targetPlane", "referencePlane", "targetSight", "referenceSight",
+        "targetRay", "referenceRay", "baseline", "targetCamera",
+        "referenceCamera", "targetImagePoint", "referenceImagePoint",
+        "worldPoint", "pLabel", "pPrimeLabel", "PLabel",
+        "backFormula", "transformFormula", "projectFormula", "poseFormula",
+        "l2Label", "l1Label", "targetFrameLabel", "referenceFrameLabel",
+        "targetCameraLabel", "referenceCameraLabel", "arrowBack",
+        "arrowPose", "arrowProject", "arrowRotate"
+      ];
+      const el = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+
+      const controls = {
+        depth: document.getElementById("depth"),
+        yaw: document.getElementById("yaw"),
+        pitch: document.getElementById("pitch"),
+        roll: document.getElementById("roll"),
+        baseline: document.getElementById("baselineCtrl"),
+        vertical: document.getElementById("verticalCtrl"),
+        forward: document.getElementById("forwardCtrl")
+      };
+
+      const valueEls = {
+        depth: document.getElementById("depthValue"),
+        yaw: document.getElementById("yawValue"),
+        pitch: document.getElementById("pitchValue"),
+        roll: document.getElementById("rollValue"),
+        baseline: document.getElementById("baselineValue"),
+        vertical: document.getElementById("verticalValue"),
+        forward: document.getElementById("forwardValue"),
+        p: document.getElementById("pReadout"),
+        m: document.getElementById("mReadout"),
+        pp: document.getElementById("ppReadout")
+      };
+
+      const defaults = {
+        depth: 4.55,
+        yaw: -36,
+        pitch: -4,
+        roll: 0,
+        baseline: 4.05,
+        vertical: -0.22,
+        forward: 0.28
+      };
+
+      const focal = 1.18;
+      const planeWidth = 1.68;
+      const planeHeight = 1.28;
+      const targetImageNorm = { x: 0.22, y: -0.20, z: 1 };
+
+      const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
+      const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+      const mul = (a, s) => ({ x: a.x * s, y: a.y * s, z: a.z * s });
+      const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+      const matVec = (m, v) => ({
+        x: dot(m[0], v),
+        y: dot(m[1], v),
+        z: dot(m[2], v)
+      });
+      const transpose = (m) => [
+        { x: m[0].x, y: m[1].x, z: m[2].x },
+        { x: m[0].y, y: m[1].y, z: m[2].y },
+        { x: m[0].z, y: m[1].z, z: m[2].z }
+      ];
+      const deg = (degrees) => degrees * Math.PI / 180;
+
+      function multiplyMatrix(a, b) {
+        const bt = transpose(b);
+        return [
+          { x: dot(a[0], bt[0]), y: dot(a[0], bt[1]), z: dot(a[0], bt[2]) },
+          { x: dot(a[1], bt[0]), y: dot(a[1], bt[1]), z: dot(a[1], bt[2]) },
+          { x: dot(a[2], bt[0]), y: dot(a[2], bt[1]), z: dot(a[2], bt[2]) }
+        ];
+      }
+
+      function rotationCameraToWorld(yawDeg, pitchDeg, rollDeg) {
+        const y = deg(yawDeg);
+        const p = deg(pitchDeg);
+        const r = deg(rollDeg);
+        const cy = Math.cos(y), sy = Math.sin(y);
+        const cp = Math.cos(p), sp = Math.sin(p);
+        const cr = Math.cos(r), sr = Math.sin(r);
+        const ry = [
+          { x: cy, y: 0, z: sy },
+          { x: 0, y: 1, z: 0 },
+          { x: -sy, y: 0, z: cy }
+        ];
+        const rx = [
+          { x: 1, y: 0, z: 0 },
+          { x: 0, y: cp, z: -sp },
+          { x: 0, y: sp, z: cp }
+        ];
+        const rz = [
+          { x: cr, y: -sr, z: 0 },
+          { x: sr, y: cr, z: 0 },
+          { x: 0, y: 0, z: 1 }
+        ];
+        return multiplyMatrix(multiplyMatrix(ry, rx), rz);
+      }
+
+      function sceneProject(v) {
+        return {
+          x: 212 + 138 * (v.x + 0.35 * v.z),
+          y: 642 - 138 * (0.88 * v.y + 0.72 * v.z)
+        };
+      }
+
+      function localToWorld(center, cameraToWorld, local) {
+        return add(center, matVec(cameraToWorld, local));
+      }
+
+      function polygonPoints(points) {
+        return points.map((p) => {
+          const q = sceneProject(p);
+          return `${q.x.toFixed(1)},${q.y.toFixed(1)}`;
+        }).join(" ");
+      }
+
+      function setLine(node, a, b) {
+        const pa = sceneProject(a);
+        const pb = sceneProject(b);
+        node.setAttribute("x1", pa.x);
+        node.setAttribute("y1", pa.y);
+        node.setAttribute("x2", pb.x);
+        node.setAttribute("y2", pb.y);
+      }
+
+      function setCircle(node, p) {
+        const q = sceneProject(p);
+        node.setAttribute("cx", q.x);
+        node.setAttribute("cy", q.y);
+      }
+
+      function setText(node, p, dx, dy) {
+        const q = sceneProject(p);
+        node.setAttribute("x", q.x + dx);
+        node.setAttribute("y", q.y + dy);
+      }
+
+      function pathCurve(a, c1, c2, b) {
+        return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} C ${c1.x.toFixed(1)} ${c1.y.toFixed(1)}, ${c2.x.toFixed(1)} ${c2.y.toFixed(1)}, ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
+      }
+
+      function setLabelText(textNode, value) {
+        textNode.textContent = value;
+      }
+
+      function fmt(n) {
+        return Number(n).toFixed(2);
+      }
+
+      function planeCorners(center, cameraToWorld) {
+        const z = focal;
+        const w = planeWidth;
+        const h = planeHeight;
+        return [
+          localToWorld(center, cameraToWorld, { x: -w, y: h, z }),
+          localToWorld(center, cameraToWorld, { x: w, y: h, z }),
+          localToWorld(center, cameraToWorld, { x: w, y: -h, z }),
+          localToWorld(center, cameraToWorld, { x: -w, y: -h, z })
+        ];
+      }
+
+      function stateFromControls() {
+        return {
+          depth: parseFloat(controls.depth.value),
+          yaw: parseFloat(controls.yaw.value),
+          pitch: parseFloat(controls.pitch.value),
+          roll: parseFloat(controls.roll.value),
+          baseline: parseFloat(controls.baseline.value),
+          vertical: parseFloat(controls.vertical.value),
+          forward: parseFloat(controls.forward.value)
+        };
+      }
+
+      function update() {
+        const s = stateFromControls();
+        const targetCenter = { x: 0, y: 0, z: 0 };
+        const targetRcw = [
+          { x: 1, y: 0, z: 0 },
+          { x: 0, y: 1, z: 0 },
+          { x: 0, y: 0, z: 1 }
+        ];
+        const refCenter = { x: s.baseline, y: s.vertical, z: s.forward };
+        const refRcw = rotationCameraToWorld(s.yaw, s.pitch, s.roll);
+        const refR = transpose(refRcw);
+
+        const targetPlanePoint = { x: targetImageNorm.x * focal, y: targetImageNorm.y * focal, z: focal };
+        const worldPoint = mul(targetImageNorm, s.depth);
+        const pointInReference = matVec(refR, sub(worldPoint, refCenter));
+        const visibleZ = Math.max(0.18, pointInReference.z);
+        const refImageLocal = {
+          x: focal * pointInReference.x / visibleZ,
+          y: focal * pointInReference.y / visibleZ,
+          z: focal
+        };
+        const refImageWorld = localToWorld(refCenter, refRcw, refImageLocal);
+        const extrinsicT = matVec(refR, mul(refCenter, -1));
+
+        const targetCorners = planeCorners(targetCenter, targetRcw);
+        const referenceCorners = planeCorners(refCenter, refRcw);
+        el.targetPlane.setAttribute("points", polygonPoints(targetCorners));
+        el.referencePlane.setAttribute("points", polygonPoints(referenceCorners));
+
+        setLine(el.targetSight, targetCenter, targetPlanePoint);
+        setLine(el.referenceSight, refCenter, refImageWorld);
+        setLine(el.targetRay, targetCenter, worldPoint);
+        setLine(el.referenceRay, refCenter, worldPoint);
+        setLine(el.baseline, targetCenter, refCenter);
+
+        setCircle(el.targetCamera, targetCenter);
+        setCircle(el.referenceCamera, refCenter);
+        setCircle(el.targetImagePoint, targetPlanePoint);
+        setCircle(el.referenceImagePoint, refImageWorld);
+        setCircle(el.worldPoint, worldPoint);
+
+        setText(el.pLabel, targetPlanePoint, -38, -12);
+        setText(el.pPrimeLabel, refImageWorld, 14, 44);
+        setText(el.PLabel, worldPoint, -42, -16);
+
+        const p2 = sceneProject(targetPlanePoint);
+        const pWorld2 = sceneProject(worldPoint);
+        const pRef2 = sceneProject(refImageWorld);
+        const targetCam2 = sceneProject(targetCenter);
+        const refCam2 = sceneProject(refCenter);
+
+        el.arrowBack.setAttribute("d", pathCurve(
+          { x: p2.x - 6, y: p2.y - 70 },
+          { x: p2.x + 42, y: p2.y - 250 },
+          { x: pWorld2.x - 180, y: pWorld2.y + 62 },
+          { x: pWorld2.x - 54, y: pWorld2.y + 31 }
+        ));
+        el.arrowProject.setAttribute("d", pathCurve(
+          { x: pWorld2.x + 16, y: pWorld2.y + 12 },
+          { x: pWorld2.x + 56, y: pWorld2.y + 130 },
+          { x: pRef2.x + 86, y: pRef2.y - 75 },
+          { x: pRef2.x + 27, y: pRef2.y - 15 }
+        ));
+        el.arrowPose.setAttribute("d", pathCurve(
+          { x: targetCam2.x + 22, y: targetCam2.y + 38 },
+          { x: targetCam2.x + 220, y: targetCam2.y + 180 },
+          { x: refCam2.x - 205, y: refCam2.y + 132 },
+          { x: refCam2.x - 26, y: refCam2.y + 28 }
+        ));
+        el.arrowRotate.setAttribute(
+          "d",
+          `M ${(pWorld2.x - 34).toFixed(1)} ${(pWorld2.y - 42).toFixed(1)} A 68 58 0 1 1 ${(pWorld2.x + 72).toFixed(1)} ${(pWorld2.y - 17).toFixed(1)}`
+        );
+
+        el.backFormula.setAttribute("x", Math.max(430, pWorld2.x - 305));
+        el.backFormula.setAttribute("y", Math.max(112, pWorld2.y + 8));
+        el.transformFormula.setAttribute("x", Math.min(930, pWorld2.x + 52));
+        el.transformFormula.setAttribute("y", Math.max(150, pWorld2.y + 48));
+        el.projectFormula.setAttribute("x", Math.min(905, pRef2.x + 72));
+        el.projectFormula.setAttribute("y", pRef2.y - 92);
+        el.poseFormula.setAttribute("x", (targetCam2.x + refCam2.x) / 2 - 58);
+        el.poseFormula.setAttribute("y", Math.min(744, Math.max(targetCam2.y, refCam2.y) + 116));
+
+        const targetBottom = sceneProject(targetCorners[2]);
+        const refBottom = sceneProject(referenceCorners[2]);
+        const targetLeft = sceneProject(targetCorners[3]);
+        const refRight = sceneProject(referenceCorners[2]);
+        el.l2Label.setAttribute("x", targetBottom.x - 74);
+        el.l2Label.setAttribute("y", targetBottom.y - 34);
+        el.l1Label.setAttribute("x", refBottom.x - 78);
+        el.l1Label.setAttribute("y", refBottom.y - 28);
+        el.targetFrameLabel.setAttribute("x", Math.max(8, targetLeft.x - 285));
+        el.targetFrameLabel.setAttribute("y", 738);
+        el.referenceFrameLabel.setAttribute("x", Math.min(805, refRight.x - 165));
+        el.referenceFrameLabel.setAttribute("y", 738);
+        el.targetCameraLabel.setAttribute("x", targetCam2.x - 48);
+        el.targetCameraLabel.setAttribute("y", targetCam2.y + 36);
+        el.referenceCameraLabel.setAttribute("x", refCam2.x - 58);
+        el.referenceCameraLabel.setAttribute("y", refCam2.y + 36);
+
+        valueEls.depth.textContent = fmt(s.depth);
+        valueEls.yaw.textContent = `${fmt(s.yaw)} deg`;
+        valueEls.pitch.textContent = `${fmt(s.pitch)} deg`;
+        valueEls.roll.textContent = `${fmt(s.roll)} deg`;
+        valueEls.baseline.textContent = fmt(s.baseline);
+        valueEls.vertical.textContent = fmt(s.vertical);
+        valueEls.forward.textContent = fmt(s.forward);
+        valueEls.p.textContent = `[${fmt(worldPoint.x)}, ${fmt(worldPoint.y)}, ${fmt(worldPoint.z)}]`;
+        valueEls.m.textContent = `[${fmt(pointInReference.x)}, ${fmt(pointInReference.y)}, ${fmt(pointInReference.z)}]`;
+        valueEls.pp.textContent = `[${fmt(refImageLocal.x)}, ${fmt(refImageLocal.y)}]`;
+
+        svg.dataset.extrinsicT = `${fmt(extrinsicT.x)},${fmt(extrinsicT.y)},${fmt(extrinsicT.z)}`;
+      }
+
+      Object.values(controls).forEach((control) => {
+        control.addEventListener("input", update);
+      });
+
+      document.getElementById("reset").addEventListener("click", () => {
+        Object.entries(defaults).forEach(([key, value]) => {
+          controls[key].value = String(value);
+        });
+        update();
+      });
+
+      update();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>Move β: <output id="betaVal">0</output><input id="betaInput" type="range" min="-130" max="130" step="1" value="0" oninput="document.getElementById('betaVal').value=this.value;update_beta(+this.value)"></label>
+    <label style="flex-direction:row;align-items:center;gap:6px"><input id="caseInput" type="checkbox" onchange="toggle_case(this.checked)"> obtuse focus</label>
+    <button onclick="trigger_altitude()">Drop altitude</button>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(function () {
+        var limit = Math.max(size, cap);
+        while (_uiEl.scrollHeight > _uiEl.clientHeight + 1 && size + 24 <= limit) {
+          size += 24;
+          document.body.style.setProperty('--ui-size', size + 'px');
+        }
+      }, 0);
+    }
+
+    function compileExpr(src, vars) {
+      vars = vars || ['x'];
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable');
+      }
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var names = expr.variables();
+      for (var i = 0; i < names.length; i++) {
+        if (vars.indexOf(names[i]) === -1) throw new Error('Unknown variable ' + names[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, Math.floor(n || 100));
+      if (n % 2) n++;
+      var h = (b - a) / n;
+      var total = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) total += fn(a + i * h) * (i % 2 ? 4 : 2);
+      return total * h / 3;
+    }
+
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-7;
+      var fa = fn(a);
+      var fb = fn(b);
+      if (fa === 0) return a;
+      if (fb === 0) return b;
+      if (fa * fb > 0) return null;
+      for (var i = 0; i < 80; i++) {
+        var mid = (a + b) / 2;
+        var fm = fn(mid);
+        if (Math.abs(fm) < tol || Math.abs(b - a) < tol) return mid;
+        if (fa * fm <= 0) {
+          b = mid;
+          fb = fm;
+        } else {
+          a = mid;
+          fa = fm;
+        }
+      }
+      return (a + b) / 2;
+    }
+
+    var _plotFrame = null;
+    function setPlotFrame(frame) { _plotFrame = frame; }
+    function plotX(x) { return x; }
+    function plotY(y) { return y; }
+    function plotFunction() { throw new Error('plotFunction is unavailable in this figure'); }
+    function fillBetween() { throw new Error('fillBetween is unavailable in this figure'); }
+    function plotParametric() { throw new Error('plotParametric is unavailable in this figure'); }
+    function bindEquationInput() { throw new Error('bindEquationInput is unavailable in this figure'); }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    (function () {
+      if (typeof SVG === 'undefined') throw new Error('SVG.js failed to load');
+
+      var container = document.getElementById('container');
+      var draw = SVG().addTo(container).size('100%', '100%').viewbox(0, 0, 975, 235);
+      draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+      var state = {
+        betaShift: 0,
+        obtuseFocus: false,
+        altitudeVisible: true,
+        flash: false
+      };
+
+      var panels = {
+        left: {
+          alpha: { x: 122, y: 208 },
+          beta: { x: 198, y: 29 },
+          gamma: { x: 496, y: 208 },
+          focus: 'acute'
+        },
+        right: {
+          alpha: { x: 615, y: 208 },
+          beta: { x: 552, y: 29 },
+          gamma: { x: 849, y: 208 },
+          focus: 'obtuse'
+        }
+      };
+
+      function line(parent, x1, y1, x2, y2, dashed) {
+        return parent.line(x1, y1, x2, y2).stroke({
+          color: '#000',
+          width: 2,
+          linecap: 'butt',
+          linejoin: 'miter',
+          dasharray: dashed ? '7 6' : null
+        });
+      }
+
+      function text(parent, value, x, y, anchor, size) {
+        return parent.text(value)
+          .font({
+            family: 'Times New Roman, Times, serif',
+            size: size || 20,
+            style: 'italic'
+          })
+          .fill('#000')
+          .attr({
+            x: x,
+            y: y,
+            'text-anchor': anchor || 'middle',
+            'dominant-baseline': 'middle'
+          });
+      }
+
+      function pointsOnArc(cx, cy, r, startDeg, endDeg) {
+        var pts = [];
+        var steps = Math.max(8, Math.ceil(Math.abs(endDeg - startDeg) / 8));
+        for (var i = 0; i <= steps; i++) {
+          var t = startDeg + (endDeg - startDeg) * i / steps;
+          var rad = t * Math.PI / 180;
+          pts.push([cx + r * Math.cos(rad), cy - r * Math.sin(rad)]);
+        }
+        return pts;
+      }
+
+      function arc(parent, cx, cy, r, startDeg, endDeg) {
+        var pts = pointsOnArc(cx, cy, r, startDeg, endDeg);
+        var d = 'M ' + pts.map(function (p) { return p[0].toFixed(2) + ' ' + p[1].toFixed(2); }).join(' L ');
+        return parent.path(d).fill('none').stroke({ color: '#000', width: 1.4, linecap: 'round' });
+      }
+
+      function angleDegFromAlpha(alpha, beta) {
+        return Math.atan2(alpha.y - beta.y, beta.x - alpha.x) * 180 / Math.PI;
+      }
+
+      function labelAlong(parent, value, p1, p2, dx, dy, size) {
+        text(parent, value, (p1.x + p2.x) / 2 + dx, (p1.y + p2.y) / 2 + dy, 'middle', size);
+      }
+
+      function rightAngle(parent, foot, scale) {
+        var s = scale || 18;
+        parent.polyline([
+          [foot.x, foot.y - s],
+          [foot.x + s, foot.y - s],
+          [foot.x + s, foot.y]
+        ]).fill('none').stroke({ color: '#000', width: 1.4, linejoin: 'miter' });
+      }
+
+      function explainAltitude() {
+        showPopup(
+          'Altitude construction',
+          'The dashed segment h is perpendicular to side b, so it supplies the height for the area formula. In the obtuse case the same perpendicular lands on the extension of b, so the adjacent angle is alpha prime.'
+        );
+      }
+
+      function interactiveBase(parent, p1, p2) {
+        parent.line(p1.x, p1.y, p2.x, p2.y)
+          .stroke({ color: '#000', width: 18, opacity: 0 })
+          .css('cursor', 'pointer')
+          .on('mousemove', function (event) { showTooltip('Click b to drop the perpendicular height h.', event); })
+          .on('mouseleave', function () { hideTooltip(); })
+          .on('click', function () { trigger_altitude(); explainAltitude(); });
+      }
+
+      function drawTriangle(panelName) {
+        var base = panels[panelName];
+        var alpha = { x: base.alpha.x, y: base.alpha.y };
+        var gamma = { x: base.gamma.x, y: base.gamma.y };
+        var beta = { x: base.beta.x, y: base.beta.y };
+        var isActive = (panelName === 'left' && !state.obtuseFocus) || (panelName === 'right' && state.obtuseFocus);
+
+        if (isActive) {
+          beta.x = base.beta.x + state.betaShift;
+        }
+
+        var foot = { x: beta.x, y: alpha.y };
+        var isObtuse = foot.x < alpha.x;
+        var g = draw.group();
+        var altitudeGroup = g.group();
+
+        line(g, alpha.x, alpha.y, beta.x, beta.y, false);
+        line(g, beta.x, beta.y, gamma.x, gamma.y, false);
+        line(g, alpha.x, alpha.y, gamma.x, gamma.y, false);
+
+        if (isObtuse) {
+          line(g, foot.x, foot.y, alpha.x, alpha.y, true);
+        }
+
+        if (state.altitudeVisible) {
+          line(altitudeGroup, beta.x, beta.y, foot.x, foot.y, true);
+          rightAngle(altitudeGroup, foot, 18);
+          altitudeGroup.opacity(state.flash && isActive ? 0.48 : 1);
+        }
+
+        var theta = angleDegFromAlpha(alpha, beta);
+        theta = Math.max(14, Math.min(166, theta));
+        arc(g, alpha.x, alpha.y, isObtuse ? 31 : 30, 0, theta);
+        if (isObtuse) arc(g, alpha.x, alpha.y, 20, theta, 180);
+
+        labelAlong(g, 'c', alpha, beta, isObtuse ? 18 : -22, isObtuse ? 12 : 2, 19);
+        labelAlong(g, 'a', beta, gamma, 18, -1, 19);
+        text(g, 'b', (alpha.x + gamma.x) / 2 - 3, alpha.y + 18, 'middle', 20);
+        text(g, 'β', beta.x, beta.y - 18, 'middle', 20);
+        text(g, 'γ', gamma.x + 12, gamma.y + 4, 'start', 20);
+
+        if (isObtuse) {
+          text(g, 'α', alpha.x + 35, alpha.y - 18, 'middle', 18);
+          text(g, 'α′', alpha.x - 25, alpha.y - 18, 'middle', 18);
+        } else {
+          text(g, 'α', alpha.x - 14, alpha.y + 2, 'end', 18);
+        }
+
+        if (state.altitudeVisible) {
+          text(g, 'h', foot.x + (isObtuse ? -22 : 9), (beta.y + foot.y) / 2 - 3, isObtuse ? 'end' : 'start', 20);
+        }
+
+        interactiveBase(g, alpha, gamma);
+        if (isObtuse) interactiveBase(g, foot, alpha);
+      }
+
+      function render() {
+        draw.clear();
+        draw.rect(975, 235).fill('#fff');
+        drawTriangle('left');
+        drawTriangle('right');
+      }
+
+      window.update_beta = function (v) {
+        state.betaShift = v;
+        state.altitudeVisible = true;
+        render();
+      };
+
+      window.toggle_case = function (on) {
+        state.obtuseFocus = Boolean(on);
+        state.altitudeVisible = true;
+        render();
+      };
+
+      window.trigger_altitude = function () {
+        state.altitudeVisible = false;
+        state.flash = true;
+        render();
+        setTimeout(function () {
+          state.altitudeVisible = true;
+          render();
+        }, 120);
+        setTimeout(function () {
+          state.flash = false;
+          render();
+        }, 780);
+      };
+
+      render();
+      window.__markRendered();
+    }());
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

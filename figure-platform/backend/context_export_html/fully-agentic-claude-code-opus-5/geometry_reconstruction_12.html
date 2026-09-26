@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two-View Reconstruction</title>
+<style>
+  :root{
+    --bg:#f2f1ee;
+    --card:#ffffff;
+    --ink:#16181d;
+    --muted:#5d6470;
+    --line:#d9d6d0;
+    --accent:#b3121c;
+    --gray:#9a9a9a;
+    --panel:#fbfaf8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    font-size:14px;
+    line-height:1.5;
+    padding:18px 16px 40px;
+  }
+  .wrap{max-width:1280px;margin:0 auto}
+  header h1{
+    font-family:"Times New Roman",Georgia,serif;
+    font-size:25px;font-weight:700;margin:0 0 4px;letter-spacing:.2px;
+  }
+  header p{margin:0 0 16px;color:var(--muted);max-width:76ch}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px;align-items:start}
+  @media (max-width:1020px){.grid{grid-template-columns:minmax(0,1fr)}}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 1px 2px rgba(0,0,0,.05);
+  }
+  .figcard{padding:8px 8px 4px}
+  svg#scene{display:block;width:100%;height:auto;touch-action:none;cursor:grab;user-select:none}
+  svg#scene.dragging{cursor:grabbing}
+  .cap{margin:2px 10px 10px;color:var(--muted);font-size:12.5px}
+  .cap b{color:var(--ink)}
+  aside{display:flex;flex-direction:column;gap:14px}
+  .sec{padding:12px 14px 14px}
+  .sec h2{
+    font-size:12px;text-transform:uppercase;letter-spacing:.09em;
+    color:var(--muted);margin:0 0 10px;font-weight:700;
+  }
+  .row{display:grid;grid-template-columns:78px 1fr 62px;align-items:center;gap:8px;margin:6px 0}
+  .row label{font-family:"Times New Roman",Georgia,serif;font-size:15px}
+  .row .val{font-family:ui-monospace,Consolas,monospace;font-size:12px;text-align:right;color:var(--muted)}
+  input[type=range]{width:100%;accent-color:#b3121c;height:18px}
+  .btns{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+  button{
+    font:inherit;font-size:12.5px;padding:5px 11px;border-radius:6px;
+    border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;
+  }
+  button:hover{background:#f0eee9}
+  button.on{background:#b3121c;border-color:#b3121c;color:#fff}
+  .insets{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .inset h3{margin:0 0 4px;font-size:11.5px;color:var(--muted);font-weight:700;letter-spacing:.04em}
+  .inset svg{display:block;width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:4px;touch-action:none}
+  table.rd{width:100%;border-collapse:collapse;font-family:ui-monospace,Consolas,monospace;font-size:11.5px}
+  table.rd td{padding:2px 0;vertical-align:top}
+  table.rd td.k{color:var(--muted);white-space:nowrap;padding-right:8px;font-family:"Times New Roman",Georgia,serif;font-size:14px}
+  .note{font-size:12px;color:var(--muted);margin:8px 0 0}
+  .warn{color:#b3121c;font-weight:600}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+  .pill{display:inline-block;padding:1px 6px;border-radius:999px;background:#f0eee9;border:1px solid var(--line);font-size:11px}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12px;color:var(--muted);margin:6px 10px 10px}
+  .legend i{display:inline-block;width:22px;height:0;border-top-width:3px;border-top-style:solid;vertical-align:middle;margin-right:5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Two-view geometry: reconstructing a 3D point from a moving camera</h1>
+    <p>The image point <b>p</b> in the target frame &#8467;<sub>2</sub> is back-projected to a 3D point
+       <b>P</b> = <i>z</i>K<sup>&#8722;1</sup><b>p</b>; the same physical point written in the reference frame is
+       <b>P&#8242;</b> = M<b>P</b> = R<b>P</b> + T, and it images at <b>p&#8242;</b> = K<b>P&#8242;</b> in &#8467;<sub>1</sub>.
+       Drag <b>p</b>, drag <b>P</b> along its ray, move the relative pose (R,&nbsp;T), or drag the background to orbit the view.</p>
+  </header>
+
+  <div class="grid">
+    <section class="card figcard">
+      <svg id="scene" viewBox="0 0 820 650" aria-label="Two-view reconstruction geometry"></svg>
+      <div class="legend">
+        <span><i style="border-color:#111"></i>image planes &amp; projection rays</span>
+        <span><i style="border-color:#9a9a9a"></i>maps between representations</span>
+        <span><i style="border-color:#b3121c;border-top-style:dashed"></i>depth ambiguity (ray &rarr; epipolar line)</span>
+      </div>
+      <p class="cap"><b>Reading the figure.</b> The loop <b>P&#8242;&nbsp;=&nbsp;MP</b> is drawn at the point itself because
+        P and P&#8242; are the <i>same</i> 3D location &mdash; only the coordinate frame changes. One view fixes the
+        ray, not the point: sliding <i>z</i> leaves <b>p</b> untouched while <b>p&#8242;</b> sweeps out the epipolar line.</p>
+    </section>
+
+    <aside>
+      <section class="card sec">
+        <h2>Image planes (what each camera sees)</h2>
+        <div class="insets">
+          <div class="inset">
+            <h3>&#8467;<sub>2</sub> &mdash; target frame (drag p)</h3>
+            <svg id="im2" viewBox="0 0 160 120"></svg>
+          </div>
+          <div class="inset">
+            <h3>&#8467;<sub>1</sub> &mdash; reference frame</h3>
+            <svg id="im1" viewBox="0 0 160 120"></svg>
+          </div>
+        </div>
+        <p class="note" id="imnote"></p>
+      </section>
+
+      <section class="card sec">
+        <h2>Depth along the ray through p</h2>
+        <div class="row"><label><i>z</i></label><input id="s_z" type="range" min="1" max="5.5" step="0.01"><span class="val" id="v_z"></span></div>
+        <div class="btns">
+          <button id="b_anim">Animate z</button>
+          <button id="b_epi" class="on">Epipolar line</button>
+          <button id="b_ray" class="on">Full ray</button>
+        </div>
+      </section>
+
+      <section class="card sec">
+        <h2>Relative pose M = (R, T) of the target camera</h2>
+        <div class="row"><label>yaw</label><input id="s_yaw" type="range" min="-45" max="45" step="0.5"><span class="val" id="v_yaw"></span></div>
+        <div class="row"><label>pitch</label><input id="s_pitch" type="range" min="-45" max="45" step="0.5"><span class="val" id="v_pitch"></span></div>
+        <div class="row"><label>roll</label><input id="s_roll" type="range" min="-45" max="45" step="0.5"><span class="val" id="v_roll"></span></div>
+        <div class="row"><label>T<sub>x</sub></label><input id="s_tx" type="range" min="-3" max="-0.3" step="0.01"><span class="val" id="v_tx"></span></div>
+        <div class="row"><label>T<sub>y</sub></label><input id="s_ty" type="range" min="-1.2" max="1.2" step="0.01"><span class="val" id="v_ty"></span></div>
+        <div class="row"><label>T<sub>z</sub></label><input id="s_tz" type="range" min="-2.6" max="0.9" step="0.01"><span class="val" id="v_tz"></span></div>
+      </section>
+
+      <section class="card sec">
+        <h2>Calibration K (shared by both cameras)</h2>
+        <div class="row"><label>focal <i>f</i></label><input id="s_f" type="range" min="180" max="900" step="1"><span class="val" id="v_f"></span></div>
+        <p class="note">Image size 640&#215;480&nbsp;px, principal point (320,&nbsp;240).
+          K&nbsp;=&nbsp;[[<span id="k_f" class="mono"></span>,0,320],[0,<span id="k_f2" class="mono"></span>,240],[0,0,1]].</p>
+        <div class="btns"><button id="b_reset">Reset all</button></div>
+      </section>
+
+      <section class="card sec">
+        <h2>Live values</h2>
+        <table class="rd">
+          <tr><td class="k">p</td><td id="r_p"></td></tr>
+          <tr><td class="k">K<sup>&#8722;1</sup>p</td><td id="r_kp"></td></tr>
+          <tr><td class="k">P = zK<sup>&#8722;1</sup>p</td><td id="r_P"></td></tr>
+          <tr><td class="k">P&#8242; = RP + T</td><td id="r_Pp"></td></tr>
+          <tr><td class="k">p&#8242; = &#960;(KP&#8242;)</td><td id="r_pp"></td></tr>
+          <tr><td class="k">R</td><td id="r_R"></td></tr>
+          <tr><td class="k">T</td><td id="r_T"></td></tr>
+        </table>
+        <p class="note" id="status"></p>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Linear algebra (3-vectors, 3x3 matrices)
+   ============================================================ */
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const scl=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const mv=(M,v)=>[dot(M[0],v),dot(M[1],v),dot(M[2],v)];
+const mm=(A,B)=>[0,1,2].map(i=>[0,1,2].map(j=>A[i][0]*B[0][j]+A[i][1]*B[1][j]+A[i][2]*B[2][j]));
+const rotX=t=>[[1,0,0],[0,Math.cos(t),-Math.sin(t)],[0,Math.sin(t),Math.cos(t)]];
+const rotY=t=>[[Math.cos(t),0,Math.sin(t)],[0,1,0],[-Math.sin(t),0,Math.cos(t)]];
+const rotZ=t=>[[Math.cos(t),-Math.sin(t),0],[Math.sin(t),Math.cos(t),0],[0,0,1]];
+const rad=d=>d*Math.PI/180;
+const fmt=(x,n=2)=>(Math.abs(x)<5e-3?0:x).toFixed(n);
+
+/* ============================================================
+   State.  World frame == reference-camera frame (OpenCV convention:
+   x right, y down, z forward along the optical axis).
+   The target camera has pose (R,T) in that frame, so a point q in
+   target-camera coordinates becomes P' = R q + T in the reference frame.
+   ============================================================ */
+const IMW=640, IMH=480, PPX=320, PPY=240;   // image size and principal point
+const D0={ f:400, pu:272, pv:262, z:4.6,
+           yaw:0, pitch:0, roll:0, Tx:-1.40, Ty:0.00, Tz:-1.36,
+           az:-47.9, el:-43.5 };
+const S={...D0, epi:true, ray:true, anim:false};
+
+/* ---- camera model ---------------------------------------- */
+function backproject(u,v,z){ return [ z*(u-PPX)/S.f, z*(v-PPY)/S.f, z ]; }   // z K^-1 p
+function projectPix(P){ return [ S.f*P[0]/P[2]+PPX, S.f*P[1]/P[2]+PPY ]; }   // pi(K P)
+function Rmat(){ return mm(mm(rotY(rad(S.yaw)),rotX(rad(S.pitch))),rotZ(rad(S.roll))); }
+function Tvec(){ return [S.Tx,S.Ty,S.Tz]; }
+function cam2ToWorld(q){ return add(mv(Rmat(),q), Tvec()); }
+
+/* ============================================================
+   Orthographic viewing transform for the 3D picture.
+   Render coords = (x, -y, z) of the world so that "up" is up.
+   ============================================================ */
+function basis(){
+  const a=rad(S.az), e=rad(S.el);
+  const d=[Math.cos(e)*Math.sin(a), Math.sin(e), Math.cos(e)*Math.cos(a)];   // eye direction
+  const r=[Math.cos(a),0,-Math.sin(a)];                                      // screen right
+  const u=cross(d,r);                                                        // screen up
+  return {d,r,u};
+}
+let B=basis();
+let VS=145, OX=116, OY=320;         // px per world unit, and screen origin (set by layout())
+function raw(P){ const v=[P[0],-P[1],P[2]]; return [dot(v,B.r), -dot(v,B.u)]; }
+function prj(P){ const u=raw(P); return [OX+VS*u[0], OY+VS*u[1]]; }
+/* The two image planes and the two camera centres are framed inside a fixed box, so the
+   picture never depends on z or on where p sits: sliding the depth really does leave the
+   cameras (and p) put.  P itself is free to travel into the head-room above the box. */
+const BOX=[30,670,312,566];
+function layout(){
+  const pts=[[0,0,0], Tvec()];
+  for(const c of [[0,0],[IMW,0],[IMW,IMH],[0,IMH]]){
+    pts.push(backproject(c[0],c[1],1));
+    pts.push(cam2ToWorld(backproject(c[0],c[1],1)));
+  }
+  const us=pts.map(raw);
+  const x0=Math.min(...us.map(u=>u[0])), x1=Math.max(...us.map(u=>u[0]));
+  const y0=Math.min(...us.map(u=>u[1])), y1=Math.max(...us.map(u=>u[1]));
+  VS=Math.min(150,(BOX[1]-BOX[0])/Math.max(0.35,x1-x0),(BOX[3]-BOX[2])/Math.max(0.35,y1-y0));
+  const Cx=(BOX[0]+BOX[1])/2, Cy=(BOX[2]+BOX[3])/2, mx=(x0+x1)/2, my=(y0+y1)/2;
+  /* shrink (continuously) only as far as is needed to keep P itself on the canvas */
+  const u=raw(cam2ToWorld(backproject(S.pu,S.pv,S.z)));
+  const capAxis=(k,C,lo,hi)=>Math.abs(k)<1e-6?1e9:(k>0?(hi-C)/k:(lo-C)/k);
+  VS=Math.min(VS, capAxis(u[0]-mx,Cx,64,700), capAxis(u[1]-my,Cy,118,CH-72));
+  VS=Math.max(42,VS);
+  OX=Cx - VS*mx;
+  OY=Cy - VS*my;
+}
+const CW=820, CH=650;
+const clampX=(x,pad)=>Math.max(pad,Math.min(CW-pad,x));
+
+/* ============================================================
+   Small 2D helpers
+   ============================================================ */
+const sx=(p)=>p[0], sy=(p)=>p[1];
+function seg(a,b){ return [b[0]-a[0], b[1]-a[1]]; }
+function nrm2(v){ const m=Math.hypot(v[0],v[1])||1; return [v[0]/m,v[1]/m]; }
+function lerp2(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t]; }
+function shrink(a,b,da,db){ const d=nrm2(seg(a,b)); return [[a[0]+d[0]*da,a[1]+d[1]*da],[b[0]-d[0]*db,b[1]-d[1]*db]]; }
+
+/* Liang-Barsky clip of a 2D segment to the image rectangle */
+function clipRect(a,b,w,h){
+  let t0=0,t1=1; const dx=b[0]-a[0], dy=b[1]-a[1];
+  const p=[-dx,dx,-dy,dy], q=[a[0],w-a[0],a[1],h-a[1]];
+  for(let i=0;i<4;i++){
+    if(Math.abs(p[i])<1e-12){ if(q[i]<0) return null; }
+    else{ const r=q[i]/p[i];
+      if(p[i]<0){ if(r>t1) return null; if(r>t0) t0=r; }
+      else{ if(r<t0) return null; if(r<t1) t1=r; } }
+  }
+  return [lerp2(a,b,t0), lerp2(a,b,t1)];
+}
+/* the same clip against an arbitrary rectangle */
+function clipRect0(a,b,x0,y0,x1,y1){
+  const A=[a[0]-x0,a[1]-y0], Bb=[b[0]-x0,b[1]-y0];
+  const r=clipRect(A,Bb,x1-x0,y1-y0);
+  return r?[[r[0][0]+x0,r[0][1]+y0],[r[1][0]+x0,r[1][1]+y0]]:null;
+}
+
+/* ============================================================
+   The geometry, recomputed from scratch on every frame
+   ============================================================ */
+function geometry(){
+  const R=Rmat(), T=Tvec();
+  const ray=backproject(S.pu,S.pv,1);                 // K^-1 p  (unit depth, target cam coords)
+  const P  =backproject(S.pu,S.pv,S.z);               // P = z K^-1 p
+  const Pw =cam2ToWorld(P);                           // P' = R P + T   (reference frame)
+  const ok = Pw[2] > 1e-6;                            // in front of the reference camera?
+  const pp = ok ? projectPix(Pw) : null;              // p' = pi(K P')
+  const C2 = T;                                       // target camera centre, in reference frame
+  const C1 = [0,0,0];
+  // points on the physical image planes (drawn at unit depth)
+  const pOnPlane  = cam2ToWorld(backproject(S.pu,S.pv,1));
+  const ppOnPlane = ok ? backproject(pp[0],pp[1],1) : null;
+  // epipolar line in image 1: locus of pi(K(z R K^-1 p + T)) for z > 0
+  const dirW = mv(R,ray);                             // direction of the ray in the reference frame
+  let epi=null;
+  {
+    const zs=[]; for(let i=0;i<=240;i++) zs.push(0.02*Math.pow(300/0.02,i/240));
+    const pts=[];
+    for(const z of zs){ const X=add(scl(dirW,z),T); if(X[2]>1e-5) pts.push(projectPix(X)); }
+    if(pts.length>1) epi=clipRect(pts[0],pts[pts.length-1],IMW,IMH);
+  }
+  return {R,T,ray,P,Pw,ok,pp,C2,C1,pOnPlane,ppOnPlane,dirW,epi};
+}
+
+/* ============================================================
+   SVG construction of the main 3D figure
+   ============================================================ */
+const NS='http://www.w3.org/2000/svg';
+const esc=s=>s;
+function path(d,attrs){ return `<path d="${d}" ${attrs}/>`; }
+function quadCurve(a,b,bulge,sign){
+  const c=seg(a,b), L=Math.hypot(c[0],c[1]);
+  const perp=sign>0?[c[1],-c[0]]:[-c[1],c[0]];
+  const pn=nrm2(perp);
+  const mid=lerp2(a,b,0.5);
+  const ctrl=[mid[0]+pn[0]*bulge*L, mid[1]+pn[1]*bulge*L];
+  const at=t=>[ (1-t)*(1-t)*a[0]+2*(1-t)*t*ctrl[0]+t*t*b[0],
+                (1-t)*(1-t)*a[1]+2*(1-t)*t*ctrl[1]+t*t*b[1] ];
+  return {d:`M ${a[0].toFixed(1)} ${a[1].toFixed(1)} Q ${ctrl[0].toFixed(1)} ${ctrl[1].toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}`, at, pn};
+}
+function planeQuad(toWorld){
+  const cs=[[0,0],[IMW,0],[IMW,IMH],[0,IMH]].map(c=>prj(toWorld(backproject(c[0],c[1],1))));
+  return cs;
+}
+const poly=cs=>cs.map(c=>`${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
+
+function drawScene(){
+  B=basis(); layout();
+  const G=geometry();
+  const o=[];
+  const C1s=prj(G.C1), C2s=prj(G.C2);
+  const q1=planeQuad(q=>q), q2=planeQuad(cam2ToWorld);
+  const pc1=prj([0,0,1]), pc2=prj(cam2ToWorld([0,0,1]));       // principal points
+  const ps =prj(G.pOnPlane);
+  const Ps =prj(G.Pw);
+  const pps=G.ok?prj(G.ppOnPlane):null;
+
+  o.push(`<defs>
+    <marker id="ahG" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse">
+      <path d="M0.5,0.8 L11.5,6 L0.5,11.2 L3.2,6 Z" fill="#9a9a9a"/></marker>
+    <marker id="ahR" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0.5,0.8 L11.5,6 L0.5,11.2 L3.2,6 Z" fill="#b3121c"/></marker>
+  </defs>`);
+
+  /* ---- R,T arrow between the two camera centres (drawn first, behind) ---- */
+  {
+    const [a,b]=shrink(C2s,C1s,16,18);
+    const c=quadCurve(a,b,0.26,-1);
+    o.push(path(c.d,'fill="none" stroke="#9a9a9a" stroke-width="5" marker-end="url(#ahG)"'));
+    const L=c.at(0.5);
+    o.push(`<text x="${clampX(L[0],60).toFixed(1)}" y="${Math.max(L[1]+32,594).toFixed(1)}" class="fml" text-anchor="middle">R, T</text>`);
+  }
+
+  /* ---- image planes ---- */
+  for(const q of [q2,q1]){
+    o.push(`<polygon points="${poly(q)}" fill="#ffffff" fill-opacity="0.92" stroke="#111" stroke-width="3.4" stroke-linejoin="round"/>`);
+  }
+  /* optical axes (centre -> principal point) */
+  o.push(`<line x1="${C2s[0]}" y1="${C2s[1]}" x2="${pc2[0]}" y2="${pc2[1]}" stroke="#111" stroke-width="1.3"/>`);
+  o.push(`<line x1="${C1s[0]}" y1="${C1s[1]}" x2="${pc1[0]}" y2="${pc1[1]}" stroke="#111" stroke-width="1.3"/>`);
+
+  /* ---- the full ray through p (depth ambiguity) ---- */
+  if(S.ray){
+    const far=cam2ToWorld(backproject(S.pu,S.pv,22));
+    const cl=clipRect0(prj(G.C2),prj(far),6,6,CW-6,CH-6);
+    if(cl) o.push(`<line x1="${cl[0][0].toFixed(1)}" y1="${cl[0][1].toFixed(1)}" x2="${cl[1][0].toFixed(1)}" y2="${cl[1][1].toFixed(1)}"
+            stroke="#b3121c" stroke-width="1.6" stroke-dasharray="3 6" opacity="0.65"/>`);
+  }
+  /* ---- epipolar line drawn on the reference image plane ---- */
+  if(S.epi && G.epi){
+    const e0=prj(backproject(G.epi[0][0],G.epi[0][1],1)), e1=prj(backproject(G.epi[1][0],G.epi[1][1],1));
+    o.push(`<line x1="${e0[0].toFixed(1)}" y1="${e0[1].toFixed(1)}" x2="${e1[0].toFixed(1)}" y2="${e1[1].toFixed(1)}"
+            stroke="#b3121c" stroke-width="2.2" stroke-dasharray="6 5" opacity="0.8"/>`);
+  }
+
+  /* ---- projection rays (dashed, black) ---- */
+  o.push(`<line x1="${C2s[0].toFixed(1)}" y1="${C2s[1].toFixed(1)}" x2="${Ps[0].toFixed(1)}" y2="${Ps[1].toFixed(1)}"
+          stroke="#111" stroke-width="3.6" stroke-dasharray="13 9" stroke-linecap="butt"/>`);
+  if(G.ok){
+    o.push(`<line x1="${Ps[0].toFixed(1)}" y1="${Ps[1].toFixed(1)}" x2="${C1s[0].toFixed(1)}" y2="${C1s[1].toFixed(1)}"
+            stroke="#111" stroke-width="3.6" stroke-dasharray="13 9" stroke-linecap="butt"/>`);
+  }
+
+  /* ---- grey mapping arrows ---- */
+  {   /* p  ->  P     (back-projection) */
+    const [a,b]=shrink(ps,Ps,16,18);
+    const c=quadCurve(a,b,0.20,1);
+    o.push(path(c.d,'fill="none" stroke="#9a9a9a" stroke-width="5" marker-end="url(#ahG)"'));
+    const L=c.at(0.44), n=c.pn;
+    o.push(`<text x="${clampX(L[0]+n[0]*30-6,78).toFixed(1)}" y="${Math.max(26,L[1]+n[1]*30).toFixed(1)}" class="fml" text-anchor="middle">P = zK<tspan class="sup" dy="-8">&#8722;1</tspan><tspan dy="8">p</tspan></text>`);
+  }
+  if(G.ok){   /* P  ->  p'   (reprojection) */
+    const [a,b]=shrink(Ps,pps,20,16);
+    const c=quadCurve(a,b,0.20,1);
+    o.push(path(c.d,'fill="none" stroke="#9a9a9a" stroke-width="5" marker-end="url(#ahG)"'));
+    const L=c.at(0.5), n=c.pn;
+    o.push(`<text x="${clampX(L[0]+n[0]*34+14,72).toFixed(1)}" y="${(L[1]+n[1]*34).toFixed(1)}" class="fml" text-anchor="middle">p&#8242; = KP&#8242;</text>`);
+  }
+  {   /* self-loop at P : the same 3D point, re-expressed in the reference frame */
+    const x=Ps[0], y=Ps[1];
+    const h=Math.min(1,Math.max(0.34,(y-16)/142));          // shrink the loop near the top edge
+    o.push(path(`M ${(x-26).toFixed(1)} ${(y-26*h-4).toFixed(1)} C ${(x-96).toFixed(1)} ${(y-132*h).toFixed(1)} ${(x+104).toFixed(1)} ${(y-142*h).toFixed(1)} ${(x+40).toFixed(1)} ${(y-24*h-2).toFixed(1)}`,
+      'fill="none" stroke="#9a9a9a" stroke-width="5" marker-end="url(#ahG)"'));
+    o.push(`<text x="${Math.min(x+52,CW-134).toFixed(1)}" y="${(y+14).toFixed(1)}" class="fml" text-anchor="start">P&#8242; = MP</text>`);
+  }
+
+  /* ---- dots ---- */
+  const dotB=(p)=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="9.5" fill="#111"/>`;
+  const dotR=(p,open)=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="9.5" fill="${open?'#fff':'#c8102e'}" stroke="${open?'#b3121c':'#111'}" stroke-width="2.4"/>`;
+  o.push(dotB(C2s), dotB(C1s));
+  o.push(`<g id="hit-p" style="cursor:move">${dotR(ps,false)}<circle cx="${ps[0].toFixed(1)}" cy="${ps[1].toFixed(1)}" r="20" fill="transparent"/></g>`);
+  if(G.ok){
+    const inside = G.pp[0]>=0&&G.pp[0]<=IMW&&G.pp[1]>=0&&G.pp[1]<=IMH;
+    o.push(dotR(pps,!inside));
+  }
+  o.push(`<g id="hit-P" style="cursor:ns-resize">${dotR(Ps,false)}<circle cx="${Ps[0].toFixed(1)}" cy="${Ps[1].toFixed(1)}" r="22" fill="transparent"/></g>`);
+
+  /* ---- labels ---- */
+  const lab=(x,y,t,anchor,cls)=>`<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" class="${cls||'fml'}" text-anchor="${anchor||'middle'}">${t}</text>`;
+  o.push(lab(Ps[0]-30, Math.max(22,Ps[1]-12),'P','end'));
+  o.push(lab(ps[0]-20, ps[1]-6,'p','end'));
+  if(G.ok) o.push(lab(pps[0]-18, pps[1]+28,'p&#8242;','end'));
+  /* plane names, placed at the lower-right corner of each quad */
+  const nameAt=(q)=>{ const c=lerp2(lerp2(q[2],q[1],0.30), lerp2(q[3],q[0],0.30), 0.22); return c; };
+  const n2=nameAt(q2), n1=nameAt(q1);
+  o.push(`<text x="${n2[0].toFixed(1)}" y="${n2[1].toFixed(1)}" class="ell" text-anchor="middle">&#8467;<tspan class="sub" dy="7">2</tspan></text>`);
+  o.push(`<text x="${n1[0].toFixed(1)}" y="${n1[1].toFixed(1)}" class="ell" text-anchor="middle">&#8467;<tspan class="sub" dy="7">1</tspan></text>`);
+  o.push(`<text x="14" y="632" class="frm" text-anchor="start">Target frame</text>`);
+  o.push(`<text x="806" y="632" class="frm" text-anchor="end">Reference frame</text>`);
+  if(!G.ok) o.push(`<text x="410" y="30" class="warn3" text-anchor="middle">P&#8242; lies behind the reference camera &#8212; no reprojection</text>`);
+
+  o.push(`<style>
+     .fml{font-family:"Times New Roman",Georgia,serif;font-size:24px;font-weight:700;fill:#111}
+     .sup{font-size:15px}.sub{font-size:19px}
+     .ell{font-family:"Times New Roman",Georgia,serif;font-size:31px;font-style:italic;fill:#111}
+     .frm{font-family:"Times New Roman",Georgia,serif;font-size:27px;fill:#111}
+     .warn3{font-family:"Segoe UI",sans-serif;font-size:15px;fill:#b3121c;font-weight:600}
+   </style>`);
+
+  document.getElementById('scene').innerHTML=o.join('\n');
+  return G;
+}
+
+/* ============================================================
+   The two flat image-plane insets
+   ============================================================ */
+function drawInsets(G){
+  const sc=160/IMW, hh=IMH*sc;           // 160 x 120 viewBox
+  const m=(p)=>[p[0]*sc, p[1]*sc];
+  const frame=`<rect x="0.5" y="0.5" width="159" height="${(hh-1).toFixed(1)}" fill="#fff" stroke="#c9c5bd"/>
+    <line x1="80" y1="0" x2="80" y2="${hh}" stroke="#eceae6"/><line x1="0" y1="${hh/2}" x2="160" y2="${hh/2}" stroke="#eceae6"/>
+    <text x="4" y="9" font-size="7" fill="#9a9a9a" font-family="Segoe UI,sans-serif">u &#8594;</text>
+    <text x="4" y="${(hh-3).toFixed(1)}" font-size="7" fill="#9a9a9a" font-family="Segoe UI,sans-serif">v &#8595;</text>`;
+
+  const a=m([S.pu,S.pv]);
+  document.getElementById('im2').innerHTML=frame+
+    `<circle cx="${a[0].toFixed(2)}" cy="${a[1].toFixed(2)}" r="3.4" fill="#c8102e" stroke="#111" stroke-width="0.8"/>
+     <text x="${(a[0]+5).toFixed(2)}" y="${(a[1]-4).toFixed(2)}" font-size="9" font-family="Times New Roman,serif" font-weight="700">p</text>`;
+
+  let s='';
+  if(S.epi && G.epi){
+    const e0=m(G.epi[0]), e1=m(G.epi[1]);
+    s+=`<line x1="${e0[0].toFixed(2)}" y1="${e0[1].toFixed(2)}" x2="${e1[0].toFixed(2)}" y2="${e1[1].toFixed(2)}"
+        stroke="#b3121c" stroke-width="1" stroke-dasharray="3 2.5" opacity="0.85"/>`;
+  }
+  if(G.ok){
+    const b=m(G.pp);
+    const inside=G.pp[0]>=0&&G.pp[0]<=IMW&&G.pp[1]>=0&&G.pp[1]<=IMH;
+    if(inside){
+      s+=`<circle cx="${b[0].toFixed(2)}" cy="${b[1].toFixed(2)}" r="3.4" fill="#c8102e" stroke="#111" stroke-width="0.8"/>
+          <text x="${(b[0]+5).toFixed(2)}" y="${(b[1]-4).toFixed(2)}" font-size="9" font-family="Times New Roman,serif" font-weight="700">p&#8242;</text>`;
+    }
+  }
+  document.getElementById('im1').innerHTML=frame+s;
+}
+
+/* ============================================================
+   Read-outs
+   ============================================================ */
+function readouts(G){
+  const v3=(v,n=2)=>`(${fmt(v[0],n)}, ${fmt(v[1],n)}, ${fmt(v[2],n)})`;
+  document.getElementById('r_p').textContent  =`(${fmt(S.pu,1)}, ${fmt(S.pv,1)}) px`;
+  document.getElementById('r_kp').textContent =v3(G.ray,3);
+  document.getElementById('r_P').textContent  =v3(G.P);
+  document.getElementById('r_Pp').textContent =v3(G.Pw);
+  document.getElementById('r_pp').textContent =G.ok?`(${fmt(G.pp[0],1)}, ${fmt(G.pp[1],1)}) px`:'undefined';
+  document.getElementById('r_R').innerHTML    =G.R.map(r=>r.map(x=>fmt(x,3).padStart(6)).join(' ')).join('<br>').replace(/ /g,'&nbsp;');
+  document.getElementById('r_T').textContent  =v3(G.T);
+  const st=document.getElementById('status');
+  if(!G.ok){ st.innerHTML='<span class="warn">P&#8242; is behind the reference camera: the correspondence does not exist for this depth / pose.</span>'; }
+  else{
+    const inside=G.pp[0]>=0&&G.pp[0]<=IMW&&G.pp[1]>=0&&G.pp[1]<=IMH;
+    st.innerHTML = inside
+      ? 'p is fixed by the target view; p&#8242; is determined only once <i>z</i> and (R,&nbsp;T) are fixed.'
+      : '<span class="warn">p&#8242; falls outside the reference image</span> &mdash; the point is not visible in &#8467;<sub>1</sub>.';
+  }
+  document.getElementById('imnote').innerHTML =
+    'Sliding <i>z</i> keeps <b>p</b> where it is and drives <b>p&#8242;</b> along the dashed epipolar line &mdash; that line <i>is</i> the ray, seen from the reference camera.';
+}
+
+/* ============================================================
+   Update loop
+   ============================================================ */
+const els={};
+['z','yaw','pitch','roll','tx','ty','tz','f'].forEach(k=>{els[k]=document.getElementById('s_'+k);});
+function syncSliders(){
+  els.z.value=S.z; els.yaw.value=S.yaw; els.pitch.value=S.pitch; els.roll.value=S.roll;
+  els.tx.value=S.Tx; els.ty.value=S.Ty; els.tz.value=S.Tz; els.f.value=S.f;
+}
+function update(){
+  document.getElementById('v_z').textContent=fmt(S.z,2);
+  document.getElementById('v_yaw').textContent=fmt(S.yaw,1)+'°';
+  document.getElementById('v_pitch').textContent=fmt(S.pitch,1)+'°';
+  document.getElementById('v_roll').textContent=fmt(S.roll,1)+'°';
+  document.getElementById('v_tx').textContent=fmt(S.Tx,2);
+  document.getElementById('v_ty').textContent=fmt(S.Ty,2);
+  document.getElementById('v_tz').textContent=fmt(S.Tz,2);
+  document.getElementById('v_f').textContent=fmt(S.f,0)+' px';
+  document.getElementById('k_f').textContent=fmt(S.f,0);
+  document.getElementById('k_f2').textContent=fmt(S.f,0);
+  const G=drawScene();
+  drawInsets(G);
+  readouts(G);
+}
+els.z.addEventListener('input',e=>{S.z=+e.target.value;update();});
+els.yaw.addEventListener('input',e=>{S.yaw=+e.target.value;update();});
+els.pitch.addEventListener('input',e=>{S.pitch=+e.target.value;update();});
+els.roll.addEventListener('input',e=>{S.roll=+e.target.value;update();});
+els.tx.addEventListener('input',e=>{S.Tx=+e.target.value;update();});
+els.ty.addEventListener('input',e=>{S.Ty=+e.target.value;update();});
+els.tz.addEventListener('input',e=>{S.Tz=+e.target.value;update();});
+els.f.addEventListener('input',e=>{S.f=+e.target.value;update();});
+
+document.getElementById('b_epi').addEventListener('click',e=>{S.epi=!S.epi;e.target.classList.toggle('on',S.epi);update();});
+document.getElementById('b_ray').addEventListener('click',e=>{S.ray=!S.ray;e.target.classList.toggle('on',S.ray);update();});
+document.getElementById('b_reset').addEventListener('click',()=>{Object.assign(S,D0);syncSliders();update();});
+
+/* animation of z */
+let raf=null, t0=0;
+function tick(t){
+  if(!t0) t0=t;
+  const u=((t-t0)/3200)%1;
+  S.z = 1.5 + 3.7*(1-Math.cos(2*Math.PI*u))/2;
+  els.z.value=S.z; update();
+  raf=requestAnimationFrame(tick);
+}
+document.getElementById('b_anim').addEventListener('click',e=>{
+  S.anim=!S.anim; e.target.classList.toggle('on',S.anim);
+  if(S.anim){ t0=0; raf=requestAnimationFrame(tick); } else { cancelAnimationFrame(raf); }
+});
+
+/* ============================================================
+   Pointer interaction on the main figure:
+     - drag p      : solve the 2x2 screen system on the target image plane
+     - drag P      : slide along the ray (changes z)
+     - drag else   : orbit the view
+   ============================================================ */
+const svg=document.getElementById('scene');
+function svgPt(ev){
+  const r=svg.getBoundingClientRect();
+  const vb=svg.viewBox.baseVal;
+  return [ (ev.clientX-r.left)/r.width*vb.width, (ev.clientY-r.top)/r.height*vb.height ];
+}
+let mode=null, last=null;
+svg.addEventListener('pointerdown',ev=>{
+  const q=svgPt(ev);
+  const G=geometry();
+  const dp=Math.hypot(...seg(prj(G.pOnPlane),q));
+  const dP=Math.hypot(...seg(prj(G.Pw),q));
+  if(dp<22 && dp<=dP) mode='p';
+  else if(dP<24) mode='P';
+  else { mode='orbit'; last=q; }
+  svg.setPointerCapture(ev.pointerId); svg.classList.add('dragging'); ev.preventDefault();
+});
+svg.addEventListener('pointermove',ev=>{
+  if(!mode) return;
+  const q=svgPt(ev);
+  if(mode==='orbit'){
+    S.az += (q[0]-last[0])*0.30;
+    S.el = Math.max(-86, Math.min(-6, S.el + (q[1]-last[1])*0.30));
+    last=q; update(); return;
+  }
+  if(mode==='p'){
+    /* the target image plane (unit depth) in screen space: origin + s*e1 + t*e2 */
+    const O=prj(cam2ToWorld(backproject(0,0,1)));
+    const E1=seg(O,prj(cam2ToWorld(backproject(IMW,0,1))));
+    const E2=seg(O,prj(cam2ToWorld(backproject(0,IMH,1))));
+    const det=E1[0]*E2[1]-E1[1]*E2[0];
+    if(Math.abs(det)>1e-9){
+      const r=[q[0]-O[0], q[1]-O[1]];
+      const s=( r[0]*E2[1]-r[1]*E2[0])/det;
+      const t=(-r[0]*E1[1]+r[1]*E1[0])/det;
+      S.pu=Math.max(6,Math.min(IMW-6,s*IMW));
+      S.pv=Math.max(6,Math.min(IMH-6,t*IMH));
+      update();
+    }
+    return;
+  }
+  if(mode==='P'){
+    /* project the cursor onto the screen image of the ray to recover z */
+    const A=prj(Tvec());
+    const dir=seg(A,prj(cam2ToWorld(backproject(S.pu,S.pv,1))));   // one unit of z in screen px
+    const L2=dir[0]*dir[0]+dir[1]*dir[1];
+    if(L2>1e-6){
+      const z=((q[0]-A[0])*dir[0]+(q[1]-A[1])*dir[1])/L2;
+      S.z=Math.max(1,Math.min(5.5,z));
+      els.z.value=S.z; update();
+    }
+  }
+});
+const endDrag=ev=>{ if(mode){ mode=null; svg.classList.remove('dragging');
+  try{svg.releasePointerCapture(ev.pointerId);}catch(e){} } };
+svg.addEventListener('pointerup',endDrag);
+svg.addEventListener('pointercancel',endDrag);
+
+/* dragging p directly inside the target-frame inset */
+const im2=document.getElementById('im2');
+let dragIn=false;
+function insetSet(ev){
+  const r=im2.getBoundingClientRect();
+  const u=(ev.clientX-r.left)/r.width*IMW;      // the inset viewBox is the image, scaled by 160/640
+  const v=(ev.clientY-r.top)/r.height*IMH;
+  S.pu=Math.max(6,Math.min(IMW-6,u));
+  S.pv=Math.max(6,Math.min(IMH-6,v));
+  update();
+}
+im2.addEventListener('pointerdown',ev=>{dragIn=true;im2.setPointerCapture(ev.pointerId);insetSet(ev);ev.preventDefault();});
+im2.addEventListener('pointermove',ev=>{if(dragIn)insetSet(ev);});
+im2.addEventListener('pointerup',ev=>{dragIn=false;try{im2.releasePointerCapture(ev.pointerId);}catch(e){}});
+
+syncSliders();
+update();
+</script>
+</body>
+</html>

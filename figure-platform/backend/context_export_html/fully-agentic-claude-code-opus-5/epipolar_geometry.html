@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epipolar Geometry</title>
+<style>
+  :root{
+    --ink:#16181d;
+    --muted:#5b6270;
+    --line:#d8dbe2;
+    --bg:#f4f5f7;
+    --card:#ffffff;
+    --accentR:#e8102a;
+    --accentG:#00b400;
+    --accentB:#1f6fff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:18px 18px 40px;
+    background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1500px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 2px;font-weight:650;letter-spacing:.2px}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 14px;max-width:110ch;line-height:1.5}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        box-shadow:0 1px 2px rgba(20,24,40,.05)}
+  .figwrap{padding:6px 6px 0;}
+  .figwrap svg{display:block;width:100%;height:auto;touch-action:none;cursor:grab}
+  .figwrap svg.dragging{cursor:grabbing}
+  .caption{font-size:12.5px;color:var(--muted);padding:2px 14px 12px;line-height:1.5}
+  .cols{display:grid;grid-template-columns:minmax(300px,1.05fr) minmax(330px,1.35fr);gap:14px;margin-top:14px}
+  @media (max-width:1050px){.cols{grid-template-columns:1fr}}
+  .pad{padding:14px 16px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+     margin:0 0 10px;font-weight:700}
+  .ctl{margin-bottom:11px}
+  .ctl label{display:flex;justify-content:space-between;align-items:baseline;
+             font-size:13px;margin-bottom:3px;gap:10px}
+  .ctl .val{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12.5px}
+  input[type=range]{width:100%;accent-color:#c8102e;margin:0}
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-top:12px;
+          padding-top:12px;border-top:1px solid var(--line)}
+  .checks label{display:flex;align-items:center;gap:7px;font-size:12.8px;cursor:pointer}
+  input[type=checkbox]{accent-color:#c8102e;width:15px;height:15px;margin:0}
+  .btnrow{display:flex;gap:8px;margin-top:13px}
+  button{font:inherit;font-size:12.8px;padding:6px 12px;border-radius:7px;
+         border:1px solid var(--line);background:#fafbfc;color:var(--ink);cursor:pointer}
+  button:hover{background:#eef0f4}
+  .insets{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .inset h3{font-size:12px;margin:0 0 5px;font-weight:650;color:var(--ink)}
+  .inset svg{display:block;width:100%;height:auto;background:#fff;
+             border:1px solid var(--line);border-radius:6px}
+  .readout{margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
+           font-size:12.3px;line-height:1.75;font-variant-numeric:tabular-nums;color:#333}
+  .readout b{font-weight:650;color:#111}
+  .readout .ok{color:#127a2e;font-weight:650}
+  .warn{color:#b3560a;font-size:12.3px;margin-top:8px;min-height:1em}
+  code{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#f1f2f5;
+       padding:1px 4px;border-radius:4px}
+  .key{display:inline-block;border:1px solid var(--line);border-bottom-width:2px;
+       border-radius:4px;padding:0 5px;font-size:11.5px;background:#fafbfc}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Epipolar geometry of a stereo pair</h1>
+  <p class="sub">
+    Two cameras with centres <b>O₁</b>, <b>O₂</b> view a scene point <b>P</b>. The three points span the
+    <b>epipolar plane</b>; the <b>baseline</b> O₁O₂ pierces each image plane at the <b>epipoles</b> e₁, e₂;
+    and the epipolar plane cuts each image plane in an <b>epipolar line</b> through the epipole and the
+    image point. Everything below is computed live from O₁, O₂, P and the two camera poses — nothing is drawn by hand.
+  </p>
+
+  <div class="card figwrap">
+    <svg id="fig" viewBox="0 0 1240 620" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="Interactive 3D diagram of two cameras, their image planes, the epipolar plane and epipolar lines."></svg>
+    <div class="caption">
+      <b>Drag the cyan point P</b> to move it in 3D (hold <span class="key">Shift</span> while dragging to push it
+      in depth, along z). <b>Drag the background</b> to tilt the view. The epipolar plane, the epipoles and both epipolar
+      lines are recomputed every frame.
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="card pad">
+      <h2>Rig controls</h2>
+      <div class="ctl"><label>Baseline&nbsp;‖O₁O₂‖<span class="val" id="vB"></span></label>
+        <input type="range" id="sB" min="2.5" max="9.5" step="0.05"></div>
+      <div class="ctl"><label>Camera 2 rotation (yaw)<span class="val" id="vY2"></span></label>
+        <input type="range" id="sY2" min="-65" max="55" step="0.5"></div>
+      <div class="ctl"><label>Camera 2 tilt (pitch)<span class="val" id="vP2"></span></label>
+        <input type="range" id="sP2" min="-15" max="45" step="0.5"></div>
+      <div class="ctl"><label>Camera 1 rotation (yaw)<span class="val" id="vY1"></span></label>
+        <input type="range" id="sY1" min="-55" max="65" step="0.5"></div>
+      <div class="ctl"><label>Focal length&nbsp;f (both cameras)<span class="val" id="vF"></span></label>
+        <input type="range" id="sF" min="0.45" max="1.70" step="0.01"></div>
+      <div class="checks">
+        <label><input type="checkbox" id="cPlane" checked> Epipolar plane</label>
+        <label><input type="checkbox" id="cAxes" checked> Camera axes</label>
+        <label><input type="checkbox" id="cDepth"> Depth samples on ray O₁P</label>
+        <label><input type="checkbox" id="cLabels" checked> Labels</label>
+      </div>
+      <div class="btnrow">
+        <button id="bReset">Reset figure</button>
+        <button id="bView">Reset view</button>
+      </div>
+      <div class="warn" id="warn"></div>
+    </div>
+
+    <div class="card pad">
+      <h2>What each camera actually records</h2>
+      <div class="insets">
+        <div class="inset"><h3>Camera 1 image</h3><svg id="in1" viewBox="0 0 320 250"></svg></div>
+        <div class="inset"><h3>Camera 2 image</h3><svg id="in2" viewBox="0 0 320 250"></svg></div>
+      </div>
+      <p style="font-size:12.3px;color:#5b6270;line-height:1.5;margin:10px 0 0">
+        Tick <b>Depth samples</b>: every point along the ray O₁P projects to the <i>same</i> p₁ in camera 1,
+        but sweeps <i>along the epipolar line</i> in camera 2. Matching p₁ is therefore a 1-D search on that
+        line, not a 2-D search over the whole image.
+      </p>
+      <div class="readout" id="readout"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Vector / rotation helpers
+ * ------------------------------------------------------------------ */
+const V = {
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  len:a=>Math.hypot(a[0],a[1],a[2]),
+  norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];}
+};
+const RAD = Math.PI/180;
+/* Rodrigues rotation of v about unit axis k by angle t */
+function rot(v,k,t){
+  const c=Math.cos(t), s=Math.sin(t), kv=V.cross(k,v), d=V.dot(k,v);
+  return [ v[0]*c+kv[0]*s+k[0]*d*(1-c),
+           v[1]*c+kv[1]*s+k[1]*d*(1-c),
+           v[2]*c+kv[2]*s+k[2]*d*(1-c) ];
+}
+
+/* ------------------------------------------------------------------ *
+ *  State
+ * ------------------------------------------------------------------ */
+const DEF = { B:6.0, yaw1:30, pitch1:0, yaw2:-30, pitch2:0, f:0.90,
+              P:[-0.5, 2.3, -1.4], alpha:75, lam:0.70 };
+const S = {
+  B:DEF.B, yaw1:DEF.yaw1, pitch1:DEF.pitch1, yaw2:DEF.yaw2, pitch2:DEF.pitch2,
+  f:DEF.f, P:DEF.P.slice(), alpha:DEF.alpha, lam:DEF.lam,
+  showPlane:true, showAxes:true, showDepth:false, showLabels:true
+};
+const HW = 1.25, HH = 1.25;          /* sensor half-size, as a multiple of f */
+
+/* ------------------------------------------------------------------ *
+ *  Camera model:  columns of R are (right, up, forward) in world axes
+ * ------------------------------------------------------------------ */
+function makeCam(O, baseFwd, yawDeg, pitchDeg, f){
+  const d0 = rot(baseFwd,[0,1,0], yawDeg*RAD);
+  const r  = V.norm(V.cross(d0,[0,1,0]));
+  const u0 = V.cross(r,d0);
+  const d  = V.norm(rot(d0, r, pitchDeg*RAD));
+  const u  = V.norm(rot(u0, r, pitchDeg*RAD));
+  return { O, d, r, u, f, C:V.add(O,V.mul(d,f)), hw:HW*f, hh:HH*f };
+}
+/* image-plane coordinates (a along r, b along u) of the ray O->X */
+function projectToPlane(cam, X){
+  const w = V.sub(X, cam.O);
+  const z = V.dot(w, cam.d);
+  if (Math.abs(z) < 1e-9) return null;
+  return { a: cam.f*V.dot(w,cam.r)/z, b: cam.f*V.dot(w,cam.u)/z, z:z, front:z>0 };
+}
+/* world position of an image-plane point */
+const planePt = (cam,a,b)=>V.add(cam.C, V.add(V.mul(cam.r,a), V.mul(cam.u,b)));
+
+/* intersection of the epipolar plane (normal N through O1) with a sensor,
+   returned as the clipped segment in (a,b) image coordinates            */
+function epipolarSegment(cam, N, O1){
+  const A = V.dot(N,cam.r), Bc = V.dot(N,cam.u);
+  const K = V.dot(N, V.sub(O1, cam.C));                 /* A*a + B*b = K */
+  const m = Math.hypot(A,Bc);
+  if (m < 1e-9) return null;                            /* sensor lies in the plane */
+  const p0 = [A*K/(m*m), Bc*K/(m*m)];                   /* closest point to centre  */
+  const dir = [-Bc/m, A/m];
+  const hw=cam.hw, hh=cam.hh, hits=[], eps=1e-7;
+  const add=(s)=>{const a=p0[0]+dir[0]*s, b=p0[1]+dir[1]*s;
+    if(a<-hw-eps||a>hw+eps||b<-hh-eps||b>hh+eps) return;
+    for(const h of hits) if(Math.abs(h.s-s)<1e-6) return;
+    hits.push({s,a,b});};
+  if(Math.abs(dir[0])>1e-9){ add((hw-p0[0])/dir[0]); add((-hw-p0[0])/dir[0]); }
+  if(Math.abs(dir[1])>1e-9){ add((hh-p0[1])/dir[1]); add((-hh-p0[1])/dir[1]); }
+  if(hits.length<2) return null;
+  hits.sort((x,y)=>x.s-y.s);
+  const p=hits[0], q=hits[hits.length-1];
+  return { a0:p.a, b0:p.b, a1:q.a, b1:q.b, A, B:Bc, K };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Scene assembly (pure function of S)
+ * ------------------------------------------------------------------ */
+function buildScene(){
+  const O1=[-S.B/2,0,0], O2=[S.B/2,0,0];
+  const c1 = makeCam(O1,[ 1,0,0], S.yaw1, S.pitch1, S.f);
+  const c2 = makeCam(O2,[-1,0,0], S.yaw2, S.pitch2, S.f);
+  const P  = S.P;
+  const base = V.sub(O2,O1);
+  const N = V.cross(base, V.sub(P,O1));          /* epipolar-plane normal */
+  const degenerate = V.len(N) < 1e-4*S.B*Math.max(1,V.len(V.sub(P,O1)));
+  const Nn = degenerate ? null : V.norm(N);
+
+  const p1 = projectToPlane(c1,P), p2 = projectToPlane(c2,P);
+  const e1 = projectToPlane(c1,O2), e2 = projectToPlane(c2,O1);
+  const l1 = Nn ? epipolarSegment(c1,Nn,O1) : null;
+  const l2 = Nn ? epipolarSegment(c2,Nn,O1) : null;
+
+  /* essential matrix  E = [t]x R ,  x2^T E x1 = 0  ------------------- */
+  const Rt=(cam,v)=>[V.dot(v,cam.r),V.dot(v,cam.u),V.dot(v,cam.d)];
+  const x1 = V.norm(Rt(c1,V.sub(P,O1)));
+  const x2 = V.norm(Rt(c2,V.sub(P,O2)));
+  const t  = Rt(c2, V.sub(O1,O2));                  /* translation, cam-2 frame */
+  /* R = R2^T R1 :  apply to x1 expressed in camera-1 axes */
+  const Rx1 = Rt(c2, V.add(V.mul(c1.r,x1[0]), V.add(V.mul(c1.u,x1[1]), V.mul(c1.d,x1[2]))));
+  const Ex1 = V.cross(t, Rx1);
+  const resid = V.dot(x2,Ex1) / (V.len(t)*V.len(x2)*V.len(Rx1) + 1e-12);
+
+  /* algebraic distance of p2 from its epipolar line (should be exactly 0) */
+  let dist2 = 0;
+  if (l2 && p2){ const m=Math.hypot(l2.A,l2.B);
+    dist2 = Math.abs(l2.A*p2.a + l2.B*p2.b - l2.K)/(m||1); }
+
+  /* depth samples along the ray O1->P */
+  const samples=[];
+  if (S.showDepth){
+    const dirP = V.sub(P,O1);
+    for (const k of [0.32,0.47,0.66,0.9,1.0,1.35,1.8,2.4]){
+      const X = V.add(O1, V.mul(dirP,k));
+      samples.push({X, k, q1:projectToPlane(c1,X), q2:projectToPlane(c2,X)});
+    }
+  }
+  return {O1,O2,P,c1,c2,p1,p2,e1,e2,l1,l2,N:Nn,degenerate,resid,dist2,samples,x1,x2};
+}
+
+/* ------------------------------------------------------------------ *
+ *  Projection of the 3D scene onto the drawing
+ * ------------------------------------------------------------------ */
+/*  Oblique (cabinet-style) parallel projection, as in the textbook figure:
+ *      world X  ->  screen right          (baseline stays horizontal)
+ *      world Y  ->  screen up             (vertical stays vertical)
+ *      world Z  ->  screen direction (cos a, sin a) shortened by lam
+ *  It is a genuine parallel projection (a shear followed by an orthographic
+ *  drop of Z), so straight lines, incidence and intersections are exact.     */
+const VBW=1240, VBH=620;
+let VIEW = {kx:0.47, ky:0.41, s:130, cx:620, cy:470};
+function updateView(sc){
+  const a=S.alpha*RAD, kx=S.lam*Math.cos(a), ky=S.lam*Math.sin(a);
+  const px = p => p[0] + kx*p[2];
+  const py = p => -p[1] + ky*p[2];
+  /* auto-fit on the rig only (not on P) so dragging P never rescales */
+  const pts=[sc.O1,sc.O2];
+  for (const c of [sc.c1,sc.c2])
+    for (const sa of [-1,1]) for (const sb of [-1,1]) pts.push(planePt(c,sa*c.hw,sb*c.hh));
+  pts.push([0, 0.55*S.B, 0]);                     /* nominal head-room for P */
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(const p of pts){ const X=px(p), Y=py(p);
+    x0=Math.min(x0,X);x1=Math.max(x1,X);y0=Math.min(y0,Y);y1=Math.max(y1,Y); }
+  const s = Math.min((VBW-230)/Math.max(1e-6,x1-x0), (VBH-105)/Math.max(1e-6,y1-y0));
+  const cx = VBW/2 - s*(x0+x1)/2;
+  const cy = VBH/2 - s*(y0+y1)/2;
+  VIEW = {kx,ky,s,cx,cy};
+}
+const pr = p => [VIEW.cx + VIEW.s*(p[0] + VIEW.kx*p[2]),
+                 VIEW.cy + VIEW.s*(-p[1] + VIEW.ky*p[2])];
+
+/* ------------------------------------------------------------------ *
+ *  SVG helpers
+ * ------------------------------------------------------------------ */
+const esc = s=>String(s);
+const fx = n => (Math.round(n*100)/100);
+function poly(pts, attrs){ return `<polygon points="${pts.map(p=>fx(p[0])+','+fx(p[1])).join(' ')}" ${attrs}/>`; }
+function line(a,b,attrs){ return `<line x1="${fx(a[0])}" y1="${fx(a[1])}" x2="${fx(b[0])}" y2="${fx(b[1])}" ${attrs}/>`; }
+function circ(p,r,attrs){ return `<circle cx="${fx(p[0])}" cy="${fx(p[1])}" r="${r}" ${attrs}/>`; }
+function txt(p,s,opt={}){
+  const a=opt.anchor||'middle', dx=opt.dx||0, dy=opt.dy||0;
+  const cls=opt.cls||'lbl', rot=opt.rot;
+  const tr = rot!==undefined ? ` transform="rotate(${fx(rot)} ${fx(p[0]+dx)} ${fx(p[1]+dy)})"` : '';
+  return `<text x="${fx(p[0]+dx)}" y="${fx(p[1]+dy)}" text-anchor="${a}" class="${cls}"${tr}>${s}</text>`;
+}
+const SUB = (m,s)=>`${m}<tspan class="sub" dy="7">${s}</tspan>`;
+
+/* ------------------------------------------------------------------ *
+ *  Main figure
+ * ------------------------------------------------------------------ */
+const fig = document.getElementById('fig');
+let SC = null;
+
+function draw(){
+  const sc = SC = buildScene();
+  updateView(sc);
+  const O1=pr(sc.O1), O2=pr(sc.O2), Pp=pr(sc.P);
+  const g=[];
+
+  g.push(`<defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5"
+      orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#00b400"/></marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5"
+      orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="#1f6fff"/></marker>
+    <style>
+      .lbl{font-family:Georgia,"Times New Roman",serif;font-size:27px;fill:#111}
+      .lbl.b{font-weight:700}
+      .sub{font-size:18px}
+      .small{font-family:Georgia,"Times New Roman",serif;font-size:21px;fill:#111}
+      .tiny{font-family:"Segoe UI",Arial,sans-serif;font-size:14px;fill:#555}
+      .el{font-family:Georgia,"Times New Roman",serif;font-size:18px;fill:#111}
+    </style></defs>`);
+  g.push(`<rect x="0" y="0" width="${VBW}" height="${VBH}" fill="#ffffff"/>`);
+
+  /* --- epipolar plane (triangle O1 P O2) ---------------------------- */
+  if (S.showPlane && !sc.degenerate)
+    g.push(poly([O1,Pp,O2], 'fill="#ffff00" stroke="none"'));
+
+  /* --- image planes (translucent white over the yellow) -------------- */
+  for (const c of [sc.c1,sc.c2]){
+    const q=[planePt(c,-c.hw,c.hh),planePt(c,c.hw,c.hh),planePt(c,c.hw,-c.hh),planePt(c,-c.hw,-c.hh)].map(pr);
+    g.push(poly(q,'fill="#ffffff" fill-opacity="0.60" stroke="#3a3a3a" stroke-width="2.6" stroke-linejoin="round"'));
+  }
+
+  /* --- camera axes -------------------------------------------------- */
+  if (S.showAxes){
+    const axis=(c,col,mk)=>{
+      const C=pr(c.C), L=0.72*c.f;
+      g.push(line(pr(c.O), C, `stroke="${col}" stroke-width="1.3" stroke-opacity="0.5" stroke-dasharray="1 4"`));
+      g.push(line(C, pr(V.add(c.C,V.mul(c.u,L))), `stroke="${col}" stroke-width="2" stroke-opacity="0.9" marker-end="url(#${mk})"`));
+      g.push(line(C, pr(V.add(c.C,V.mul(c.r,L))), `stroke="${col}" stroke-width="2" stroke-opacity="0.9" marker-end="url(#${mk})"`));
+      g.push(line(C, pr(V.add(c.C,V.mul(c.d,0.42*L))), `stroke="${col}" stroke-width="2" stroke-opacity="0.9" marker-end="url(#${mk})"`));
+      g.push(circ(C,3,`fill="${col}"`));
+    };
+    axis(sc.c1,'#00b400','ag'); axis(sc.c2,'#1f6fff','ab');
+  }
+
+  /* --- baseline ----------------------------------------------------- */
+  g.push(line(O1,O2,'stroke="#000" stroke-width="4" stroke-dasharray="17 12" stroke-linecap="butt"'));
+
+  /* --- depth samples ------------------------------------------------ */
+  if (S.showDepth){
+    const far = V.add(sc.O1, V.mul(V.sub(sc.P,sc.O1), 2.45));
+    g.push(line(O1, pr(far), 'stroke="#00c8d7" stroke-width="1.6" stroke-dasharray="6 5" opacity="0.85"'));
+    for (const s of sc.samples){
+      g.push(circ(pr(s.X),4,'fill="#ffffff" stroke="#00a8b8" stroke-width="2"'));
+      if (s.q2 && s.q2.front && Math.abs(s.q2.a)<=sc.c2.hw && Math.abs(s.q2.b)<=sc.c2.hh)
+        g.push(circ(pr(planePt(sc.c2,s.q2.a,s.q2.b)),4.2,'fill="#00c8d7" stroke="#046" stroke-width="1.4"'));
+      if (s.q1 && s.q1.front && Math.abs(s.q1.a)<=sc.c1.hw && Math.abs(s.q1.b)<=sc.c1.hh)
+        g.push(circ(pr(planePt(sc.c1,s.q1.a,s.q1.b)),4.2,'fill="#00c8d7" stroke="#046" stroke-width="1.4"'));
+    }
+  }
+
+  /* --- epipolar lines (thin red, inside each sensor) ---------------- */
+  const drawEpi=(c,l,side)=>{
+    if(!l) return;
+    const A=pr(planePt(c,l.a0,l.b0)), Bp=pr(planePt(c,l.a1,l.b1));
+    g.push(line(A,Bp,'stroke="#ff0000" stroke-width="2.6"'));
+    if (S.showLabels){
+      const top = A[1]<Bp[1] ? A : Bp, bot = A[1]<Bp[1] ? Bp : A;
+      let ux=top[0]-bot[0], uy=top[1]-bot[1];          /* points "up" the line */
+      if (ux<0){ ux=-ux; uy=-uy; }                     /* keep text left-to-right */
+      const L=Math.hypot(ux,uy)||1, ang=Math.atan2(uy,ux)/RAD;
+      const nx=-uy/L, ny=ux/L, sgn = side<0 ? 1 : -1;  /* offset to the outside */
+      const t=0.95, anchor=[bot[0]+(top[0]-bot[0])*t + nx*21*sgn,
+                            bot[1]+(top[1]-bot[1])*t + ny*21*sgn];
+      g.push(txt(anchor,'Epipolar line',{cls:'el',rot:ang,anchor:'middle'}));
+    }
+  };
+  drawEpi(sc.c1,sc.l1,-1); drawEpi(sc.c2,sc.l2,1);
+
+  /* --- rays O->P (thick red, edges of the epipolar plane) ----------- */
+  g.push(line(O1,Pp,'stroke="#e8102a" stroke-width="6" stroke-linecap="round"'));
+  g.push(line(O2,Pp,'stroke="#e8102a" stroke-width="6" stroke-linecap="round"'));
+
+  /* --- key points --------------------------------------------------- */
+  const pw = (c,q)=>pr(planePt(c,q.a,q.b));
+  const inside=(c,q)=>q && q.front && Math.abs(q.a)<=c.hw+1e-9 && Math.abs(q.b)<=c.hh+1e-9;
+
+  if (sc.e1) g.push(circ(pw(sc.c1,sc.e1),7.5, inside(sc.c1,sc.e1)?'fill="#000"':'fill="#888"'));
+  if (sc.e2) g.push(circ(pw(sc.c2,sc.e2),7.5, inside(sc.c2,sc.e2)?'fill="#000"':'fill="#888"'));
+  if (sc.p1) g.push(circ(pw(sc.c1,sc.p1),8.5,'fill="#ff2020" stroke="#000" stroke-width="2.4"'));
+  if (sc.p2) g.push(circ(pw(sc.c2,sc.p2),8.5,'fill="#ff2020" stroke="#000" stroke-width="2.4"'));
+  g.push(circ(O1,15,'fill="#000"')); g.push(circ(O2,15,'fill="#000"'));
+  g.push(circ(Pp,10.5,'fill="#5ff2ff" stroke="#000" stroke-width="2.6"'));
+  g.push(circ(Pp,19,'fill="none" stroke="#00a8b8" stroke-width="1.6" stroke-dasharray="3 4" opacity="0.8" id="phalo"'));
+
+  /* --- labels ------------------------------------------------------- */
+  if (S.showLabels){
+    g.push(txt(Pp,'P',{cls:'lbl b',dy:-26}));
+    g.push(txt(O1,SUB('O','1'),{cls:'lbl',dy:46,dx:-4}));
+    g.push(txt(O2,SUB('O','2'),{cls:'lbl',dy:46,dx:4}));
+    g.push(txt(O1,'Camera 1',{cls:'small',dx:-30,dy:-6,anchor:'end'}));
+    g.push(txt(O2,'Camera 2',{cls:'small',dx:30,dy:-6,anchor:'start'}));
+    if (sc.p1) g.push(txt(pw(sc.c1,sc.p1),SUB('p','1'),{cls:'lbl b',dx:-6,dy:40,anchor:'end'}));
+    if (sc.p2) g.push(txt(pw(sc.c2,sc.p2),SUB('p','2'),{cls:'lbl b',dx:6,dy:40,anchor:'start'}));
+    if (sc.e1) g.push(txt(pw(sc.c1,sc.e1),SUB('e','1'),{cls:'lbl',dy:38}));
+    if (sc.e2) g.push(txt(pw(sc.c2,sc.e2),SUB('e','2'),{cls:'lbl',dy:38}));
+    if (S.showPlane && !sc.degenerate){
+      const cen=[(O1[0]+O2[0]+Pp[0])/3,(O1[1]+O2[1]+Pp[1])/3];
+      g.push(txt(cen,'Epipolar plane',{cls:'lbl'}));
+    }
+    /* baseline annotation */
+    const bm=[(O1[0]+O2[0])/2,(O1[1]+O2[1])/2];
+    g.push(txt(bm,'baseline',{cls:'tiny',dy: sc.P[1]>=0 ? 26 : -14}));
+  }
+  fig.innerHTML = g.join('');
+  drawInsets(sc);
+  drawReadout(sc);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Image-plane insets: what each camera really sees
+ * ------------------------------------------------------------------ */
+function drawInsets(sc){
+  const spec=[{el:document.getElementById('in1'),c:sc.c1,p:sc.p1,e:sc.e1,l:sc.l1,
+               name:'1',other:'2',col:'#00b400',q:'q1'},
+              {el:document.getElementById('in2'),c:sc.c2,p:sc.p2,e:sc.e2,l:sc.l2,
+               name:'2',other:'1',col:'#1f6fff',q:'q2'}];
+  for (const s of spec){
+    const W=320,H=250,M=18;
+    const sx = Math.min((W-2*M)/(2*s.c.hw),(H-2*M)/(2*s.c.hh));
+    const cx=W/2, cy=H/2;
+    const m = (a,b)=>[cx+a*sx, cy-b*sx];
+    const g=[];
+    g.push(`<defs><style>
+      .it{font-family:Georgia,"Times New Roman",serif;font-size:15px;fill:#111}
+      .ic{font-family:"Segoe UI",Arial,sans-serif;font-size:11px;fill:#666}
+      .is{font-size:10px}</style></defs>`);
+    g.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`);
+    const c0=m(-s.c.hw,s.c.hh), c1=m(s.c.hw,-s.c.hh);
+    g.push(`<rect x="${fx(c0[0])}" y="${fx(c0[1])}" width="${fx(c1[0]-c0[0])}" height="${fx(c1[1]-c0[1])}"
+             fill="#fafafa" stroke="#3a3a3a" stroke-width="1.6"/>`);
+    g.push(line(m(-s.c.hw,0),m(s.c.hw,0),'stroke="#e2e2e2" stroke-width="1"'));
+    g.push(line(m(0,-s.c.hh),m(0,s.c.hh),'stroke="#e2e2e2" stroke-width="1"'));
+    if (s.l){
+      g.push(line(m(s.l.a0,s.l.b0), m(s.l.a1,s.l.b1),'stroke="#ff0000" stroke-width="2.2"'));
+    }
+    if (S.showDepth) for (const d of sc.samples){
+      const q=d[s.q];
+      if(q&&q.front&&Math.abs(q.a)<=s.c.hw&&Math.abs(q.b)<=s.c.hh)
+        g.push(circ(m(q.a,q.b),3.6,'fill="#00c8d7" stroke="#046" stroke-width="1"'));
+    }
+    if (s.e && s.e.front && Math.abs(s.e.a)<=s.c.hw && Math.abs(s.e.b)<=s.c.hh){
+      g.push(circ(m(s.e.a,s.e.b),5,'fill="#000"'));
+      g.push(txt(m(s.e.a,s.e.b),`e<tspan class="is" dy="4">${s.name}</tspan>`,{cls:'it',dy:19}));
+    }
+    if (s.p && s.p.front && Math.abs(s.p.a)<=s.c.hw && Math.abs(s.p.b)<=s.c.hh){
+      g.push(circ(m(s.p.a,s.p.b),5.6,'fill="#ff2020" stroke="#000" stroke-width="1.6"'));
+      g.push(txt(m(s.p.a,s.p.b),`p<tspan class="is" dy="4">${s.name}</tspan>`,{cls:'it',dy:-11}));
+    }
+    g.push(txt([W/2,H-4], s.name==='2'
+      ? 'p₂ must lie on this line  (l₂ = F p₁)'
+      : 'p₁ must lie on this line  (l₁ = Fᵀ p₂)', {cls:'ic'}));
+    s.el.innerHTML=g.join('');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Numeric read-out
+ * ------------------------------------------------------------------ */
+function drawReadout(sc){
+  const f3=n=>(n>=0?' ':'')+n.toFixed(2);
+  const ei=(q,c)=> q ? (q.front && Math.abs(q.a)<=c.hw && Math.abs(q.b)<=c.hh
+                        ? `(${q.a.toFixed(2)}, ${q.b.toFixed(2)})`
+                        : `(${q.a.toFixed(2)}, ${q.b.toFixed(2)}) <span style="color:#b3560a">off sensor</span>`)
+                    : '—';
+  const r = Math.abs(sc.resid), d = sc.dist2;
+  const ok = v => v<1e-9 ? `<span class="ok">${v.toExponential(1)} ≈ 0</span>` : v.toExponential(2);
+  document.getElementById('readout').innerHTML =
+    `<b>P</b> = (${f3(sc.P[0])}, ${f3(sc.P[1])}, ${f3(sc.P[2])})&nbsp;&nbsp;
+     <b>O₁</b> = (${f3(sc.O1[0])}, 0.00, 0.00)&nbsp;&nbsp;<b>O₂</b> = (${f3(sc.O2[0])}, 0.00, 0.00)<br>
+     epipole <b>e₁</b> = ${ei(sc.e1,sc.c1)} &nbsp;·&nbsp; <b>e₂</b> = ${ei(sc.e2,sc.c2)}<br>
+     image point <b>p₁</b> = ${ei(sc.p1,sc.c1)} &nbsp;·&nbsp; <b>p₂</b> = ${ei(sc.p2,sc.c2)}<br>
+     epipolar constraint&nbsp; <code>x₂ᵀ E x₁</code> = ${ok(r)}<br>
+     distance of p₂ from its epipolar line = ${ok(d)}`;
+  document.getElementById('warn').innerHTML = sc.degenerate
+    ? 'P lies on the baseline — the epipolar plane is undefined (every plane through O₁O₂ contains P).'
+    : '';
+}
+
+/* ------------------------------------------------------------------ *
+ *  Interaction
+ * ------------------------------------------------------------------ */
+let mode=null, last=null;
+function svgPt(ev){
+  const r=fig.getBoundingClientRect();
+  const sc = VBW/r.width;                      /* aspect ratio is preserved */
+  return [ (ev.clientX-r.left)*sc, (ev.clientY-r.top)*sc ];
+}
+fig.addEventListener('pointerdown', ev=>{
+  const p=svgPt(ev), Pp=pr(S.P);
+  mode = (Math.hypot(p[0]-Pp[0],p[1]-Pp[1]) < 30) ? 'P' : 'orbit';
+  last=p; fig.setPointerCapture(ev.pointerId); fig.classList.add('dragging'); ev.preventDefault();
+});
+fig.addEventListener('pointermove', ev=>{
+  const p=svgPt(ev);
+  if(!mode){                                    /* hover feedback */
+    const Pp=pr(S.P);
+    fig.style.cursor = Math.hypot(p[0]-Pp[0],p[1]-Pp[1])<30 ? 'move' : 'grab';
+    return;
+  }
+  const dx=p[0]-last[0], dy=p[1]-last[1]; last=p;
+  if (mode==='orbit'){                           /* tilt / swing the oblique view */
+    S.alpha = Math.max(46, Math.min(88, S.alpha - dx*0.14));
+    S.lam   = Math.max(0.22, Math.min(1.00, S.lam + dy*0.0035));
+  } else {
+    if (ev.shiftKey){                            /* push along world Z (depth) */
+      const L=Math.hypot(VIEW.kx,VIEW.ky)||1;
+      S.P[2] += (dx*VIEW.kx + dy*VIEW.ky)/(VIEW.s*L*L);
+    } else {                                     /* move in the world X-Y plane */
+      S.P[0] += dx/VIEW.s;  S.P[1] -= dy/VIEW.s;
+    }
+    const L=1.35*S.B;
+    S.P[0]=Math.max(-L,Math.min(L,S.P[0]));
+    S.P[1]=Math.max(-0.35*S.B,Math.min(0.92*S.B,S.P[1]));
+    S.P[2]=Math.max(-L,Math.min(L,S.P[2]));
+  }
+  draw(); ev.preventDefault();
+});
+const endDrag=ev=>{ mode=null; fig.classList.remove('dragging');
+  try{fig.releasePointerCapture(ev.pointerId);}catch(e){} };
+fig.addEventListener('pointerup',endDrag);
+fig.addEventListener('pointercancel',endDrag);
+
+/* sliders ----------------------------------------------------------- */
+const bind=(id,vid,key,fmt)=>{
+  const el=document.getElementById(id), out=document.getElementById(vid);
+  el.value=S[key];
+  const upd=()=>{ S[key]=parseFloat(el.value); out.textContent=fmt(S[key]); draw(); };
+  el.addEventListener('input',upd); upd();
+};
+bind('sB','vB','B',v=>v.toFixed(2)+' units');
+bind('sY2','vY2','yaw2',v=>v.toFixed(1)+'°');
+bind('sP2','vP2','pitch2',v=>v.toFixed(1)+'°');
+bind('sY1','vY1','yaw1',v=>v.toFixed(1)+'°');
+bind('sF','vF','f',v=>v.toFixed(2));
+
+const chk=(id,key)=>{const e=document.getElementById(id);
+  e.checked=S[key]; e.addEventListener('change',()=>{S[key]=e.checked;draw();});};
+chk('cPlane','showPlane'); chk('cAxes','showAxes');
+chk('cDepth','showDepth'); chk('cLabels','showLabels');
+
+document.getElementById('bReset').addEventListener('click',()=>{
+  Object.assign(S,{B:DEF.B,yaw1:DEF.yaw1,pitch1:DEF.pitch1,yaw2:DEF.yaw2,
+                   pitch2:DEF.pitch2,f:DEF.f,P:DEF.P.slice()});
+  for(const [id,key,fmt] of [['sB','B',v=>v.toFixed(2)+' units'],['sY2','yaw2',v=>v.toFixed(1)+'°'],
+      ['sP2','pitch2',v=>v.toFixed(1)+'°'],['sY1','yaw1',v=>v.toFixed(1)+'°'],['sF','f',v=>v.toFixed(2)]]){
+    document.getElementById(id).value=S[key];
+  }
+  document.getElementById('vB').textContent=S.B.toFixed(2)+' units';
+  document.getElementById('vY2').textContent=S.yaw2.toFixed(1)+'°';
+  document.getElementById('vP2').textContent=S.pitch2.toFixed(1)+'°';
+  document.getElementById('vY1').textContent=S.yaw1.toFixed(1)+'°';
+  document.getElementById('vF').textContent=S.f.toFixed(2);
+  draw();
+});
+document.getElementById('bView').addEventListener('click',()=>{
+  S.alpha=DEF.alpha; S.lam=DEF.lam; draw(); });
+
+draw();
+</script>
+</body>
+</html>

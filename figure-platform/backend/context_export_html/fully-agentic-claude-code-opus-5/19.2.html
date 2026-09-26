@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Figure 19.2 — A Fibonacci heap: two representations</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --rule:#e5e7eb; --panel:#f8fafc;
+    --c-parent:#c026d3; --c-child:#0e9f6e; --c-left:#2563eb; --c-right:#ea580c; --c-hot:#dc2626;
+    --node-fill:#d9d9d9; --node-mark:#101010; --ink:#111111;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+    font-size:15px; line-height:1.5;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px;max-width:105ch}
+  .controls{
+    display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;
+    background:var(--panel);border:1px solid var(--rule);border-radius:10px;
+    padding:12px 14px;margin-bottom:16px;
+  }
+  .grp{display:flex;flex-direction:column;gap:6px}
+  .grp > .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:650}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  button{
+    font:inherit;font-size:13px;padding:6px 11px;border-radius:7px;border:1px solid #cbd5e1;
+    background:#fff;color:#1f2937;cursor:pointer;transition:.12s;
+  }
+  button:hover:not(:disabled){background:#eef2ff;border-color:#818cf8}
+  button:disabled{opacity:.45;cursor:default}
+  button.on{background:#1f2937;border-color:#1f2937;color:#fff}
+  input[type=number]{font:inherit;font-size:13px;width:72px;padding:6px 8px;border-radius:7px;border:1px solid #cbd5e1}
+  .status{
+    min-height:38px;display:flex;align-items:center;gap:9px;
+    border-left:3px solid #94a3b8;background:#f1f5f9;border-radius:0 8px 8px 0;
+    padding:8px 12px;font-size:13.5px;margin-bottom:14px;
+  }
+  .status.act{border-left-color:var(--c-hot);background:#fef2f2}
+  .step{font-variant-numeric:tabular-nums;font-weight:700;color:var(--muted);font-size:12px;
+        border:1px solid var(--rule);background:#fff;border-radius:20px;padding:1px 9px;white-space:nowrap}
+  .readout{
+    border:1px solid var(--rule);border-radius:10px;padding:11px 13px;margin-bottom:16px;background:#fff;
+  }
+  .readout .hd{font-size:12.5px;color:var(--muted);margin-bottom:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
+    font-size:13px;border-radius:7px;padding:4px 10px;border:1.5px solid;background:#fff;
+    font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;white-space:nowrap;
+  }
+  .chip.p{border-color:var(--c-parent);color:var(--c-parent)}
+  .chip.c{border-color:var(--c-child);color:var(--c-child)}
+  .chip.l{border-color:var(--c-left);color:var(--c-left)}
+  .chip.r{border-color:var(--c-right);color:var(--c-right)}
+  .chip.n{border-color:#94a3b8;color:#475569}
+  .fig{border:1px solid var(--rule);border-radius:10px;padding:6px 4px 2px;margin-bottom:12px;background:#fff}
+  .fig.hide{display:none}
+  svg{display:block;width:100%;height:auto}
+  .cap{font-size:12.5px;color:var(--muted);padding:0 12px 9px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12.5px;color:#374151;margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:22px;height:0;border-top:2.4px solid;display:inline-block}
+  .dot{width:13px;height:13px;border-radius:50%;display:inline-block;border:1.4px solid #111}
+  .nodehit{cursor:pointer}
+  .nodehit:hover .ncirc{stroke-width:3.4}
+  .foot{font-size:12.5px;color:var(--muted);border-top:1px solid var(--rule);padding-top:12px;margin-top:8px}
+  code{font-family:ui-monospace,Consolas,monospace;background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:.92em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Figure 19.2 &nbsp;A Fibonacci heap <i>H</i>, shown two ways</h1>
+  <p class="sub">
+    (a) the abstract view — five min-heap-ordered trees whose roots form a circular root list (drawn as a dashed line),
+    with <i>H.min</i> pointing at the minimum root; (b) the same heap as it is actually stored — every sibling list is a
+    <b>circular, doubly linked list</b>, and every node carries <code>p</code>, <code>child</code>, <code>left</code>,
+    <code>right</code>, <code>degree</code> and <code>mark</code>. Black nodes are <b>marked</b>: they have lost one
+    child since they last became the child of another node.
+  </p>
+
+  <div class="controls">
+    <div class="grp">
+      <div class="lbl">View</div>
+      <div class="row">
+        <button id="vBoth" class="on">Both panels</button>
+        <button id="vA">(a) tree view</button>
+        <button id="vB">(b) pointer view</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="lbl">Pointer fields</div>
+      <div class="row">
+        <button id="clearSel">Clear selection</button>
+        <span style="font-size:12.5px;color:var(--muted)">click any node</span>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="lbl">Fib-Heap-Insert</div>
+      <div class="row">
+        <input type="number" id="keyIn" value="21">
+        <button id="insBtn">Insert</button>
+        <button id="ins2">Insert 2 (new min)</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status"><span class="step" id="stepBadge">ready</span><span id="statusText">Click a node to trace its four pointer fields, or run an insertion.</span></div>
+
+  <div class="readout" id="readout">
+    <div class="hd" id="roHead">No node selected — click a node in either panel.</div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <div class="fig" id="figA">
+    <svg id="svgA" role="img" aria-label="Panel a: abstract tree view of a Fibonacci heap"></svg>
+    <div class="cap"><b>(a)</b> Abstract view. Each tree is min-heap ordered; the dashed line is the circular root list.
+      The trees are drawn side by side but their roots are all siblings in one list.</div>
+  </div>
+
+  <div class="fig" id="figB">
+    <svg id="svgB" role="img" aria-label="Panel b: explicit pointer representation of the same Fibonacci heap"></svg>
+    <div class="cap"><b>(b)</b> The same heap, drawn with its real pointers. Arrows above a row are <i>right</i>
+      pointers, arrows below are <i>left</i> pointers, and each list closes back on itself. Vertical/diagonal arrows
+      pointing up are <code>p</code> pointers; the single arrow pointing down out of a node is its <code>child</code>
+      pointer — a parent points at just <em>one</em> of its children, and the rest are reached through that child's
+      sibling list.</div>
+  </div>
+
+  <div class="legend">
+    <span><i class="sw" style="border-color:var(--c-parent)"></i> x.p</span>
+    <span><i class="sw" style="border-color:var(--c-child)"></i> x.child</span>
+    <span><i class="sw" style="border-color:var(--c-left)"></i> x.left</span>
+    <span><i class="sw" style="border-color:var(--c-right)"></i> x.right</span>
+    <span><i class="dot" style="background:#d9d9d9"></i> unmarked</span>
+    <span><i class="dot" style="background:#101010"></i> marked</span>
+  </div>
+
+  <p class="foot">
+    Why it matters: because every list is circular and doubly linked, splicing a node in or out costs four pointer
+    assignments — <b>O(1)</b> — no matter how long the list is. <span id="statsLine"></span>
+  </p>
+</div>
+
+<script>
+"use strict";
+(function(){
+
+/* ----------------------------------------------------------------------
+   Geometry / drawing constants
+   ---------------------------------------------------------------------- */
+const NS = "http://www.w3.org/2000/svg";
+const R        = 20;    // node radius
+const SIB_GAP  = 56;    // gap between sibling subtree bounding boxes
+const ROOT_GAP = 100;   // gap between root subtree bounding boxes
+const MARG_L   = 84;    // left margin (holds the "(a)" / "(b)" label)
+const MARG_R   = 72;
+const LANE     = 14;    // vertical offset of the right/left pointer lanes
+const WRAP     = 36;    // vertical offset of the list wrap-around rails
+const EXT      = 28;    // how far the wrap rails extend past the end nodes
+const PO       = 7;     // perpendicular offset for a paired p/child arrow
+const DXL      = Math.sqrt(R*R - LANE*LANE);   // x-offset of a lane's circle hit
+
+const A = { rootY:130, levelGap:100, topPad:0  };
+const B = { rootY:152, levelGap:132, topPad:0  };
+
+const COL = { next:"var(--c-right)", prev:"var(--c-left)", parent:"var(--c-parent)", child:"var(--c-child)" };
+const RAW = { next:"#ea580c", prev:"#2563eb", parent:"#c026d3", child:"#0e9f6e", hot:"#dc2626", ink:"#111111" };
+
+/* ----------------------------------------------------------------------
+   The heap itself — a real Fibonacci-heap node structure.
+   Every node has p / child / left / right / degree / mark.
+   `listHead` is a purely cosmetic choice of where to start drawing a
+   circular list (a circular list has no intrinsic first element).
+   ---------------------------------------------------------------------- */
+const SPEC = [
+  { k:23 },
+  { k:7  },
+  { k:3, childIdx:1, ch:[                       // 3.child points at 52 (any child is legal)
+      { k:18, m:true, ch:[ {k:39, m:true} ] },
+      { k:52 },
+      { k:38, ch:[ {k:41} ] }
+  ]},
+  { k:17, ch:[ {k:30} ] },
+  { k:24, ch:[ { k:26, m:true, ch:[ {k:35} ] }, { k:46 } ] }
+];
+
+let uid = 0, heap = null;
+
+function newNode(key, mark){
+  return { id:++uid, key:key, mark:!!mark, p:null, child:null,
+           left:null, right:null, degree:0, listHead:null };
+}
+function linkCircular(arr){
+  const n = arr.length;
+  for (let i=0;i<n;i++){ arr[i].right = arr[(i+1)%n]; arr[i].left = arr[(i-1+n)%n]; }
+}
+function build(){
+  uid = 0;
+  function make(s, parent){
+    const nd = newNode(s.k, s.m);
+    nd.p = parent || null;
+    if (s.ch && s.ch.length){
+      const kids = s.ch.map(cs => make(cs, nd));
+      linkCircular(kids);
+      nd.listHead = kids[0];
+      nd.child    = kids[s.childIdx || 0];
+      nd.degree   = kids.length;
+    }
+    return nd;
+  }
+  const roots = SPEC.map(s => make(s, null));
+  linkCircular(roots);
+  let min = roots[0]; let n = 0;
+  const all = [];
+  (function walkAll(list){ list.forEach(x=>{ all.push(x); const k=childrenOf(x); if(k.length) walkAll(k); }); })(roots);
+  n = all.length;
+  all.forEach(x => { if (x.key < min.key) min = x; });
+  // H.min must be a root; minimum over roots:
+  min = roots[0]; roots.forEach(r => { if (r.key < min.key) min = r; });
+  heap = { rootHead: roots[0], min: min, n: n };
+}
+function walk(head){
+  if (!head) return [];
+  const out = []; let x = head;
+  do { out.push(x); x = x.right; } while (x !== head && out.length < 400);
+  return out;
+}
+function childrenOf(x){ return x.child ? walk(x.listHead || x.child) : []; }
+function rootList(){ return walk(heap.rootHead); }
+function allNodes(){
+  const out = [];
+  (function rec(list){ list.forEach(x=>{ out.push(x); rec(childrenOf(x)); }); })(rootList());
+  if (state.pending) out.push(state.pending);
+  return out;
+}
+
+/* Splice x (a singleton circular list) into the root list, just before the
+   drawing head — i.e. at the right-hand end.  Exactly four assignments. */
+function spliceIntoRootList(x){
+  const head = heap.rootHead, tail = head.left;
+  x.left  = tail;          // (1)
+  x.right = head;          // (2)
+  tail.right = x;          // (3)
+  head.left  = x;          // (4)
+  x.p = null; x.child = null; x.degree = 0; x.mark = false;
+  heap.n++;
+}
+
+/* ----------------------------------------------------------------------
+   Layout — computed from the structure, not hard-coded
+   ---------------------------------------------------------------------- */
+function computeLayout(cfg, extraRoots){
+  const pos = new Map();
+  function place(nd, xLeft, depth){
+    const y = cfg.rootY + depth * cfg.levelGap;
+    const kids = childrenOf(nd);
+    if (!kids.length){
+      pos.set(nd.id, {x: xLeft + R, y: y});
+      return 2*R;
+    }
+    let cur = xLeft;
+    kids.forEach((k,i)=>{ if(i) cur += SIB_GAP; cur += place(k, cur, depth+1); });
+    let w = cur - xLeft;
+    if (w < 2*R){ pos.set(nd.id, {x: xLeft + R, y: y}); return 2*R; }
+    const first = pos.get(kids[0].id).x, last = pos.get(kids[kids.length-1].id).x;
+    pos.set(nd.id, {x: (first+last)/2, y: y});
+    return w;
+  }
+  const roots = rootList().concat(extraRoots || []);
+  let cur = 0;
+  roots.forEach((r,i)=>{ if(i) cur += ROOT_GAP; cur += place(r, cur, 0); });
+  let maxY = 0; pos.forEach(p => { if (p.y > maxY) maxY = p.y; });
+  return { pos: pos, width: cur, maxY: maxY, roots: roots };
+}
+
+/* ----------------------------------------------------------------------
+   Small SVG helpers
+   ---------------------------------------------------------------------- */
+function E(tag, attrs, parent){
+  const e = document.createElementNS(NS, tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function roundedPath(pts, rad){
+  let d = "M " + pts[0][0].toFixed(2) + " " + pts[0][1].toFixed(2);
+  for (let i=1;i<pts.length-1;i++){
+    const p0=pts[i-1], p1=pts[i], p2=pts[i+1];
+    const d1=Math.hypot(p1[0]-p0[0],p1[1]-p0[1]), d2=Math.hypot(p2[0]-p1[0],p2[1]-p1[1]);
+    if (d1<0.01||d2<0.01) continue;
+    const u1=[(p1[0]-p0[0])/d1,(p1[1]-p0[1])/d1], u2=[(p2[0]-p1[0])/d2,(p2[1]-p1[1])/d2];
+    const rr = Math.min(rad, d1/2, d2/2);
+    d += " L " + (p1[0]-u1[0]*rr).toFixed(2) + " " + (p1[1]-u1[1]*rr).toFixed(2);
+    d += " Q " + p1[0].toFixed(2) + " " + p1[1].toFixed(2) + " " +
+                 (p1[0]+u2[0]*rr).toFixed(2) + " " + (p1[1]+u2[1]*rr).toFixed(2);
+  }
+  const L = pts[pts.length-1];
+  d += " L " + L[0].toFixed(2) + " " + L[1].toFixed(2);
+  return d;
+}
+
+/* ----------------------------------------------------------------------
+   State
+   ---------------------------------------------------------------------- */
+const state = {
+  view: "both",
+  selected: null,
+  pending: null,          // node created but not yet spliced in
+  hot: new Set(),         // arrow keys flashing red
+  minFlash: false,
+  timers: []
+};
+
+/* ----------------------------------------------------------------------
+   Rendering
+   ---------------------------------------------------------------------- */
+function defs(svg){
+  const d = E("defs", null, svg);
+  const mk = (id, color, size) => {
+    const m = E("marker", {id:id, viewBox:"0 0 10 10", refX:"9.2", refY:"5",
+      markerWidth:size, markerHeight:size, markerUnits:"userSpaceOnUse", orient:"auto"}, d);
+    E("path", {d:"M 0 0 L 10 5 L 0 10 L 2.4 5 Z", fill:color}, m);
+  };
+  mk("ah",       RAW.ink,    9.5);
+  mk("ah-big",   RAW.ink,   12);
+  mk("ah-next",  RAW.next,  12.5);
+  mk("ah-prev",  RAW.prev,  12.5);
+  mk("ah-parent",RAW.parent,12.5);
+  mk("ah-child", RAW.child, 12.5);
+  mk("ah-hot",   RAW.hot,   13.5);
+  mk("ah-ghost", "#9ca3af",  9.5);
+}
+
+function drawNode(g, nd, P, onClick){
+  const gg = E("g", {class:"nodehit", tabindex:"0", role:"button",
+                     "aria-label":"node "+nd.key}, g);
+  const sel = state.selected === nd;
+  const isPend = state.pending === nd;
+  E("circle", {class:"ncirc", cx:P.x, cy:P.y, r:R,
+    fill: nd.mark ? "#101010" : "#d9d9d9",
+    stroke: isPend ? "#9ca3af" : "#111",
+    "stroke-dasharray": isPend ? "4 3" : "none",
+    "stroke-width": sel ? 3.4 : 1.7}, gg);
+  const t = E("text", {x:P.x, y:P.y+0.5, "text-anchor":"middle", "dominant-baseline":"central",
+    "font-family":"'Palatino Linotype',Palatino,Georgia,serif", "font-size":18,
+    "font-weight": nd.mark ? 700 : 500,
+    fill: nd.mark ? "#fff" : "#111", "pointer-events":"none"}, gg);
+  t.textContent = nd.key;
+  if (sel) E("circle", {cx:P.x, cy:P.y, r:R+6, fill:"none", stroke:"#111",
+                        "stroke-width":1.4, "stroke-dasharray":"3 3", "pointer-events":"none"}, gg);
+  gg.addEventListener("click", function(ev){ ev.stopPropagation(); onClick(nd); });
+  gg.addEventListener("keydown", function(ev){ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); onClick(nd);} });
+}
+
+function hminMarker(g, P, tipY, flash){
+  const col = flash ? RAW.hot : RAW.ink;
+  const t = E("text", {x:P.x, y:tipY-58, "text-anchor":"middle",
+    "font-family":"'Palatino Linotype',Palatino,Georgia,serif", "font-size":21,
+    "font-style":"italic", fill:col}, g);
+  t.textContent = "H.min";
+  E("line", {x1:P.x, y1:tipY-44, x2:P.x, y2:tipY,
+    stroke:col, "stroke-width": flash?3:2, "marker-end":"url(#"+(flash?"ah-hot":"ah-big")+")"}, g);
+}
+
+/* ---------------- Panel (a) ---------------- */
+function renderA(){
+  const svg = document.getElementById("svgA");
+  svg.innerHTML = "";
+  defs(svg);
+  const extra = state.pending ? [state.pending] : [];
+  const L = computeLayout(A, extra);
+  const vbW = MARG_L + L.width + MARG_R;
+  const vbH = L.maxY + R + 34;
+  svg.setAttribute("viewBox", "0 0 " + vbW.toFixed(0) + " " + vbH.toFixed(0));
+  const g = E("g", {transform:"translate("+MARG_L+",0)"}, svg);
+
+  const lbl = E("text", {x: -MARG_L+18, y: A.rootY+1, "dominant-baseline":"central",
+    "font-family":"'Palatino Linotype',Palatino,Georgia,serif","font-size":24}, g);
+  lbl.textContent = "(a)";
+
+  // dashed circular root list
+  const roots = rootList();
+  for (let i=0;i<roots.length-1;i++){
+    const a = L.pos.get(roots[i].id), b = L.pos.get(roots[i+1].id);
+    E("line", {x1:a.x+R, y1:a.y, x2:b.x-R, y2:b.y, stroke:"#111",
+               "stroke-width":1.6, "stroke-dasharray":"7 7"}, g);
+  }
+  // tree edges
+  allNodes().forEach(function(nd){
+    if (!nd.p) return;
+    const a = L.pos.get(nd.p.id), b = L.pos.get(nd.id);
+    if (!a || !b) return;
+    const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy), u=[dx/d,dy/d];
+    const hot = state.selected && (state.selected===nd || state.selected===nd.p);
+    E("line", {x1:a.x+u[0]*R, y1:a.y+u[1]*R, x2:b.x-u[0]*R, y2:b.y-u[1]*R,
+      stroke: hot ? "#111" : "#333", "stroke-width": hot ? 2.6 : 1.6}, g);
+  });
+
+  hminMarker(g, L.pos.get(heap.min.id), A.rootY - R - 10, state.minFlash);
+
+  if (state.pending){
+    const P = L.pos.get(state.pending.id);
+    const t = E("text", {x:P.x, y:P.y+R+22, "text-anchor":"middle", "font-size":13,
+      fill:"#9ca3af", "font-family":"inherit"}, g);
+    t.textContent = "not yet in the list";
+  }
+  allNodes().forEach(function(nd){ drawNode(g, nd, L.pos.get(nd.id), select); });
+}
+
+/* ---------------- Panel (b) ---------------- */
+function renderB(){
+  const svg = document.getElementById("svgB");
+  svg.innerHTML = "";
+  defs(svg);
+  const extra = state.pending ? [state.pending] : [];
+  const L = computeLayout(B, extra);
+  const vbW = MARG_L + L.width + MARG_R;
+  const vbH = L.maxY + WRAP + 34;
+  svg.setAttribute("viewBox", "0 0 " + vbW.toFixed(0) + " " + vbH.toFixed(0));
+  const g = E("g", {transform:"translate("+MARG_L+",0)"}, svg);
+  const arrows = new Map();   // "kind:fromId" -> element
+
+  const lbl = E("text", {x:-MARG_L+18, y:B.rootY+1, "dominant-baseline":"central",
+    "font-family":"'Palatino Linotype',Palatino,Georgia,serif","font-size":24}, g);
+  lbl.textContent = "(b)";
+
+  function seg(pts, kind, from, to, ghost){
+    const e = E("path", {d: roundedPath(pts, 11), fill:"none",
+      stroke: ghost ? "#9ca3af" : RAW.ink, "stroke-width": ghost ? 1.4 : 1.7,
+      "stroke-dasharray": ghost ? "4 3" : "none",
+      "marker-end":"url(#"+(ghost?"ah-ghost":"ah")+")"}, g);
+    if (!ghost) arrows.set(kind+":"+from.id, {el:e, kind:kind, to:to});
+    return e;
+  }
+
+  // ---- every circular sibling list ----
+  function drawList(nodes, ghost){
+    const n = nodes.length;
+    const xs = nodes.map(nd => L.pos.get(nd.id).x);
+    const Y  = L.pos.get(nodes[0].id).y;
+    const yF = Y - LANE, yB = Y + LANE;
+    const yT = Y - WRAP, yD = Y + WRAP;
+    const xL = xs[0] - R - EXT, xR = xs[n-1] + R + EXT;
+    // right pointers (upper lane)
+    for (let i=0;i<n-1;i++)
+      seg([[xs[i]+DXL,yF],[xs[i+1]-DXL,yF]], "next", nodes[i], nodes[i+1], ghost);
+    seg([[xs[n-1]+DXL,yF],[xR,yF],[xR,yT],[xL,yT],[xL,yF],[xs[0]-DXL,yF]],
+        "next", nodes[n-1], nodes[0], ghost);
+    // left pointers (lower lane)
+    for (let i=1;i<n;i++)
+      seg([[xs[i]-DXL,yB],[xs[i-1]+DXL,yB]], "prev", nodes[i], nodes[i-1], ghost);
+    seg([[xs[0]-DXL,yB],[xL,yB],[xL,yD],[xR,yD],[xR,yB],[xs[n-1]+DXL,yB]],
+        "prev", nodes[0], nodes[n-1], ghost);
+  }
+
+  const lists = [rootList()];
+  (function collect(list){ list.forEach(x=>{ const k = childrenOf(x); if(k.length){ lists.push(k); collect(k);} }); })(rootList());
+  lists.forEach(l => drawList(l, false));
+  if (state.pending) drawList([state.pending], true);
+
+  // ---- p and child pointers ----
+  allNodes().forEach(function(c){
+    const p = c.p; if (!p) return;
+    const a = L.pos.get(p.id), b = L.pos.get(c.id);
+    const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+    const u = [dx/d, dy/d], q = [-u[1], u[0]];
+    const paired = (p.child === c);
+    const off = paired ? PO : 0;
+    const s = Math.sqrt(Math.max(1, R*R - off*off));
+    // c -> p  (the p pointer), offset to the left of the downward direction
+    seg([[ b.x + q[0]*off - u[0]*s, b.y + q[1]*off - u[1]*s ],
+         [ a.x + q[0]*off + u[0]*s, a.y + q[1]*off + u[1]*s ]], "parent", c, p, false);
+    if (paired){
+      // p -> c  (the child pointer), offset to the right
+      seg([[ a.x - q[0]*off + u[0]*s, a.y - q[1]*off + u[1]*s ],
+           [ b.x - q[0]*off - u[0]*s, b.y - q[1]*off - u[1]*s ]], "child", p, c, false);
+    }
+  });
+
+  hminMarker(g, L.pos.get(heap.min.id), B.rootY - WRAP - 12, state.minFlash);
+
+  if (state.pending){
+    const P = L.pos.get(state.pending.id);
+    const t = E("text", {x:P.x, y:P.y+WRAP+22, "text-anchor":"middle", "font-size":13,
+      fill:"#9ca3af"}, g);
+    t.textContent = "x.left = x.right = x";
+  }
+
+  allNodes().forEach(function(nd){ drawNode(g, nd, L.pos.get(nd.id), select); });
+
+  // ---- highlight: flashing (insert) and selection ----
+  state.hot.forEach(function(key){
+    const a = arrows.get(key);
+    if (a){ a.el.setAttribute("stroke", RAW.hot); a.el.setAttribute("stroke-width", 3.4);
+            a.el.setAttribute("marker-end","url(#ah-hot)"); a.el.parentNode.appendChild(a.el); }
+  });
+  const s = state.selected;
+  if (s){
+    [["parent",RAW.parent],["child",RAW.child],["prev",RAW.prev],["next",RAW.next]]
+    .forEach(function(pair){
+      const a = arrows.get(pair[0]+":"+s.id);
+      if (!a) return;
+      a.el.setAttribute("stroke", pair[1]);
+      a.el.setAttribute("stroke-width", 3.4);
+      a.el.setAttribute("marker-end","url(#ah-"+pair[0]+")");
+      a.el.parentNode.appendChild(a.el);
+      const tp = L.pos.get(a.to.id);
+      if (tp) E("circle", {cx:tp.x, cy:tp.y, r:R+3.5, fill:"none",
+                           stroke:pair[1], "stroke-width":2.6, "pointer-events":"none"}, g);
+    });
+  }
+}
+
+/* ----------------------------------------------------------------------
+   Readout + status
+   ---------------------------------------------------------------------- */
+function renderReadout(){
+  const head = document.getElementById("roHead");
+  const chips = document.getElementById("chips");
+  chips.innerHTML = "";
+  const s = state.selected;
+  if (!s){
+    head.textContent = "No node selected — click a node in either panel to light up its four pointer fields.";
+    return;
+  }
+  head.innerHTML = "Node <b>x = " + s.key + "</b> — its four pointer fields, highlighted in panel (b):";
+  const add = (cls, txt) => { const d=document.createElement("span"); d.className="chip "+cls; d.textContent=txt; chips.appendChild(d); };
+  add("p", "x.p = "     + (s.p     ? s.p.key     : "NIL"));
+  add("c", "x.child = " + (s.child ? s.child.key : "NIL"));
+  add("l", "x.left = "  + (s.left  ? s.left.key  : "—"));
+  add("r", "x.right = " + (s.right ? s.right.key : "—"));
+  add("n", "x.degree = " + s.degree);
+  add("n", "x.mark = " + (s.mark ? "TRUE" : "FALSE"));
+  if (s.left === s && s.right === s) add("n", "singleton list (x.left = x.right = x)");
+}
+function setStatus(badge, text, active){
+  document.getElementById("stepBadge").textContent = badge;
+  document.getElementById("statusText").innerHTML = text;
+  document.getElementById("status").className = "status" + (active ? " act" : "");
+}
+function renderStats(){
+  const roots = rootList().length;
+  document.getElementById("statsLine").innerHTML =
+    "Currently <b>H.n = " + heap.n + "</b> nodes in <b>" + roots +
+    "</b> root" + (roots===1?"":"s") + ", H.min = <b>" + heap.min.key + "</b>.";
+}
+
+function render(){
+  renderA(); renderB(); renderReadout(); renderStats();
+  document.getElementById("figA").className = "fig" + (state.view==="b" ? " hide":"");
+  document.getElementById("figB").className = "fig" + (state.view==="a" ? " hide":"");
+}
+
+/* ----------------------------------------------------------------------
+   Interaction
+   ---------------------------------------------------------------------- */
+function select(nd){
+  state.selected = (state.selected === nd) ? null : nd;
+  const needSwitch = state.selected && state.view === "a";
+  if (state.selected){
+    const s = state.selected;
+    setStatus("pointers",
+      "<b>" + s.key + "</b>: " +
+      (s.p ? "its parent is " + s.p.key : "it is a root, so x.p = NIL") + "; " +
+      (s.child ? "x.child reaches one child (" + s.child.key + "), and the rest are found through that child's sibling list"
+               : "it has no children, so x.child = NIL") +
+      "; x.left = " + s.left.key + " and x.right = " + s.right.key +
+      (s.left===s ? " (it is alone in its list)" : " in its circular sibling list") + ".", false);
+  } else {
+    setStatus("ready", "Selection cleared.", false);
+  }
+  if (needSwitch) setView("both"); else render();
+}
+function setView(v){
+  state.view = v;
+  ["Both","A","B"].forEach(function(k){
+    document.getElementById("v"+k).classList.toggle("on", v === k.toLowerCase());
+  });
+  render();
+}
+function clearTimers(){ state.timers.forEach(clearTimeout); state.timers = []; }
+function later(ms, fn){ state.timers.push(setTimeout(fn, ms)); }
+
+function doInsert(key){
+  clearTimers();
+  state.selected = null; state.hot.clear(); state.minFlash = false;
+  document.getElementById("insBtn").disabled = true;
+  document.getElementById("ins2").disabled = true;
+
+  const x = newNode(key, false);
+  state.pending = x;
+  render();
+  setStatus("step 1 / 3",
+    "<b>Create x</b> with key " + key + ": x.degree = 0, x.p = x.child = NIL, x.mark = FALSE, and " +
+    "<b>x.left = x.right = x</b> — a circular list of one node. It is not part of H yet.", true);
+
+  later(1700, function(){
+    spliceIntoRootList(x);
+    state.pending = null;
+    const tail = x.left, head = x.right;
+    state.hot = new Set(["next:"+tail.id, "prev:"+head.id, "next:"+x.id, "prev:"+x.id]);
+    render();
+    setStatus("step 2 / 3",
+      "<b>Splice x into the root list</b> (shown in red): x.left = " + tail.key + ", x.right = " + head.key +
+      ", " + tail.key + ".right = x, " + head.key + ".left = x. Four assignments — <b>O(1)</b>, independent of " +
+      "how many roots there are.", true);
+
+    later(2400, function(){
+      state.hot.clear();
+      const old = heap.min.key;
+      if (x.key < heap.min.key){
+        heap.min = x; state.minFlash = true;
+        render();
+        setStatus("step 3 / 3",
+          "<b>" + key + " &lt; " + old + "</b>, so H.min moves to the new node. The whole insertion touched only a " +
+          "constant number of pointers; no trees were consolidated.", true);
+      } else {
+        state.minFlash = true;
+        render();
+        setStatus("step 3 / 3",
+          "<b>" + key + " &ge; " + old + "</b>, so H.min is unchanged. Insert never consolidates — it just grows the " +
+          "root list, which is why it costs O(1) amortized.", true);
+      }
+      later(1600, function(){
+        state.minFlash = false; render();
+        setStatus("done", "Insertion complete. H.n = " + heap.n + ", " + rootList().length +
+                          " roots, H.min = " + heap.min.key + ". Click a node to inspect its pointers.", false);
+        document.getElementById("insBtn").disabled = false;
+        document.getElementById("ins2").disabled = false;
+      });
+    });
+  });
+}
+
+function reset(){
+  clearTimers();
+  build();
+  state.selected = null; state.pending = null; state.hot.clear(); state.minFlash = false;
+  document.getElementById("insBtn").disabled = false;
+  document.getElementById("ins2").disabled = false;
+  document.getElementById("keyIn").value = 21;
+  render();
+  setStatus("ready", "Heap restored to the figure. Click a node to trace its pointer fields, or run an insertion.", false);
+}
+
+/* ---------------- wiring ---------------- */
+document.getElementById("vBoth").onclick = function(){ setView("both"); };
+document.getElementById("vA").onclick    = function(){ setView("a"); };
+document.getElementById("vB").onclick    = function(){ setView("b"); };
+document.getElementById("clearSel").onclick = function(){ state.selected=null; setStatus("ready","Selection cleared.",false); render(); };
+document.getElementById("insBtn").onclick = function(){
+  const v = parseInt(document.getElementById("keyIn").value, 10);
+  if (isNaN(v)) return;
+  doInsert(v);
+};
+document.getElementById("ins2").onclick = function(){
+  document.getElementById("keyIn").value = 2; doInsert(2);
+};
+document.getElementById("resetBtn").onclick = reset;
+document.addEventListener("keydown", function(e){ if (e.key === "Escape"){ state.selected=null; render(); } });
+
+build();
+setView("both");
+setStatus("ready", "Click a node to trace its four pointer fields, or run an insertion.", false);
+
+})();
+</script>
+</body>
+</html>

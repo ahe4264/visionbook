@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    #ui .ui-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #ui .ui-caption,
+    #ui .ui-status {
+      display: block;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #333;
+    }
+
+    #ui .ui-log {
+      min-height: 82px;
+      max-height: 130px;
+    }
+
+    #ui input[type=text],
+    #ui input[type=number] {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font: 11px/1.35 ui-monospace, Consolas, monospace;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <span class="ui-row"><button type="button" onclick="loadCodeSample('sample')">Sample</button><button type="button" onclick="loadCodeSample('buggy')">Buggy</button><button type="button" onclick="loadCodeSample('starter')">Starter</button></span>
+    <label>Algorithm code<textarea id="bucketSortCode" spellcheck="false"></textarea></label>
+    <label>Input A<input id="valuesInput" type="text" value=".78, .17, .39, .26, .72, .94, .21, .12, .23, .68"></label>
+    <span class="ui-row"><button id="runButton" type="button" onclick="trigger_runCode()">Run</button><button type="button" onclick="trigger_builtinTrace()">Trace input</button></span>
+    <span class="ui-row"><button type="button" onclick="firstFrame()">First</button><button type="button" onclick="prevFrame()">Prev</button><button id="playButton" type="button" onclick="togglePlay()">Play</button><button type="button" onclick="nextFrame()">Next</button></span>
+    <label>Speed: <output id="speedVal">1</output><input id="speedInput" type="range" min="0.5" max="3" step="0.5" value="1" oninput="document.getElementById('speedVal').value=this.value;update_speed(+this.value)"></label>
+    <span id="frameCounter" class="ui-status">final view</span>
+    <span id="runStatus" class="ui-status">not run</span>
+    <span id="frameCaption" class="ui-caption">Buckets contain the values sorted within each linked list.</span>
+    <label>Boundary x<input id="boundaryInput" type="number" min="0" max="0.999" step="0.001" value="0.94"></label>
+    <span class="ui-row"><button type="button" onclick="trigger_checkBoundary()">Check boundary</button><button type="button" onclick="trigger_clearHighlight()">Clear</button></span>
+    <textarea id="traceLog" class="ui-log" readonly></textarea>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = String(e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+      if (!window.parent || window.parent === window) window.alert(title + '\n\n' + body);
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none' || !event) return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    function compileExpr(src, vars) {
+      vars = vars || ['x'];
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser did not load');
+      }
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var symbols = expr.variables();
+      for (var i = 0; i < symbols.length; i++) {
+        if (vars.indexOf(symbols[i]) === -1) throw new Error('Unknown variable ' + symbols[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      var appliers = list.map(function (target) {
+        if (typeof target === 'function') return target;
+        if (target && typeof target.setFn === 'function') return function (fn) { target.setFn(fn); };
+        if (target && target.handle && typeof target.handle[target.method || 'setFn'] === 'function') {
+          return function (fn) { target.handle[target.method || 'setFn'](fn); };
+        }
+        throw new Error('bindEquationInput target cannot be driven');
+      });
+      function apply(src) {
+        try {
+          var fn = compileExpr(src, vars);
+          appliers.forEach(function (applyTarget) { applyTarget(fn, src); });
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 1024;
+    var H = 823;
+    draw.viewbox(0, 0, W, H);
+
+    var stage = draw.group();
+    var values = [0.78, 0.17, 0.39, 0.26, 0.72, 0.94, 0.21, 0.12, 0.23, 0.68];
+    var valueLabels = ['.78', '.17', '.39', '.26', '.72', '.94', '.21', '.12', '.23', '.68'];
+    var finalBuckets = [
+      [],
+      [0.12, 0.17],
+      [0.21, 0.23, 0.26],
+      [0.39],
+      [],
+      [],
+      [0.68],
+      [0.72, 0.78],
+      [],
+      [0.94]
+    ];
+    var frames = [];
+    var frameIndex = 0;
+    var playTimer = 0;
+    var playbackSpeed = 1;
+    var currentState = {
+      buckets: cloneBuckets(finalBuckets),
+      processed: 10,
+      activeA: -1,
+      activeBucket: null,
+      activeValue: null,
+      boundaryValue: null,
+      boundaryBucket: null,
+      violations: [],
+      mode: 'final'
+    };
+
+    var codeSamples = {
+      sample: [
+        'function bucketIndex(x) {',
+        '  return floor(10 * x);',
+        '}',
+        '',
+        'function insertSorted(b, x) {',
+        '  var j = 0;',
+        '  while (j < length(b) && get(b, j) < x) j++;',
+        '  insert(b, j, x);',
+        '}',
+        '',
+        'function main(A) {',
+        '  for (var k = 0; k < length(A); k++) {',
+        '    var x = get(A, k);',
+        '    var b = bucket(bucketIndex(x));',
+        '    insertSorted(b, x);',
+        '  }',
+        '}'
+      ].join('\n'),
+      buggy: [
+        'function bucketIndex(x) {',
+        '  return floor(10 * x);',
+        '}',
+        '',
+        'function insertSorted(b, x) {',
+        '  insert(b, length(b), x);',
+        '}',
+        '',
+        'function main(A) {',
+        '  for (var k = 0; k < length(A); k++) {',
+        '    var x = get(A, k);',
+        '    insertSorted(bucket(bucketIndex(x)), x);',
+        '  }',
+        '}'
+      ].join('\n'),
+      starter: [
+        'function bucketIndex(x) {',
+        '  return 0;',
+        '}',
+        '',
+        'function insertSorted(b, x) {',
+        '  insert(b, 0, x);',
+        '}',
+        '',
+        'function main(A) {',
+        '  for (var k = 0; k < length(A); k++) {',
+        '    var x = get(A, k);',
+        '    var b = bucket(bucketIndex(x));',
+        '    insertSorted(b, x);',
+        '  }',
+        '}'
+      ].join('\n')
+    };
+
+    var arrowMarker = draw.marker(24, 16, function (add) {
+      add.path('M0 0 L24 8 L0 16 L6 8 Z').fill('#000');
+    });
+    arrowMarker.ref(22, 8).orient('auto');
+
+    function cloneBuckets(buckets) {
+      return buckets.map(function (bucket) { return bucket.slice(); });
+    }
+
+    function formatValue(x) {
+      var s = Number(x).toFixed(2);
+      if (s.charAt(0) === '0') return s.slice(1);
+      return s;
+    }
+
+    function bucketFor(x) {
+      if (!isFinite(x) || x < 0 || x >= 1) return null;
+      return Math.floor(10 * x);
+    }
+
+    function centeredText(parent, text, x, y, size, opts) {
+      opts = opts || {};
+      return parent.text(text)
+        .font({
+          family: opts.family || 'Times New Roman, Times, serif',
+          size: size,
+          style: opts.italic ? 'italic' : 'normal',
+          weight: opts.weight || 'normal'
+        })
+        .attr({
+          x: x,
+          y: y,
+          'text-anchor': 'middle',
+          'dominant-baseline': 'central'
+        })
+        .fill(opts.fill || '#000');
+    }
+
+    function addInteractivity(el, label, title, body) {
+      el.css('cursor', 'pointer')
+        .on('mousemove', function (event) { showTooltip(label, event); })
+        .on('mouseleave', function () { hideTooltip(); })
+        .on('click', function () { showPopup(title, body); });
+      return el;
+    }
+
+    function drawSlash(parent, x, y, w, h) {
+      parent.line(x + w * 0.26, y + h * 0.74, x + w * 0.74, y + h * 0.26)
+        .stroke({ color: '#000', width: 3, linecap: 'square' });
+    }
+
+    function drawArrow(parent, x1, y1, x2, y2) {
+      parent.line(x1, y1, x2, y2)
+        .stroke({ color: '#000', width: 2.2, linecap: 'butt' })
+        .marker('end', arrowMarker);
+    }
+
+    function drawCell(parent, x, y, w, h, fill) {
+      return parent.rect(w, h)
+        .move(x, y)
+        .fill(fill || '#d9d9d9')
+        .stroke({ color: '#000', width: 2 });
+    }
+
+    function makeInitialBuckets() {
+      return [[], [], [], [], [], [], [], [], [], []];
+    }
+
+    function buildBuiltinFrames() {
+      var built = [{
+        kind: 'start',
+        state: {
+          buckets: makeInitialBuckets(),
+          processed: 0,
+          activeA: -1,
+          activeBucket: null,
+          activeValue: null,
+          boundaryValue: null,
+          boundaryBucket: null,
+          violations: [],
+          mode: 'trace'
+        },
+        message: 'Start with ten empty bucket heads.'
+      }];
+      var buckets = makeInitialBuckets();
+      values.forEach(function (x, idx) {
+        var b = bucketFor(x);
+        built.push({
+          kind: 'read',
+          state: {
+            buckets: cloneBuckets(buckets),
+            processed: idx,
+            activeA: idx,
+            activeBucket: b,
+            activeValue: x,
+            boundaryValue: x,
+            boundaryBucket: b,
+            violations: [],
+            mode: 'trace'
+          },
+          message: 'A[' + (idx + 1) + '] = ' + formatValue(x) + ' lies in [' + (b / 10).toFixed(1) + ', ' + ((b + 1) / 10).toFixed(1) + '), so choose B[' + b + '].'
+        });
+        var insertAt = 0;
+        while (insertAt < buckets[b].length && buckets[b][insertAt] < x) insertAt++;
+        buckets[b].splice(insertAt, 0, x);
+        built.push({
+          kind: 'insert',
+          state: {
+            buckets: cloneBuckets(buckets),
+            processed: idx + 1,
+            activeA: idx,
+            activeBucket: b,
+            activeValue: x,
+            boundaryValue: x,
+            boundaryBucket: b,
+            violations: [],
+            mode: 'trace'
+          },
+          message: 'Insert ' + formatValue(x) + ' into B[' + b + '] in sorted order.'
+        });
+      });
+      built.push({
+        kind: 'done',
+        state: {
+          buckets: cloneBuckets(buckets),
+          processed: values.length,
+          activeA: -1,
+          activeBucket: null,
+          activeValue: null,
+          boundaryValue: null,
+          boundaryBucket: null,
+          violations: [],
+          mode: 'final'
+        },
+        message: 'Reading B[0] through B[9] concatenates the sorted output.'
+      });
+      return built;
+    }
+
+    function drawFigure(state) {
+      currentState = state;
+      stage.clear();
+      stage.rect(W, H).fill('#fff');
+      drawArrayA(stage, state);
+      drawBucketsB(stage, state);
+      if (state.boundaryBucket !== null && state.boundaryBucket !== undefined) drawBoundaryCallout(stage, state);
+      drawPanelLabels(stage);
+    }
+
+    function drawPanelLabels(parent) {
+      centeredText(parent, '(a)', 104, 792, 40);
+      centeredText(parent, '(b)', 622, 792, 40);
+    }
+
+    function drawArrayA(parent, state) {
+      var x = 68;
+      var y0 = 50;
+      var w = 70;
+      var h = 69;
+      centeredText(parent, 'A', x + w / 2, 24, 48, { italic: true });
+      for (var i = 0; i < values.length; i++) {
+        centeredText(parent, String(i + 1), 34, y0 + i * h + h / 2, 35);
+        var fill = i === state.activeA ? '#f7e79d' : '#d9d9d9';
+        var cell = drawCell(parent, x, y0 + i * h, w, h, fill);
+        addInteractivity(cell, 'A[' + (i + 1) + '] = ' + valueLabels[i], 'Input value', 'This value is sent to bucket floor(10x). The row highlight follows the value currently being processed.');
+        centeredText(parent, valueLabels[i], x + w / 2, y0 + i * h + h / 2 + 1, 44);
+      }
+    }
+
+    function drawBucketsB(parent, state) {
+      var x = 310;
+      var y0 = 50;
+      var w = 70;
+      var h = 69;
+      centeredText(parent, 'B', x + w / 2, 24, 48, { italic: true });
+      for (var i = 0; i < 10; i++) {
+        centeredText(parent, String(i), 276, y0 + i * h + h / 2, 35);
+        var isBad = state.violations && state.violations.indexOf(i) !== -1;
+        var fill = i === state.activeBucket || i === state.boundaryBucket ? '#f7e79d' : (isBad ? '#f6c9c3' : '#d9d9d9');
+        var cell = drawCell(parent, x, y0 + i * h, w, h, fill);
+        var body = 'Bucket B[' + i + '] stores values x in [' + (i / 10).toFixed(1) + ', ' + ((i + 1) / 10).toFixed(1) + '). Its linked list remains sorted by insertion.';
+        addInteractivity(cell, 'B[' + i + '] interval [' + (i / 10).toFixed(1) + ', ' + ((i + 1) / 10).toFixed(1) + ')', 'Bucket interval', body);
+        var bucket = state.buckets[i] || [];
+        if (bucket.length === 0) {
+          drawSlash(parent, x, y0 + i * h, w, h);
+        } else {
+          drawArrow(parent, x + w * 0.56, y0 + i * h + h / 2, 439, y0 + i * h + h / 2);
+          drawChain(parent, bucket, i, y0 + i * h + h / 2, state);
+        }
+      }
+    }
+
+    function drawChain(parent, bucket, bucketIndex, centerY, state) {
+      var nodeX0 = 452;
+      var nodeW = 138;
+      var nodeH = 53;
+      var valueW = 70;
+      var gap = bucketIndex === 2 ? 70 : 68;
+      for (var j = 0; j < bucket.length; j++) {
+        var x = nodeX0 + j * (nodeW + gap);
+        var y = centerY - nodeH / 2;
+        var active = bucketIndex === state.activeBucket && Math.abs(bucket[j] - state.activeValue) < 0.000001;
+        var isBad = state.violations && state.violations.indexOf(bucketIndex) !== -1;
+        var fill = active ? '#f7e79d' : (isBad ? '#f6c9c3' : '#d9d9d9');
+        var node = parent.group();
+        node.rect(nodeW, nodeH).move(x, y).fill(fill).stroke({ color: '#000', width: 2 });
+        node.line(x + valueW, y, x + valueW, y + nodeH).stroke({ color: '#000', width: 2 });
+        centeredText(node, formatValue(bucket[j]), x + valueW / 2, centerY + 1, 40);
+        if (j === bucket.length - 1) {
+          drawSlash(node, x + valueW, y, nodeW - valueW, nodeH);
+        } else {
+          node.line(x + valueW + 34, centerY, x + nodeW - 22, centerY)
+            .stroke({ color: '#000', width: 2.2, linecap: 'butt' });
+          drawArrow(parent, x + nodeW, centerY, x + nodeW + gap - 16, centerY);
+        }
+        addInteractivity(node, formatValue(bucket[j]) + ' in B[' + bucketIndex + ']', 'Linked-list node', 'This record stores the value on the left and a pointer field on the right. The slash marks the end of the list.');
+      }
+    }
+
+    function drawBoundaryCallout(parent, state) {
+      var b = state.boundaryBucket;
+      if (b === null || b === undefined) return;
+      var x = 410;
+      var y = Math.max(58, 50 + b * 69 - 16);
+      var text = formatValue(state.boundaryValue) + ' -> B[' + b + ']';
+      var g = parent.group();
+      g.rect(130, 28).move(x, y).fill('#fff8d5').stroke({ color: '#c9a62b', width: 1.2 });
+      centeredText(g, text, x + 65, y + 15, 20, { family: 'Arial, sans-serif' });
+      g.line(380, 50 + b * 69 + 34.5, x, y + 14).stroke({ color: '#c9a62b', width: 1.5, dasharray: '4 4' });
+    }
+
+    function update_speed(v) {
+      playbackSpeed = v;
+      if (playTimer) {
+        clearInterval(playTimer);
+        playTimer = 0;
+        startPlay();
+      }
+    }
+
+    function setFrames(nextFrames, statusText) {
+      frames = nextFrames;
+      frameIndex = Math.max(0, frames.length - 1);
+      showFrame(frameIndex);
+      document.getElementById('runStatus').textContent = statusText;
+      renderLog();
+    }
+
+    function showFrame(index) {
+      if (!frames.length) {
+        drawFigure(currentState);
+        return;
+      }
+      frameIndex = Math.max(0, Math.min(index, frames.length - 1));
+      var frame = frames[frameIndex];
+      drawFigure(frame.state);
+      document.getElementById('frameCounter').textContent = (frameIndex + 1) + ' of ' + frames.length;
+      document.getElementById('frameCaption').textContent = frame.message || '';
+      renderLog();
+    }
+
+    function firstFrame() {
+      if (!frames.length) trigger_builtinTrace();
+      showFrame(0);
+    }
+
+    function prevFrame() {
+      if (!frames.length) trigger_builtinTrace();
+      showFrame(frameIndex - 1);
+    }
+
+    function nextFrame() {
+      if (!frames.length) trigger_builtinTrace();
+      showFrame(frameIndex + 1);
+    }
+
+    function togglePlay() {
+      if (playTimer) {
+        stopPlay();
+      } else {
+        if (!frames.length) trigger_builtinTrace();
+        startPlay();
+      }
+    }
+
+    function startPlay() {
+      stopPlay();
+      document.getElementById('playButton').textContent = 'Pause';
+      playTimer = setInterval(function () {
+        if (!frames.length || frameIndex >= frames.length - 1) {
+          stopPlay();
+          return;
+        }
+        showFrame(frameIndex + 1);
+      }, Math.max(150, 800 / playbackSpeed));
+    }
+
+    function stopPlay() {
+      if (playTimer) clearInterval(playTimer);
+      playTimer = 0;
+      document.getElementById('playButton').textContent = 'Play';
+    }
+
+    function renderLog() {
+      var log = document.getElementById('traceLog');
+      if (!log) return;
+      if (!frames.length) {
+        log.value = '';
+        return;
+      }
+      var start = Math.max(0, frameIndex - 5);
+      var lines = [];
+      for (var i = start; i <= frameIndex; i++) {
+        lines.push((i + 1) + '. ' + (frames[i].message || frames[i].kind));
+      }
+      log.value = lines.join('\n');
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function trigger_builtinTrace() {
+      stopPlay();
+      setFrames(buildBuiltinFrames(), 'built-in trace ready');
+      showFrame(0);
+    }
+
+    function trigger_clearHighlight() {
+      stopPlay();
+      frames = [];
+      frameIndex = 0;
+      currentState = {
+        buckets: cloneBuckets(finalBuckets),
+        processed: 10,
+        activeA: -1,
+        activeBucket: null,
+        activeValue: null,
+        boundaryValue: null,
+        boundaryBucket: null,
+        violations: [],
+        mode: 'final'
+      };
+      drawFigure(currentState);
+      document.getElementById('frameCounter').textContent = 'final view';
+      document.getElementById('frameCaption').textContent = 'Buckets contain the values sorted within each linked list.';
+      document.getElementById('runStatus').textContent = 'not run';
+      renderLog();
+    }
+
+    function trigger_checkBoundary() {
+      stopPlay();
+      var raw = document.getElementById('boundaryInput').value;
+      var x = Number(raw);
+      var status = document.getElementById('runStatus');
+      if (!isFinite(x) || x < 0 || x >= 1) {
+        status.textContent = 'boundary out of range: use 0 <= x < 1';
+        drawFigure(Object.assign({}, currentState, {
+          boundaryValue: null,
+          boundaryBucket: null,
+          activeBucket: null,
+          activeValue: null
+        }));
+        return;
+      }
+      var b = bucketFor(x);
+      var interval = '[' + (b / 10).toFixed(1) + ', ' + ((b + 1) / 10).toFixed(1) + ')';
+      var nextState = {
+        buckets: cloneBuckets(finalBuckets),
+        processed: 10,
+        activeA: -1,
+        activeBucket: b,
+        activeValue: x,
+        boundaryValue: x,
+        boundaryBucket: b,
+        violations: [],
+        mode: 'boundary'
+      };
+      frames = [{
+        kind: 'boundary',
+        state: nextState,
+        message: formatValue(x) + ' maps to B[' + b + '] because it is in ' + interval + '.'
+      }];
+      frameIndex = 0;
+      drawFigure(nextState);
+      document.getElementById('frameCounter').textContent = '1 of 1';
+      document.getElementById('frameCaption').textContent = frames[0].message;
+      status.textContent = 'half-open interval ' + interval;
+      renderLog();
+    }
+
+    function loadCodeSample(name) {
+      document.getElementById('bucketSortCode').value = codeSamples[name] || codeSamples.sample;
+      var buttons = document.querySelectorAll('#ui button');
+      for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove('active');
+      if (name === 'sample') buttons[0].classList.add('active');
+      if (name === 'buggy') buttons[1].classList.add('active');
+      if (name === 'starter') buttons[2].classList.add('active');
+    }
+
+    function parseValues() {
+      var text = document.getElementById('valuesInput').value;
+      var parts = text.split(/[\s,]+/).filter(Boolean);
+      if (!parts.length) throw new Error('Input A is empty');
+      return parts.map(function (part) {
+        var x = Number(part);
+        if (!isFinite(x) || x < 0 || x >= 1) {
+          throw new Error('Every input value must satisfy 0 <= x < 1');
+        }
+        return x;
+      });
+    }
+
+    function findViolations(buckets, inputValues) {
+      var bad = [];
+      var seen = [];
+      for (var i = 0; i < buckets.length; i++) {
+        for (var j = 0; j < buckets[i].length; j++) {
+          var x = buckets[i][j];
+          seen.push(Number(x).toFixed(3));
+          if (bucketFor(x) !== i && bad.indexOf(i) === -1) bad.push(i);
+          if (j > 0 && buckets[i][j - 1] > x && bad.indexOf(i) === -1) bad.push(i);
+        }
+      }
+      var expected = inputValues.map(function (x) { return Number(x).toFixed(3); }).sort().join('|');
+      var actual = seen.sort().join('|');
+      if (expected !== actual) {
+        for (var k = 0; k < buckets.length; k++) if (bad.indexOf(k) === -1 && buckets[k].length) bad.push(k);
+      }
+      return bad;
+    }
+
+    function normalizeWorkerFrame(frame) {
+      var state = frame.state || {};
+      return {
+        kind: frame.kind || 'step',
+        message: frame.message || '',
+        state: {
+          buckets: state.buckets ? state.buckets.map(function (bucket) { return bucket.slice(); }) : makeInitialBuckets(),
+          processed: state.processed || 0,
+          activeA: state.activeA === undefined ? -1 : state.activeA,
+          activeBucket: state.activeBucket === undefined ? null : state.activeBucket,
+          activeValue: state.activeValue === undefined ? null : state.activeValue,
+          boundaryValue: state.boundaryValue === undefined ? null : state.boundaryValue,
+          boundaryBucket: state.boundaryBucket === undefined ? null : state.boundaryBucket,
+          violations: state.violations || [],
+          mode: state.mode || 'code'
+        }
+      };
+    }
+
+    function trigger_runCode() {
+      stopPlay();
+      var inputValues;
+      try {
+        inputValues = parseValues();
+      } catch (e) {
+        document.getElementById('runStatus').textContent = 'error';
+        document.getElementById('frameCaption').textContent = e.message;
+        return;
+      }
+      var code = document.getElementById('bucketSortCode').value;
+      var runButton = document.getElementById('runButton');
+      runButton.disabled = true;
+      document.getElementById('runStatus').textContent = 'running';
+      var workerSource = makeWorkerSource();
+      var blob = new Blob([workerSource], { type: 'application/javascript' });
+      var url = URL.createObjectURL(blob);
+      var worker = new Worker(url);
+      var finished = false;
+      var timeout = setTimeout(function () {
+        if (finished) return;
+        finished = true;
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        runButton.disabled = false;
+        var errFrame = {
+          kind: 'error',
+          message: 'Timeout: code ran longer than 1.5 seconds.',
+          state: Object.assign({}, currentState, { violations: [] })
+        };
+        setFrames([errFrame], 'error');
+      }, 1500);
+      worker.onmessage = function (event) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        runButton.disabled = false;
+        var data = event.data || {};
+        var nextFrames = (data.frames || []).map(normalizeWorkerFrame);
+        if (!nextFrames.length) {
+          nextFrames.push({
+            kind: 'error',
+            message: 'No trace frames were recorded. Use the provided API operations.',
+            state: {
+              buckets: makeInitialBuckets(),
+              processed: 0,
+              activeA: -1,
+              activeBucket: null,
+              activeValue: null,
+              boundaryValue: null,
+              boundaryBucket: null,
+              violations: [],
+              mode: 'code'
+            }
+          });
+        }
+        var last = nextFrames[nextFrames.length - 1];
+        var bad = data.error ? [] : findViolations(last.state.buckets, inputValues);
+        if (data.error) {
+          last.state.violations = [];
+          setFrames(nextFrames, 'error');
+        } else if (bad.length) {
+          nextFrames.push({
+            kind: 'wrong',
+            message: 'Wrong answer: highlighted buckets are unsorted, misplaced, or missing values.',
+            state: Object.assign({}, last.state, { violations: bad, activeA: -1, activeBucket: null, activeValue: null })
+          });
+          setFrames(nextFrames, 'wrong answer');
+        } else {
+          nextFrames.push({
+            kind: 'correct',
+            message: 'Correct: every value is in floor(10x), and each bucket list is sorted.',
+            state: Object.assign({}, last.state, { violations: [], activeA: -1, activeBucket: null, activeValue: null })
+          });
+          setFrames(nextFrames, 'correct');
+        }
+      };
+      worker.onerror = function (event) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        worker.terminate();
+        URL.revokeObjectURL(url);
+        runButton.disabled = false;
+        setFrames([{
+          kind: 'error',
+          message: 'Worker error: ' + event.message,
+          state: {
+            buckets: makeInitialBuckets(),
+            processed: 0,
+            activeA: -1,
+            activeBucket: null,
+            activeValue: null,
+            boundaryValue: null,
+            boundaryBucket: null,
+            violations: [],
+            mode: 'code'
+          }
+        }], 'error');
+      };
+      worker.postMessage({ code: code, values: inputValues });
+    }
+
+    function makeWorkerSource() {
+      return [
+        'self.onmessage = function(event) {',
+        '  var code = event.data.code;',
+        '  var input = event.data.values;',
+        '  var buckets = Array.from({ length: 10 }, function () { return []; });',
+        '  var frames = [];',
+        '  var opCount = 0;',
+        '  var maxOps = 1000;',
+        '  var maxFrames = 420;',
+        '  var valuesToken = Object.freeze({ type: "values" });',
+        '  function cloneBuckets() { return buckets.map(function (b) { return b.slice(); }); }',
+        '  function fmt(x) { var s = Number(x).toFixed(2); return s.charAt(0) === "0" ? s.slice(1) : s; }',
+        '  function rec(kind, state, message) {',
+        '    opCount++;',
+        '    if (opCount > maxOps) throw new Error("operation cap exceeded");',
+        '    if (frames.length >= maxFrames) throw new Error("frame cap exceeded");',
+        '    frames.push({ kind: kind, state: state, message: message });',
+        '  }',
+        '  function snap(extra) {',
+        '    extra = extra || {};',
+        '    return {',
+        '      buckets: cloneBuckets(),',
+        '      processed: extra.processed || 0,',
+        '      activeA: extra.activeA === undefined ? -1 : extra.activeA,',
+        '      activeBucket: extra.activeBucket === undefined ? null : extra.activeBucket,',
+        '      activeValue: extra.activeValue === undefined ? null : extra.activeValue,',
+        '      boundaryValue: extra.boundaryValue === undefined ? null : extra.boundaryValue,',
+        '      boundaryBucket: extra.boundaryBucket === undefined ? null : extra.boundaryBucket,',
+        '      violations: [],',
+        '      mode: "code"',
+        '    };',
+        '  }',
+        '  function checkIndex(i, n, name) { if (i !== Math.floor(i) || i < 0 || i >= n) throw new Error(name + " index out of range: " + i); }',
+        '  function bucket(i) {',
+        '    checkIndex(i, 10, "bucket");',
+        '    rec("bucket", snap({ activeBucket: i, boundaryBucket: i }), "select B[" + i + "]");',
+        '    return Object.freeze({ type: "bucket", index: i });',
+        '  }',
+        '  function length(target) {',
+        '    var n;',
+        '    if (target && target.type === "values") n = input.length;',
+        '    else if (target && target.type === "bucket") n = buckets[target.index].length;',
+        '    else throw new Error("length expects A or a bucket token");',
+        '    rec("length", snap({ activeBucket: target.type === "bucket" ? target.index : null }), "length(" + (target.type === "values" ? "A" : "B[" + target.index + "]") + ") -> " + n);',
+        '    return n;',
+        '  }',
+        '  function get(target, index) {',
+        '    if (target && target.type === "values") {',
+        '      checkIndex(index, input.length, "A");',
+        '      var x = input[index];',
+        '      var b = Math.floor(10 * x);',
+        '      rec("read", snap({ activeA: index, activeBucket: b, activeValue: x, boundaryValue: x, boundaryBucket: b, processed: index }), "read A[" + (index + 1) + "] = " + fmt(x));',
+        '      return x;',
+        '    }',
+        '    if (target && target.type === "bucket") {',
+        '      checkIndex(index, buckets[target.index].length, "B[" + target.index + "]");',
+        '      var y = buckets[target.index][index];',
+        '      rec("inspect", snap({ activeBucket: target.index, activeValue: y }), "inspect B[" + target.index + "] node " + fmt(y));',
+        '      return y;',
+        '    }',
+        '    throw new Error("get expects A or a bucket token");',
+        '  }',
+        '  function insert(target, index, x) {',
+        '    if (!target || target.type !== "bucket") throw new Error("insert expects a bucket token");',
+        '    if (index !== Math.floor(index) || index < 0 || index > buckets[target.index].length) throw new Error("insert index out of range: " + index);',
+        '    if (!isFinite(x) || x < 0 || x >= 1) throw new Error("inserted value must satisfy 0 <= x < 1");',
+        '    buckets[target.index].splice(index, 0, x);',
+        '    rec("insert", snap({ activeBucket: target.index, activeValue: x, boundaryValue: x, boundaryBucket: target.index }), "insert " + fmt(x) + " into B[" + target.index + "] at position " + index);',
+        '  }',
+        '  function log(msg) { rec("log", snap({}), String(msg)); }',
+        '  var api = Object.freeze({ values: valuesToken, bucket: bucket, get: get, length: length, insert: insert, floor: Math.floor, log: log });',
+        '  try {',
+        '    rec("start", snap({}), "start with empty buckets");',
+        '    var factory = new Function("api", "\\"use strict\\"; var values = api.values; var bucket = api.bucket; var get = api.get; var length = api.length; var insert = api.insert; var floor = api.floor; var log = api.log;\\n" + code + "\\n; return (typeof main === \\"function\\") ? main : null;");',
+        '    var main = factory(api);',
+        '    if (typeof main !== "function") throw new Error("missing entry point: define function main(A)");',
+        '    main(valuesToken);',
+        '    rec("done", snap({}), "program finished");',
+        '    self.postMessage({ frames: frames });',
+        '  } catch (err) {',
+        '    frames.push({ kind: "error", state: snap({}), message: "Error: " + (err && err.message ? err.message : err) });',
+        '    self.postMessage({ frames: frames, error: true });',
+        '  }',
+        '};'
+      ].join('\n');
+    }
+
+    loadCodeSample('sample');
+    drawFigure(currentState);
+    document.addEventListener('fig-resize', function () {
+      drawFigure(currentState);
+    });
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

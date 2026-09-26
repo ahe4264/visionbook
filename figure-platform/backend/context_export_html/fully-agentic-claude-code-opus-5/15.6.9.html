@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flux through a surface patch &sigma;<sub>k</sub></title>
+<style>
+  :root{
+    --teal:#2aa8a0; --teal-dk:#137e79; --teal-lt:#bfe8e0;
+    --purple:#a855a8; --peach:#fbe4bb; --grayline:#9b9b9b;
+    --ink:#1b2430; --muted:#5b6876; --panel:#f7f9fa; --line:#d8e0e4;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:18px;
+    background:#ffffff; color:var(--ink);
+    font-family:"Segoe UI",system-ui,-apple-system,Helvetica,Arial,sans-serif;
+  }
+  h1{font-size:19px; margin:0 0 2px 0; font-weight:650;}
+  .sub{font-size:13.5px; color:var(--muted); margin:0 0 14px 0; max-width:1050px; line-height:1.45;}
+  .wrap{display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;}
+  .figbox{background:#fff; border:1px solid var(--line); border-radius:10px; padding:4px;}
+  canvas{display:block; touch-action:none; cursor:grab; border-radius:8px;}
+  canvas.dragpatch{cursor:move;}
+  .panel{width:352px; background:var(--panel); border:1px solid var(--line);
+         border-radius:10px; padding:14px 16px 16px;}
+  .panel h2{font-size:13px; text-transform:uppercase; letter-spacing:.07em;
+            color:var(--muted); margin:0 0 10px; font-weight:700;}
+  .ctrl{margin-bottom:13px;}
+  .ctrl label{display:flex; justify-content:space-between; align-items:baseline;
+              font-size:13.5px; margin-bottom:4px;}
+  .ctrl label b{font-family:"Cambria Math",Georgia,serif; font-weight:600;}
+  .val{font-family:"Consolas",ui-monospace,monospace; font-size:13px; color:var(--teal-dk);}
+  input[type=range]{width:100%; accent-color:var(--teal);}
+  .chk{display:flex; align-items:center; gap:8px; font-size:13px; margin:7px 0;}
+  .chk input{accent-color:var(--purple); width:15px; height:15px;}
+  hr{border:none; border-top:1px solid var(--line); margin:14px 0 12px;}
+  table.read{width:100%; border-collapse:collapse; font-size:13px;}
+  table.read td{padding:3px 0; vertical-align:baseline;}
+  table.read td.k{color:var(--muted); font-family:Georgia,serif; font-style:normal;}
+  table.read td.v{text-align:right; font-family:"Consolas",ui-monospace,monospace; color:var(--ink);}
+  .hero{margin-top:10px; background:#fff; border:1px solid var(--teal);
+        border-left:5px solid var(--teal); border-radius:7px; padding:9px 11px;}
+  .hero .lab{font-size:12px; color:var(--muted);}
+  .hero .eq{font-family:Georgia,"Times New Roman",serif; font-size:17px; margin-top:2px;}
+  .hero .eq b{font-weight:700;}
+  .hero .num{color:var(--teal-dk); font-weight:700;}
+  .note{font-size:12.2px; color:var(--muted); line-height:1.5; margin-top:9px;}
+  .note b{color:var(--ink);}
+  button{font:inherit; font-size:12.5px; padding:5px 11px; border-radius:6px;
+         border:1px solid var(--line); background:#fff; cursor:pointer;}
+  button:hover{background:#eef4f5;}
+  em.v{font-style:normal; font-weight:700;}
+  sub{font-size:.72em;}
+  .tip{font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.5;}
+</style>
+</head>
+<body>
+
+<h1>Flux through a surface patch: <span style="font-family:Georgia,serif;">F&middot;<b>n</b>&thinsp;&Delta;S<sub>k</sub></span> as a volume of fluid per unit time</h1>
+<p class="sub">
+  The fluid moves with velocity <b>F</b>. In one unit of time the fluid that crosses the patch
+  &sigma;<sub>k</sub> in the direction of the unit normal <b>n</b> fills an oblique column whose volume is
+  <b>F</b>&middot;<b>n</b>&thinsp;&Delta;S<sub>k</sub>. Drag the patch over the surface to watch <b>n</b> reorient and
+  &Delta;S<sub>k</sub> change; drag anywhere else to rotate the view.
+</p>
+
+<div class="wrap">
+  <div class="figbox"><canvas id="fig" width="840" height="600"></canvas></div>
+
+  <div class="panel">
+    <h2>Controls</h2>
+
+    <div class="ctrl">
+      <label><b>Flow speed &nbsp;|F|</b><span class="val" id="vSpeed">1.20</span></label>
+      <input type="range" id="sSpeed" min="0" max="2.6" step="0.02" value="1.2">
+    </div>
+
+    <div class="ctrl">
+      <label><b>Patch size &nbsp;(mesh fineness)</b><span class="val" id="vSize">0.95</span></label>
+      <input type="range" id="sSize" min="0.18" max="1.35" step="0.01" value="0.95">
+    </div>
+
+    <label class="chk"><input type="checkbox" id="cPrism" checked> Show swept column (volume crossing in unit time)</label>
+    <label class="chk"><input type="checkbox" id="cTangent"> Show flat tangent-plane approximation</label>
+    <label class="chk"><input type="checkbox" id="cCaption" checked> Show caption box &amp; labels</label>
+
+    <div style="margin-top:10px;"><button id="bReset">Reset view &amp; patch</button></div>
+
+    <hr>
+    <h2>Measured at the sample point</h2>
+    <table class="read">
+      <tr><td class="k">(<i>x</i>*<sub>k</sub>, <i>y</i>*<sub>k</sub>, <i>z</i>*<sub>k</sub>)</td><td class="v" id="rPt">&ndash;</td></tr>
+      <tr><td class="k">unit normal <b>n</b></td><td class="v" id="rN">&ndash;</td></tr>
+      <tr><td class="k">tilt angle &theta; between <b>F</b> and <b>n</b></td><td class="v" id="rTheta">&ndash;</td></tr>
+      <tr><td class="k">patch area &Delta;<i>S</i><sub>k</sub></td><td class="v" id="rArea">&ndash;</td></tr>
+      <tr><td class="k"><b>F</b>&middot;<b>n</b> = |F| cos&thinsp;&theta;</td><td class="v" id="rFn">&ndash;</td></tr>
+    </table>
+
+    <div class="hero">
+      <div class="lab">Riemann term &mdash; volume crossing &sigma;<sub>k</sub> per unit time</div>
+      <div class="eq"><b>F</b>&middot;<b>n</b>&thinsp;&Delta;<i>S</i><sub>k</sub> = <span class="num" id="rFlux">&ndash;</span></div>
+    </div>
+
+    <div class="note">
+      Exact flux through the curved patch,
+      <span style="font-family:Georgia,serif;">&#8748;<sub>&sigma;<sub>k</sub></sub> <b>F</b>&middot;<b>n</b>&thinsp;<i>dS</i></span>
+      = <b id="rExact">&ndash;</b>; the Riemann term is off by <b id="rErr">&ndash;</b>.
+      Shrink the patch and the error collapses &mdash; that is why the sum
+      &Sigma; <b>F</b>&middot;<b>n</b>&thinsp;&Delta;S<sub>k</sub> converges to the flux integral.
+    </div>
+
+    <div class="tip">
+      <b>Drag the teal patch</b> to move the sample point over the surface.
+      <b>Drag the background</b> to orbit the view. The black arrows are the fluid
+      displacement in one unit of time &mdash; they are exactly as long as the column is tall.
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================ 3-D helpers ============================ */
+const V = {
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  len:a=>Math.hypot(a[0],a[1],a[2]),
+  unit:a=>{const L=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/L,a[1]/L,a[2]/L];}
+};
+
+/* ====================== the surface  z = f(x,y) ====================== */
+// Sum of Gaussian bumps: smooth, with genuinely varying slope so that the
+// normal direction and the area element sqrt(1+fx^2+fy^2) both change.
+const BUMPS = [
+  { A: 2.60, a:-1.40, b:-1.10, s:6.0 },
+  { A: 1.70, a: 2.20, b: 1.90, s:7.5 },
+  { A:-1.50, a: 1.70, b:-2.40, s:5.0 }
+];
+function f(x,y){
+  let z=0;
+  for(const B of BUMPS){
+    const q=(x-B.a)*(x-B.a)+(y-B.b)*(y-B.b);
+    z += B.A*Math.exp(-q/B.s);
+  }
+  return z;
+}
+function grad(x,y){
+  let fx=0, fy=0;
+  for(const B of BUMPS){
+    const dx=x-B.a, dy=y-B.b;
+    const e=B.A*Math.exp(-(dx*dx+dy*dy)/B.s);
+    fx += e*(-2*dx/B.s);
+    fy += e*(-2*dy/B.s);
+  }
+  return [fx,fy];
+}
+const P3 = (x,y)=>[x,y,f(x,y)];
+function normalAt(x,y){           // upward unit normal  (-fx,-fy,1)/|..|
+  const [fx,fy]=grad(x,y);
+  return V.unit([-fx,-fy,1]);
+}
+const DOM = 4.5;                  // surface drawn over [-DOM,DOM]^2
+
+/* ===================== state ===================== */
+const S = {
+  az:-0.62, el:0.40,              // camera angles (radians)
+  cx:0, cy:0,                     // patch centre in the parameter (x,y) plane
+  h:0.95,                         // patch half-width
+  speed:1.2,
+  prism:true, tangent:false, caption:true
+};
+S.cx=-1.05; S.cy=-0.85;
+
+const cv = document.getElementById('fig');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+(function hidpi(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  cv.width = W*dpr; cv.height = H*dpr;
+  ctx.scale(dpr,dpr);
+})();
+
+const SCALE = 46, CX = 416, CY = 238;
+
+/* ===================== camera ===================== */
+let cam = {};
+function updateCam(){
+  const ce=Math.cos(S.el), se=Math.sin(S.el), ca=Math.cos(S.az), sa=Math.sin(S.az);
+  const d=[ce*ca, ce*sa, se];               // unit vector camera -> origin direction
+  const u=[-sa, ca, 0];                     // screen right
+  const v=V.cross(d,u);                     // screen up
+  cam={d,u,v};
+}
+function proj(p){
+  return [CX + SCALE*V.dot(p,cam.u), CY - SCALE*V.dot(p,cam.v)];
+}
+const depth = p => V.dot(p,cam.d);          // larger = nearer the camera
+
+/* screen point -> point on the surface (orthographic ray march) */
+function pickSurface(sx,sy){
+  const a=(sx-CX)/SCALE, b=-(sy-CY)/SCALE;
+  const O=V.add(V.mul(cam.u,a), V.mul(cam.v,b));
+  const g=t=>{
+    const p=[O[0]-t*cam.d[0], O[1]-t*cam.d[1], O[2]-t*cam.d[2]];
+    return [p, p[2]-f(p[0],p[1])];
+  };
+  let t0=-18, [p0,v0]=g(t0), best=null;
+  for(let t=t0+0.08; t<=18; t+=0.08){
+    const [p1,v1]=g(t);
+    if(v0>0 && v1<=0){ // crossing from above the surface to below it
+      let lo=t-0.08, hi=t;
+      for(let i=0;i<40;i++){ const m=(lo+hi)/2; const [,vm]=g(m); if(vm>0) lo=m; else hi=m; }
+      best=g((lo+hi)/2)[0];
+      break;
+    }
+    p0=p1; v0=v1;
+  }
+  return best;
+}
+
+/* ===================== patch geometry ===================== */
+function patchArea(cx,cy,h){      // numeric  ∫∫ sqrt(1+fx²+fy²) dA
+  const N=26, d=2*h/N, dA=d*d;
+  let s=0;
+  for(let i=0;i<N;i++) for(let j=0;j<N;j++){
+    const x=cx-h+(i+0.5)*d, y=cy-h+(j+0.5)*d;
+    const [fx,fy]=grad(x,y);
+    s += Math.sqrt(1+fx*fx+fy*fy)*dA;
+  }
+  return s;
+}
+function clampCentre(){
+  const m=DOM-S.h-0.05;
+  S.cx=Math.max(-m,Math.min(m,S.cx));
+  S.cy=Math.max(-m,Math.min(m,S.cy));
+}
+
+/* ===================== painting primitives ===================== */
+const items=[];
+const push=(z,fn)=>items.push({z,fn});
+
+function polyPath(pts){
+  ctx.beginPath();
+  const q=proj(pts[0]); ctx.moveTo(q[0],q[1]);
+  for(let i=1;i<pts.length;i++){ const r=proj(pts[i]); ctx.lineTo(r[0],r[1]); }
+  ctx.closePath();
+}
+function quad(pts, fill, stroke, lw){
+  const c=V.mul(pts.reduce((a,b)=>V.add(a,b),[0,0,0]), 1/pts.length);
+  push(depth(c), ()=>{
+    polyPath(pts);
+    if(fill){ ctx.fillStyle=fill; ctx.fill(); }
+    if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=lw||1; ctx.lineJoin='round'; ctx.stroke(); }
+  });
+}
+const LIGHT = V.unit([-0.35,-0.55,0.82]);
+function shade(n, base, alpha){
+  const t = 0.42 + 0.58*Math.max(0, V.dot(n,LIGHT));
+  const c = base.map(v=>Math.round(Math.min(255, v*t)));
+  return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+}
+/* a 3-D arrow drawn in screen space at its own depth */
+function arrow3(tail, tip, color, width, headLen, headW, bias){
+  const c=V.mul(V.add(tail,tip),0.5);
+  push(depth(c)+(bias||0), ()=>{
+    const A=proj(tail), B=proj(tip);
+    const dx=B[0]-A[0], dy=B[1]-A[1], L=Math.hypot(dx,dy)||1;
+    const ux=dx/L, uy=dy/L, hl=Math.min(headLen, L*0.55);
+    ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0]-ux*hl*0.85, B[1]-uy*hl*0.85); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(B[0],B[1]);
+    ctx.lineTo(B[0]-ux*hl - uy*headW/2, B[1]-uy*hl + ux*headW/2);
+    ctx.lineTo(B[0]-ux*hl + uy*headW/2, B[1]-uy*hl - ux*headW/2);
+    ctx.closePath(); ctx.fillStyle=color; ctx.fill();
+  });
+}
+
+/* ===================== math text (with subscripts) ===================== */
+function fontOf(p,size){
+  return `${p.b?'bold ':''}${p.i?'italic ':''}${Math.round((p.s?0.7:1)*size)}px Georgia,"Times New Roman",serif`;
+}
+function mathWidth(parts,size){
+  let w=0; for(const p of parts){ ctx.font=fontOf(p,size); w+=ctx.measureText(p.t).width; } return w;
+}
+function mathText(x,y,parts,size,color,align){
+  const w=mathWidth(parts,size);
+  let px = align==='center'? x-w/2 : align==='right'? x-w : x;
+  ctx.textBaseline='alphabetic';
+  for(const p of parts){
+    ctx.font=fontOf(p,size); ctx.fillStyle=p.c||color;
+    ctx.fillText(p.t, px, y+(p.s? size*0.23:0));
+    px+=ctx.measureText(p.t).width;
+  }
+  return w;
+}
+
+/* ===================== the scene ===================== */
+function draw(){
+  updateCam(); clampCentre();
+  items.length=0;
+  ctx.setTransform(1,0,0,1,0,0);
+  const dpr=Math.min(window.devicePixelRatio||1,2); ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+
+  const h=S.h, cx=S.cx, cy=S.cy;
+  const Fv=[0,0,S.speed];                    // velocity field (constant, upward)
+  const C=P3(cx,cy);                         // sample point (x*,y*,z*)
+  const n=normalAt(cx,cy);
+  const area=patchArea(cx,cy,h);
+  const Fn=V.dot(Fv,n);
+  const flux=Fn*area;                        // Riemann term
+  const exact=S.speed*4*h*h;                 // ∫∫ F·(-fx,-fy,1) dA  with F=(0,0,V)
+
+  /* ---- ambient surface mesh ---- */
+  const N=26, step=2*DOM/N;
+  for(let i=0;i<N;i++){
+    for(let j=0;j<N;j++){
+      const x0=-DOM+i*step, y0=-DOM+j*step, x1=x0+step, y1=y0+step;
+      const mx=(x0+x1)/2, my=(y0+y1)/2;
+      const inPatch = Math.abs(mx-cx)<h && Math.abs(my-cy)<h;
+      if(inPatch) continue;                  // leave room for the patch tile
+      const pts=[P3(x0,y0),P3(x1,y0),P3(x1,y1),P3(x0,y1)];
+      const nn=normalAt(mx,my);
+      quad(pts, shade(nn,[198,234,230],0.72), 'rgba(126,198,192,0.38)', 0.7);
+    }
+  }
+  /* domain rim, for a clean silhouette */
+  const rim=[];
+  const R=48;
+  for(let i=0;i<=R;i++) rim.push(P3(-DOM+2*DOM*i/R,-DOM));
+  for(let i=0;i<=R;i++) rim.push(P3( DOM,-DOM+2*DOM*i/R));
+  for(let i=0;i<=R;i++) rim.push(P3( DOM-2*DOM*i/R, DOM));
+  for(let i=0;i<=R;i++) rim.push(P3(-DOM, DOM-2*DOM*i/R));
+  push(-1e5, ()=>{
+    ctx.beginPath();
+    rim.forEach((p,k)=>{ const q=proj(p); k?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); });
+    ctx.closePath(); ctx.strokeStyle='rgba(90,170,166,0.75)'; ctx.lineWidth=1.2; ctx.stroke();
+  });
+
+  /* ---- swept column: patch translated back by  -F·(1 unit of time) ---- */
+  const M=12;
+  const grid=[];                             // grid[i][j] on the patch
+  for(let i=0;i<=M;i++){
+    grid[i]=[];
+    for(let j=0;j<=M;j++){
+      const x=cx-h+2*h*i/M, y=cy-h+2*h*j/M;
+      grid[i][j]=P3(x,y);
+    }
+  }
+  const shift = p => V.sub(p,Fv);            // where that fluid was one unit of time ago
+
+  if(S.prism && S.speed>0.02){
+    // four side walls
+    const walls=[];
+    for(let i=0;i<M;i++){ walls.push([grid[i][0],grid[i+1][0]]); }
+    for(let j=0;j<M;j++){ walls.push([grid[M][j],grid[M][j+1]]); }
+    for(let i=M;i>0;i--){ walls.push([grid[i][M],grid[i-1][M]]); }
+    for(let j=M;j>0;j--){ walls.push([grid[0][j],grid[0][j-1]]); }
+    for(const [a,b] of walls){
+      quad([a,b,shift(b),shift(a)], 'rgba(86,196,188,0.42)', 'rgba(60,160,154,0.30)', 0.6);
+    }
+    // bottom face
+    for(let i=0;i<M;i++) for(let j=0;j<M;j++){
+      const p=[shift(grid[i][j]),shift(grid[i+1][j]),shift(grid[i+1][j+1]),shift(grid[i][j+1])];
+      quad(p,'rgba(86,196,188,0.34)',null,0);
+    }
+    // bottom outline
+    const outline=[];
+    for(let i=0;i<=M;i++) outline.push(shift(grid[i][0]));
+    for(let j=1;j<=M;j++) outline.push(shift(grid[M][j]));
+    for(let i=M-1;i>=0;i--) outline.push(shift(grid[i][M]));
+    for(let j=M-1;j>=0;j--) outline.push(shift(grid[0][j]));
+    const cB=V.mul(outline.reduce((a,b)=>V.add(a,b),[0,0,0]),1/outline.length);
+    push(depth(cB)+1.3, ()=>{
+      ctx.beginPath();
+      outline.forEach((p,k)=>{ const q=proj(p); k?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); });
+      ctx.closePath(); ctx.strokeStyle='rgba(20,130,124,0.9)'; ctx.lineWidth=1.5; ctx.stroke();
+    });
+    // vertical corner edges
+    for(const c of [grid[0][0],grid[M][0],grid[M][M],grid[0][M]]){
+      const mid=V.mul(V.add(c,shift(c)),0.5);
+      push(depth(mid)+1.35, ()=>{
+        const A=proj(c), B=proj(shift(c));
+        ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]);
+        ctx.strokeStyle='rgba(25,130,125,0.85)'; ctx.lineWidth=1.3; ctx.stroke();
+      });
+    }
+  }
+
+  /* ---- the patch sigma_k itself (drawn slightly proud of the surface) ---- */
+  const lift=0.02;
+  for(let i=0;i<M;i++) for(let j=0;j<M;j++){
+    const x=cx-h+2*h*(i+0.5)/M, y=cy-h+2*h*(j+0.5)/M;
+    const nn=normalAt(x,y);
+    const off=V.mul(nn,lift);
+    const p=[V.add(grid[i][j],off),V.add(grid[i+1][j],off),
+             V.add(grid[i+1][j+1],off),V.add(grid[i][j+1],off)];
+    const c=V.mul(p.reduce((a,b)=>V.add(a,b),[0,0,0]),0.25);
+    push(depth(c)+0.6, ()=>{
+      polyPath(p);
+      const col=shade(nn,[112,214,204],0.96);
+      ctx.fillStyle=col; ctx.fill();
+      ctx.strokeStyle=col; ctx.lineWidth=0.8; ctx.stroke();
+    });
+  }
+  // patch border
+  const border=[];
+  for(let i=0;i<=M;i++) border.push(grid[i][0]);
+  for(let j=1;j<=M;j++) border.push(grid[M][j]);
+  for(let i=M-1;i>=0;i--) border.push(grid[i][M]);
+  for(let j=M-1;j>=0;j--) border.push(grid[0][j]);
+  push(depth(C)+1.2, ()=>{
+    ctx.beginPath();
+    border.forEach((p,k)=>{ const q=proj(V.add(p,V.mul(normalAt(p[0],p[1]),lift)));
+      k?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); });
+    ctx.closePath(); ctx.strokeStyle='#0f8b85'; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.stroke();
+    // the two parameter curves through the sample point
+    ctx.strokeStyle='rgba(13,120,116,0.65)'; ctx.lineWidth=1.3;
+    for(const along of [0,1]){
+      ctx.beginPath();
+      for(let i=0;i<=M;i++){
+        const t=-h+2*h*i/M;
+        const x = along? cx+t : cx, y = along? cy : cy+t;
+        const q=proj(V.add(P3(x,y), V.mul(normalAt(x,y),lift)));
+        i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);
+      }
+      ctx.stroke();
+    }
+  });
+
+  /* ---- flat tangent-plane approximation (the Riemann-term column) ---- */
+  if(S.tangent){
+    const [fx,fy]=grad(cx,cy);
+    const rx=[1,0,fx], ry=[0,1,fy];
+    const corners=[
+      V.add(C, V.add(V.mul(rx,-h),V.mul(ry,-h))),
+      V.add(C, V.add(V.mul(rx, h),V.mul(ry,-h))),
+      V.add(C, V.add(V.mul(rx, h),V.mul(ry, h))),
+      V.add(C, V.add(V.mul(rx,-h),V.mul(ry, h)))
+    ];
+    push(depth(C)+1.6, ()=>{
+      ctx.save(); ctx.setLineDash([6,4]);
+      ctx.strokeStyle='#8a3f93'; ctx.lineWidth=1.8;
+      polyPath(corners); ctx.stroke();
+      for(const c of corners){
+        const A=proj(c), B=proj(V.sub(c,Fv));
+        ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.stroke();
+      }
+      polyPath(corners.map(c=>V.sub(c,Fv))); ctx.stroke();
+      ctx.restore();
+    });
+  }
+
+  /* ---- fluid-flow arrows: displacement during one unit of time ---- */
+  if(S.speed>0.02){
+    const ring=[[-1.85,0],[1.85,0],[0,-1.85],[0,1.85],[-1.6,-1.6],[1.6,1.6],[1.6,-1.6],[-1.6,1.6]];
+    for(const [ox,oy] of ring){
+      const x=Math.max(-DOM+0.15,Math.min(DOM-0.15,cx+ox*h)),
+            y=Math.max(-DOM+0.15,Math.min(DOM-0.15,cy+oy*h));
+      const tip=P3(x,y), tail=V.sub(tip,Fv);
+      arrow3(tail,tip,'#111111',2.2,11,9,1.1);
+    }
+    const far=[[-3.4,-0.9],[3.3,1.0],[0.5,3.4]];
+    for(const [ox,oy] of far){
+      const x=Math.max(-DOM+0.2,Math.min(DOM-0.2,cx+ox)),
+            y=Math.max(-DOM+0.2,Math.min(DOM-0.2,cy+oy));
+      const tip=P3(x,y), tail=V.sub(tip,Fv);
+      arrow3(tail,tip,'rgba(40,40,40,0.45)',1.5,8,6.5,0);
+    }
+  }
+
+  /* ---- render sorted back-to-front ---- */
+  items.sort((a,b)=>a.z-b.z);
+  for(const it of items) it.fn();
+
+  /* ---- the unit normal, always on top ---- */
+  const nLen=1.7;
+  const nTip=V.add(C,V.mul(n,nLen));
+  (function normalArrow(){
+    const A=proj(C), B=proj(nTip);
+    const dx=B[0]-A[0], dy=B[1]-A[1], L=Math.hypot(dx,dy)||1, ux=dx/L, uy=dy/L;
+    const hl=Math.min(20,L*0.42), hw=17;
+    ctx.strokeStyle='#b06fb8'; ctx.lineWidth=7; ctx.lineCap='butt';
+    ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0]-ux*hl,B[1]-uy*hl); ctx.stroke();
+    ctx.strokeStyle='#7d3f88'; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(B[0],B[1]);
+    ctx.lineTo(B[0]-ux*hl-uy*hw/2, B[1]-uy*hl+ux*hw/2);
+    ctx.lineTo(B[0]-ux*hl+uy*hw/2, B[1]-uy*hl-ux*hw/2);
+    ctx.closePath(); ctx.fillStyle='#ffffff'; ctx.fill(); ctx.stroke();
+    // base dot = the sample point (x*_k, y*_k, z*_k)
+    ctx.beginPath(); ctx.arc(A[0],A[1],6,0,2*Math.PI);
+    ctx.fillStyle='#17a39c'; ctx.fill();
+    ctx.strokeStyle='#0c6f6a'; ctx.lineWidth=1.4; ctx.stroke();
+    // label  n
+    mathText(B[0]+14, B[1]-4, [{t:'n',b:true}], 24, '#20242b');
+  })();
+
+  /* ---- screen-space annotation ---- */
+  if(S.caption){
+    const topMid = proj(V.add(grid[Math.round(M/2)][M], [0,0,lift]));
+    const sideMid= proj(grid[M][Math.round(M/2)]);
+    leader(812, 38, topMid, [
+      {t:'Area '},{t:'ΔS',i:true},{t:'k',i:true,s:true}
+    ], 24, 'right', 60);
+    ctx.font='15px Georgia,"Times New Roman",serif'; ctx.fillStyle='#4a6b6a'; ctx.textAlign='right';
+    ctx.fillText('≈ '+area.toFixed(3), 812, 60); ctx.textAlign='left';
+
+    leader(812, 122, sideMid, [
+      {t:'Surface '},{t:'σ',i:true},{t:'k',i:true,s:true}
+    ], 24, 'right', 70);
+
+    captionBox(proj(V.sub(C, V.mul(Fv,0.9))));   // point at the swept column
+  }
+
+  /* ---- read-outs ---- */
+  const cosT=Math.max(-1,Math.min(1,Fn/(S.speed||1e-9)));
+  document.getElementById('rPt').textContent =
+    `(${C[0].toFixed(2)}, ${C[1].toFixed(2)}, ${C[2].toFixed(2)})`;
+  document.getElementById('rN').textContent =
+    `(${n[0].toFixed(3)}, ${n[1].toFixed(3)}, ${n[2].toFixed(3)})`;
+  document.getElementById('rTheta').textContent =
+    (Math.acos(Math.max(-1,Math.min(1,n[2])))*180/Math.PI).toFixed(1)+'°';
+  document.getElementById('rArea').textContent = area.toFixed(4);
+  document.getElementById('rFn').textContent = Fn.toFixed(4);
+  document.getElementById('rFlux').textContent = flux.toFixed(4)+'  volume/time';
+  document.getElementById('rExact').textContent = exact.toFixed(4);
+  document.getElementById('rErr').textContent =
+    exact>1e-9 ? (100*(flux-exact)/exact).toFixed(2)+'%' : '—';
+}
+
+/* curved leader line from a label to a point in the picture */
+function leader(lx, ly, target, parts, size, align, gap){
+  mathText(lx, ly, parts, size, '#20242b', align);
+  const w=mathWidth(parts,size);
+  const sx = (align==='right'? lx-w : lx) - 8;
+  const sy = ly + 6;
+  const mx=(sx+target[0])/2, my=(sy+target[1])/2;
+  const nx=-(target[1]-sy), ny=(target[0]-sx);
+  const L=Math.hypot(nx,ny)||1;
+  const bow=Math.min(38, L*0.22);
+  const kx=mx+nx/L*bow, ky=my+ny/L*bow;
+  // stop a little before the target
+  const t=0.93;
+  const ex=(1-t)*(1-t)*sx+2*(1-t)*t*kx+t*t*target[0];
+  const ey=(1-t)*(1-t)*sy+2*(1-t)*t*ky+t*t*target[1];
+  ctx.beginPath(); ctx.moveTo(sx,sy); ctx.quadraticCurveTo(kx,ky,ex,ey);
+  ctx.strokeStyle='#20242b'; ctx.lineWidth=1.8; ctx.stroke();
+  // arrow head along the curve tangent
+  const tx=2*(1-t)*(kx-sx)+2*t*(target[0]-kx), ty=2*(1-t)*(ky-sy)+2*t*(target[1]-ky);
+  const TL=Math.hypot(tx,ty)||1, ux=tx/TL, uy=ty/TL, hl=13, hw=10;
+  ctx.beginPath(); ctx.moveTo(ex,ey);
+  ctx.lineTo(ex-ux*hl-uy*hw/2, ey-uy*hl+ux*hw/2);
+  ctx.lineTo(ex-ux*hl+uy*hw/2, ey-uy*hl-ux*hw/2);
+  ctx.closePath(); ctx.fillStyle='#20242b'; ctx.fill();
+}
+
+/* the peach caption box with a block arrow pointing at the column */
+function captionBox(target){
+  const bx=20, by=H-146, bw=312, bh=136, r=15;
+  // block arrow from the box to the patch, stopping just short of the tile
+  const from=[bx+bw-24, by+3];
+  let dx=target[0]-from[0], dy=target[1]-from[1], L0=Math.hypot(dx,dy)||1;
+  const ux=dx/L0, uy=dy/L0, px=-uy, py=ux;
+  const L=Math.max(70, L0-64);
+  const to=[from[0]+ux*L, from[1]+uy*L];
+  const stemW=12, headW=29, headL=28;
+  const hb=[from[0]+ux*(L-headL), from[1]+uy*(L-headL)];
+  const poly=[
+    [from[0]+px*stemW/2, from[1]+py*stemW/2],
+    [hb[0]+px*stemW/2, hb[1]+py*stemW/2],
+    [hb[0]+px*headW/2, hb[1]+py*headW/2],
+    [to[0], to[1]],
+    [hb[0]-px*headW/2, hb[1]-py*headW/2],
+    [hb[0]-px*stemW/2, hb[1]-py*stemW/2],
+    [from[0]-px*stemW/2, from[1]-py*stemW/2]
+  ];
+  ctx.beginPath();
+  poly.forEach((p,k)=>k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.closePath();
+  ctx.fillStyle='#fbe4bb'; ctx.fill();
+  ctx.strokeStyle='#9b9b9b'; ctx.lineWidth=3; ctx.lineJoin='round'; ctx.stroke();
+
+  // rounded box
+  ctx.beginPath();
+  ctx.moveTo(bx+r,by);
+  ctx.lineTo(bx+bw-r,by); ctx.quadraticCurveTo(bx+bw,by,bx+bw,by+r);
+  ctx.lineTo(bx+bw,by+bh-r); ctx.quadraticCurveTo(bx+bw,by+bh,bx+bw-r,by+bh);
+  ctx.lineTo(bx+r,by+bh); ctx.quadraticCurveTo(bx,by+bh,bx,by+bh-r);
+  ctx.lineTo(bx,by+r); ctx.quadraticCurveTo(bx,by,bx+r,by);
+  ctx.closePath();
+  ctx.fillStyle='#fbe4bb'; ctx.fill();
+  ctx.strokeStyle='#9b9b9b'; ctx.lineWidth=3; ctx.stroke();
+
+  const size=20, lh=27, x=bx+17; let y=by+33;
+  mathText(x,y,[{t:'The volume of fluid'}],size,'#20242b'); y+=lh;
+  mathText(x,y,[{t:'crossing '},{t:'σ',i:true},{t:'k',i:true,s:true},{t:' in the'}],size,'#20242b'); y+=lh;
+  mathText(x,y,[{t:'direction of '},{t:'n',b:true},{t:' per'}],size,'#20242b'); y+=lh;
+  mathText(x,y,[{t:'unit of time.'}],size,'#20242b');
+}
+
+/* ===================== interaction ===================== */
+let mode=null, last=null;
+function localPt(e){
+  const r=cv.getBoundingClientRect();
+  return [e.clientX-r.left, e.clientY-r.top];
+}
+cv.addEventListener('pointerdown', e=>{
+  const [sx,sy]=localPt(e);
+  const hit=pickSurface(sx,sy);
+  const near = hit && Math.abs(hit[0]-S.cx)<S.h*1.7 && Math.abs(hit[1]-S.cy)<S.h*1.7;
+  const onDot = (()=>{ const A=proj(P3(S.cx,S.cy)); return Math.hypot(A[0]-sx,A[1]-sy)<18; })();
+  mode = (near||onDot) ? 'patch' : 'orbit';
+  last=[sx,sy];
+  cv.setPointerCapture(e.pointerId);
+  cv.classList.toggle('dragpatch', mode==='patch');
+  if(mode==='patch' && hit){ S.cx=hit[0]; S.cy=hit[1]; draw(); }
+});
+cv.addEventListener('pointermove', e=>{
+  const [sx,sy]=localPt(e);
+  if(!mode){
+    const hit=pickSurface(sx,sy);
+    const near = hit && Math.abs(hit[0]-S.cx)<S.h*1.7 && Math.abs(hit[1]-S.cy)<S.h*1.7;
+    cv.classList.toggle('dragpatch', !!near);
+    return;
+  }
+  if(mode==='patch'){
+    const hit=pickSurface(sx,sy);
+    if(hit){ S.cx=hit[0]; S.cy=hit[1]; draw(); }
+  }else{
+    S.az -= (sx-last[0])*0.010;
+    S.el = Math.max(0.10, Math.min(1.25, S.el + (sy-last[1])*0.008));
+    last=[sx,sy]; draw();
+  }
+});
+const endDrag=e=>{ mode=null; cv.classList.remove('dragpatch'); };
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+cv.addEventListener('pointerleave', ()=>{ if(!mode) cv.classList.remove('dragpatch'); });
+
+const bind=(id, fn)=>{ const el=document.getElementById(id);
+  el.addEventListener('input', ()=>{ fn(el); draw(); }); };
+bind('sSpeed', el=>{ S.speed=+el.value; document.getElementById('vSpeed').textContent=S.speed.toFixed(2); });
+bind('sSize',  el=>{ S.h=+el.value;     document.getElementById('vSize').textContent=S.h.toFixed(2); });
+bind('cPrism', el=>{ S.prism=el.checked; });
+bind('cTangent', el=>{ S.tangent=el.checked; });
+bind('cCaption', el=>{ S.caption=el.checked; });
+document.getElementById('bReset').addEventListener('click', ()=>{
+  S.az=-0.62; S.el=0.40; S.cx=-1.05; S.cy=-0.85; draw();
+});
+
+draw();
+</script>
+</body>
+</html>

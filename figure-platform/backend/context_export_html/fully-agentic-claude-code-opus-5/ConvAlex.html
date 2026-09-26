@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlexNet Architecture</title>
+<style>
+  :root{
+    --bg:#f4f2ee; --card:#ffffff; --ink:#15181c; --muted:#5d6570;
+    --line:#d8d4cc; --accent:#1d4ed8; --accent-soft:#e6edfd;
+    --teal:#d3edeb; --teal-d:#a0d9d3; --or:#d18362; --or-d:#773c23;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;
+  }
+  .page{max-width:1280px;margin:0 auto;padding:24px 16px 64px}
+  header h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:-.01em}
+  header p{margin:0 0 18px;color:var(--muted);max-width:74ch;font-size:.95rem}
+  .figwrap{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:8px 8px 4px; box-shadow:0 1px 2px rgba(0,0,0,.05);
+  }
+  svg#fig{width:100%;height:auto;display:block;touch-action:manipulation}
+  .controls{
+    margin-top:16px; display:grid; gap:14px;
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+  }
+  .ctl{
+    background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px;
+  }
+  .ctl h3{margin:0 0 10px;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  button{
+    font:inherit; font-weight:600; cursor:pointer; border-radius:8px;
+    border:1px solid var(--accent); background:var(--accent); color:#fff; padding:8px 14px;
+  }
+  button.ghost{background:#fff;color:var(--accent)}
+  button:disabled{opacity:.45;cursor:default}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  input[type=range]{flex:1;min-width:120px;accent-color:var(--accent)}
+  label.chk{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.92rem}
+  input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent)}
+  .val{font-variant-numeric:tabular-nums;font-weight:700;min-width:2.6em;text-align:right}
+  .sub{font-size:.8rem;color:var(--muted)}
+  .readout{
+    margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;
+  }
+  .readout h3{margin:0 0 8px;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .chain{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.92rem}
+  .dim{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:700;
+       background:var(--accent-soft);border-radius:6px;padding:2px 7px;white-space:nowrap}
+  .op{color:var(--muted);font-size:.86rem;white-space:nowrap}
+  .formula{margin-top:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+           font-size:.85rem;color:var(--muted)}
+  .rfbox{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);font-size:.9rem;display:none}
+  .rfbox.on{display:block}
+  .rfbox b{color:#b45309}
+  .hint{font-size:.8rem;color:var(--muted);margin-top:6px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:.82rem;color:var(--muted)}
+  .legend i{display:inline-block;width:14px;height:14px;border:1px solid #333;border-radius:3px;
+            vertical-align:-2px;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+  <h1>AlexNet — 3-D feature-map volumes</h1>
+  <p>The 224&times;224&times;3 input photograph flows left to right through five convolution stages.
+     Each stage <em>shrinks the spatial grid</em> and <em>grows the channel depth</em>, so every later
+     activation summarises a larger patch of the original image. All box sizes, output sizes and
+     receptive fields below are computed from the real layer parameters.</p>
+</header>
+
+<div class="figwrap">
+  <svg id="fig" viewBox="0 0 1180 920" role="img"
+       aria-label="AlexNet architecture drawn as 3-D feature map volumes"></svg>
+</div>
+
+<div class="controls">
+  <div class="ctl">
+    <h3>Animate data flow</h3>
+    <div class="row">
+      <button id="play">▶ Play</button>
+      <button id="step" class="ghost">Step ▸</button>
+      <button id="reset" class="ghost">Reset</button>
+    </div>
+    <div class="sub" id="animLabel" style="margin-top:8px">Stopped — showing the whole network.</div>
+  </div>
+
+  <div class="ctl">
+    <h3>Convolution stage</h3>
+    <div class="row">
+      <span class="sub">1</span>
+      <input id="stage" type="range" min="1" max="5" step="1" value="1">
+      <span class="sub">5</span>
+      <span class="val" id="stageVal">1</span>
+    </div>
+    <div class="sub" id="stageKernel" style="margin-top:8px"></div>
+  </div>
+
+  <div class="ctl">
+    <h3>Receptive field</h3>
+    <label class="chk"><input id="rf" type="checkbox"> Show receptive-field overlay</label>
+    <div class="row" style="margin-top:10px">
+      <span class="sub" style="width:2.6em">row</span>
+      <input id="rfRow" type="range" min="0" max="12" step="1" value="6">
+      <span class="val" id="rfRowVal">6</span>
+    </div>
+    <div class="row">
+      <span class="sub" style="width:2.6em">col</span>
+      <input id="rfCol" type="range" min="0" max="12" step="1" value="6">
+      <span class="val" id="rfColVal">6</span>
+    </div>
+    <div class="hint">Or click a spatial (dark) face in the figure to pick an activation.</div>
+  </div>
+</div>
+
+<div class="readout">
+  <h3>Selected stage</h3>
+  <div class="chain" id="chain"></div>
+  <div class="formula" id="formula"></div>
+  <div class="rfbox" id="rfbox"></div>
+  <div class="legend">
+    <span><i style="background:#d18362"></i>feature-map volume (front / top face)</span>
+    <span><i style="background:#773c23"></i>spatial face — the <em>h&times;w</em> grid</span>
+    <span><i style="background:#d3edeb"></i>fully-connected vector</span>
+    <span><i style="background:#fbbf24"></i>receptive field</span>
+  </div>
+</div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   1.  ARCHITECTURE  (all sizes derived, nothing hard-coded)
+   ============================================================ */
+const INPUT = 224;
+const OPS = [
+  {id:"conv1", type:"conv", k:11, s:4, p:2, ch:96,   label:"Conv 11×11, stride 4"},
+  {id:"pool1", type:"pool", k:3,  s:2, p:0, ch:96,   label:"MaxPool 3×3, stride 2"},
+  {id:"conv2", type:"conv", k:5,  s:1, p:2, ch:256,  label:"Conv 5×5"},
+  {id:"pool2", type:"pool", k:3,  s:2, p:0, ch:256,  label:"MaxPool 3×3, stride 2"},
+  {id:"conv3", type:"conv", k:3,  s:1, p:1, ch:384,  label:"Conv 3×3"},
+  {id:"conv4", type:"conv", k:3,  s:1, p:1, ch:384,  label:"Conv 3×3"},
+  {id:"conv5", type:"conv", k:3,  s:1, p:1, ch:256,  label:"Conv 3×3"},
+  {id:"pool5", type:"pool", k:3,  s:2, p:0, ch:256,  label:"MaxPool 3×3, stride 2"}
+];
+const outSize = (n,o) => Math.floor((n + 2*o.p - o.k)/o.s) + 1;
+
+// spatial size AFTER op i  (SIZE[-1] handled by sizeAfter)
+const SIZE = [];
+(function(){ let n = INPUT; for (const o of OPS){ n = outSize(n,o); SIZE.push(n); } })();
+const sizeAfter = i => i < 0 ? INPUT : SIZE[i];
+const chAfter   = i => i < 0 ? 3     : OPS[i].ch;
+
+// cumulative receptive field of every op output w.r.t. the input image
+const RFC = [];
+(function(){
+  let r = 1, j = 1, st = 0.5;
+  for (const o of OPS){
+    r  = r + (o.k - 1)*j;
+    st = st + ((o.k - 1)/2 - o.p)*j;
+    j  = j * o.s;
+    RFC.push({r, j, start: st});
+  }
+})();
+const rfAt = i => i < 0 ? {r:1, j:1, start:0.5} : RFC[i];
+
+// window (in tensor `from`) seen by one activation at index p of tensor `to`
+function windowBetween(fromOp, toOp, p){
+  let r = 1, j = 1, st = 0.5;
+  for (let i = fromOp + 1; i <= toOp; i++){
+    const o = OPS[i];
+    r  = r + (o.k - 1)*j;
+    st = st + ((o.k - 1)/2 - o.p)*j;
+    j  = j * o.s;
+  }
+  return {size:r, centre: st + p*j};
+}
+
+/* Drawn tensors: index into OPS of the op that produced them (-1 = input) */
+const TENSORS = [
+  {key:"in",  op:-1, x:128, kind:"photo"},
+  {key:"t1",  op: 0, x:282, kind:"vol"},
+  {key:"t2",  op: 2, x:381, kind:"vol"},
+  {key:"t3",  op: 4, x:507, kind:"vol"},
+  {key:"t4",  op: 5, x:628, kind:"vol"},
+  {key:"t5",  op: 6, x:747, kind:"vol"}
+];
+const FCS = [
+  {key:"f1", x:930,  n:4096, h:500, label:"4096"},
+  {key:"f2", x:992,  n:4096, h:500, label:"4096"},
+  {key:"f3", x:1054, n:1000, h:260, label:"1000"},
+  {key:"f4", x:1116, n:1000, h:260, label:"1000"}
+];
+/* the five conv stages the slider selects -> tensor index in TENSORS */
+const STAGES = [
+  {conv:0, tensor:1, pre:[]},        // conv1
+  {conv:2, tensor:2, pre:[1]},       // pool1 + conv2
+  {conv:4, tensor:3, pre:[3]},       // pool2 + conv3
+  {conv:5, tensor:4, pre:[]},        // conv4
+  {conv:6, tensor:5, pre:[]}         // conv5
+];
+
+/* ============================================================
+   2.  OBLIQUE PROJECTION
+   ============================================================ */
+const TH = 33 * Math.PI/180, CT = Math.cos(TH), ST = Math.sin(TH);
+const FORE  = 0.47;      // depth foreshortening of the "width" axis
+const SP    = 2.45;      // px per spatial unit, feature maps
+const SP_IN = 1.77;      // px per spatial unit, input photograph (drawn smaller)
+const BASE  = 726;       // common ground line
+
+// channel extent in px: affine in sqrt(channels) — matches the reference proportions
+const chW = c => Math.max(10, 5.67*Math.sqrt(c) - 28.5);
+
+function volGeom(t){
+  const n = sizeAfter(t.op), c = chAfter(t.op);
+  const H = n*SP, D = n*SP*FORE, W = chW(c);
+  return {n, c, H, D, W, x:t.x, yTop:BASE - H, yBot:BASE};
+}
+// generic box point:  a = channel frac, y = absolute screen y on the front plane, u = depth frac
+const bp = (g,a,y,u) => [g.x + a*g.W + u*g.D*CT, y - u*g.D*ST];
+// point on the SPATIAL (right) face:  t = row frac (0 top), u = col frac (0 front)
+const sp2 = (g,t,u) => [g.x + g.W + u*g.D*CT, g.yTop + t*(g.yBot-g.yTop) - u*g.D*ST];
+
+/* input photograph plane (a flat card, parameterised in 0..224 x 0..224) */
+const PH = (function(){
+  const H = INPUT*SP_IN, Dm = INPUT*SP_IN*FORE;
+  const x0 = TENSORS[0].x, yBot = 675;
+  return {x0, yTop: yBot - H, H, Wx: Dm*CT, Wy: -Dm*ST};
+})();
+// u,v in 0..224  (u = column / depth axis, v = row / down axis)
+const php = (u,v) => [PH.x0 + (u/INPUT)*PH.Wx, PH.yTop + (v/INPUT)*PH.H + (u/INPUT)*PH.Wy];
+
+/* ============================================================
+   3.  SVG helpers
+   ============================================================ */
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("fig");
+const el = (n,a={},parent=null) => {
+  const e = document.createElementNS(NS,n);
+  for (const k in a) e.setAttribute(k, a[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const pts = arr => arr.map(p => p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ");
+const F = "Georgia, 'Times New Roman', serif";
+
+function txt(parent, x, y, s, o={}){
+  const t = el("text",{x, y,
+    "font-family":o.font||F, "font-size":o.size||18,
+    fill:o.fill||"#111", "text-anchor":o.anchor||"start",
+    "font-weight":o.weight||"400"}, parent);
+  if (o.rotate) t.setAttribute("transform",`rotate(${o.rotate} ${x} ${y})`);
+  t.textContent = s;
+  return t;
+}
+
+/* ---- defs ---- */
+const defs = el("defs",{},svg);
+(function(){
+  const m = el("marker",{id:"ah", viewBox:"0 0 10 10", refX:"9.2", refY:"5",
+    markerWidth:"7", markerHeight:"7", orient:"auto-start-reverse"}, defs);
+  el("path",{d:"M0,0.6 L10,5 L0,9.4 L2.6,5 Z", fill:"#000"}, m);
+
+  const m2 = el("marker",{id:"ahb", viewBox:"0 0 10 10", refX:"9.2", refY:"5",
+    markerWidth:"7", markerHeight:"7", orient:"auto-start-reverse"}, defs);
+  el("path",{d:"M0,0.6 L10,5 L0,9.4 L2.6,5 Z", fill:"#1d4ed8"}, m2);
+
+  // --- the input photograph: a synthetic candle-lit still life ---
+  const g = el("linearGradient",{id:"wall",x1:"0",y1:"0",x2:"0.3",y2:"1"},defs);
+  el("stop",{offset:"0","stop-color":"#2b1a0b"},g);
+  el("stop",{offset:"0.45","stop-color":"#150d06"},g);
+  el("stop",{offset:"0.66","stop-color":"#070504"},g);
+  el("stop",{offset:"1","stop-color":"#040303"},g);
+  const rg = el("radialGradient",{id:"glow"},defs);
+  el("stop",{offset:"0","stop-color":"#ffc46a","stop-opacity":".80"},rg);
+  el("stop",{offset:"0.42","stop-color":"#d98a22","stop-opacity":".30"},rg);
+  el("stop",{offset:"1","stop-color":"#a85f12","stop-opacity":"0"},rg);
+  const fg = el("radialGradient",{id:"flame"},defs);
+  el("stop",{offset:"0","stop-color":"#fff6d8"},fg);
+  el("stop",{offset:"0.5","stop-color":"#ffd063"},fg);
+  el("stop",{offset:"1","stop-color":"#e08a1a"},fg);
+})();
+
+/* layer groups, back to front */
+const gPhoto  = el("g",{},svg);
+const gBrack  = el("g",{},svg);
+const gVols   = el("g",{},svg);
+const gFC     = el("g",{},svg);
+const gFlow   = el("g",{},svg);
+const gDims   = el("g",{},svg);
+const gOver   = el("g",{},svg);
+const gHit    = el("g",{},svg);
+
+/* ============================================================
+   4.  THE INPUT PHOTOGRAPH
+   ============================================================ */
+(function drawPhoto(){
+  const quad = [php(0,0), php(INPUT,0), php(INPUT,INPUT), php(0,INPUT)];
+  const cp = el("clipPath",{id:"photoClip"},defs);
+  el("polygon",{points:pts(quad)}, cp);
+
+  const inner = el("g",{"clip-path":"url(#photoClip)"}, gPhoto);
+  // map the unit photo space (0..224 square) onto the sheared card
+  const m = `matrix(${(PH.Wx/INPUT).toFixed(5)},${(PH.Wy/INPUT).toFixed(5)},0,${(PH.H/INPUT).toFixed(5)},${PH.x0},${PH.yTop})`;
+  const s = el("g",{transform:m}, inner);
+
+  el("rect",{x:0,y:0,width:INPUT,height:INPUT,fill:"url(#wall)"}, s);
+  el("ellipse",{cx:100,cy:96,rx:104,ry:76,fill:"url(#glow)"}, s);
+  // five candles on a dark shelf
+  const cx = [48, 74, 100, 126, 152], ch = [118, 108, 100, 106, 116];
+  cx.forEach((x,i)=>{
+    const top = ch[i];
+    el("ellipse",{cx:x,cy:top-4,rx:15,ry:17,fill:"url(#glow)"}, s);
+    el("rect",{x:x-4,y:top,width:8,height:156-top,fill:"#a07a44","fill-opacity":".32"}, s);
+    el("path",{d:`M${x},${top-15} C ${x+6},${top-8} ${x+5},${top} ${x},${top+2}
+                  C ${x-5},${top} ${x-6},${top-8} ${x},${top-15} Z`,fill:"url(#flame)"}, s);
+  });
+  el("rect",{x:0,y:156,width:INPUT,height:68,fill:"#060505"}, s);
+  el("rect",{x:0,y:152,width:INPUT,height:6,fill:"#23150a"}, s);
+  el("ellipse",{cx:176,cy:146,rx:16,ry:16,fill:"none",stroke:"#8a6a3a","stroke-width":2.4,"stroke-opacity":".8"}, s);
+
+  el("polygon",{points:pts(quad), fill:"none", stroke:"#000","stroke-width":1.6,"stroke-linejoin":"round"}, gPhoto);
+})();
+
+/* ============================================================
+   5.  FEATURE-MAP VOLUMES
+   ============================================================ */
+const GEO = {};
+TENSORS.forEach((t,i)=>{
+  if (t.kind !== "vol") return;
+  const g = volGeom(t); GEO[t.key] = g;
+  const grp = el("g",{}, gVols);
+  const S = {stroke:"#111","stroke-width":1.6,"stroke-linejoin":"round"};
+  // right = spatial face (h x w), then top, then front
+  el("polygon",Object.assign({points:pts([bp(g,1,g.yTop,0),bp(g,1,g.yTop,1),bp(g,1,g.yBot,1),bp(g,1,g.yBot,0)]),fill:"#773c23"},S),grp);
+  el("polygon",Object.assign({points:pts([bp(g,0,g.yTop,0),bp(g,1,g.yTop,0),bp(g,1,g.yTop,1),bp(g,0,g.yTop,1)]),fill:"#d18362"},S),grp);
+  el("polygon",Object.assign({points:pts([bp(g,0,g.yTop,0),bp(g,1,g.yTop,0),bp(g,1,g.yBot,0),bp(g,0,g.yBot,0)]),fill:"#d18362"},S),grp);
+  // channel-ellipsis: "…" on the front face, showing only a few of the C channels are drawn
+  const mid = bp(g,0.5,(g.yTop+g.yBot)/2,0);
+  txt(grp, mid[0], mid[1]+6, "…", {size:Math.min(30, 12+g.W*0.22), anchor:"middle", fill:"#5c2c17"});
+  GEO[t.key].group = grp;
+});
+
+/* ============================================================
+   6.  FULLY-CONNECTED VECTORS  (thin teal bars with a break + ⋮)
+   ============================================================ */
+const FCG = {};
+FCS.forEach(f=>{
+  const W = 21, D = 12, yTop = BASE - f.h;
+  const g = {x:f.x, W, D, yTop, yBot:BASE, H:f.h};
+  FCG[f.key] = g;
+  const grp = el("g",{}, gFC);
+  const S = {stroke:"#111","stroke-width":1.5,"stroke-linejoin":"round"};
+  const bc = yTop + f.h*0.52, bT = bc - 17, bB = bc + 17;
+  const seg = (y0,y1,light,dark,withTop)=>{
+    el("polygon",Object.assign({points:pts([bp(g,1,y0,0),bp(g,1,y0,1),bp(g,1,y1,1),bp(g,1,y1,0)]),fill:dark},S),grp);
+    if (withTop) el("polygon",Object.assign({points:pts([bp(g,0,y0,0),bp(g,1,y0,0),bp(g,1,y0,1),bp(g,0,y0,1)]),fill:light},S),grp);
+    el("polygon",Object.assign({points:pts([bp(g,0,y0,0),bp(g,1,y0,0),bp(g,1,y1,0),bp(g,0,y1,0)]),fill:light},S),grp);
+  };
+  seg(yTop, bT, "#d3edeb", "#a0d9d3", true);
+  seg(bB, BASE, "#d3edeb", "#a0d9d3", false);
+  // break band (lighter) + vertical ellipsis
+  el("polygon",{points:pts([bp(g,1,bT,0),bp(g,1,bT,1),bp(g,1,bB,1),bp(g,1,bB,0)]),
+                fill:"#eaf7f6",stroke:"#111","stroke-width":.8},grp);
+  el("polygon",{points:pts([bp(g,0,bT,0),bp(g,1,bT,0),bp(g,1,bB,0),bp(g,0,bB,0)]),
+                fill:"#eaf7f6",stroke:"none"},grp);
+  [-10,0,10].forEach(dy=> el("circle",{cx:f.x+W/2, cy:bc+dy, r:1.9, fill:"#111"},grp));
+  // zig-zag cut marks
+  const zig = y => {
+    let d = `M ${f.x} ${y}`;
+    for (let i=0;i<4;i++) d += ` l ${W/8} ${i%2?4:-4} l ${W/8} ${i%2?-4:4}`;
+    el("path",{d, fill:"none", stroke:"#111","stroke-width":1.4},grp);
+  };
+  zig(bT); zig(bB);
+  // label above the bar
+  txt(gDims, f.x+15, yTop-12, f.label, {size:18, rotate:-60, anchor:"start"});
+  g.group = grp;
+});
+
+/* ============================================================
+   7.  FLOW ARROWS + OPERATION LABELS ALONG THE BASE
+   ============================================================ */
+const DIRX = Math.cos(30*Math.PI/180), DIRY = -Math.sin(30*Math.PI/180); // up-right
+const PERPX = -DIRY, PERPY = DIRX;                                      // down-right
+
+function flowArrow(targetX, lines, lane){
+  const bx = targetX - 2, by = BASE + 4;
+  const L = 96;
+  const ox = lane*22*PERPX, oy = lane*22*PERPY;
+  const tailX = bx - L*DIRX + ox, tailY = by - L*DIRY + oy;
+  el("line",{x1:tailX.toFixed(1), y1:tailY.toFixed(1), x2:(bx+ox).toFixed(1), y2:(by+oy).toFixed(1),
+             stroke:"#000","stroke-width":1.8,"marker-end":"url(#ah)"}, gFlow);
+  lines.forEach((s,i)=>{
+    const px = tailX - 9*DIRX + i*21*PERPX, py = tailY - 9*DIRY + i*21*PERPY;
+    txt(gFlow, px, py, s, {size:19, rotate:-30, anchor:"end"});
+  });
+}
+const rightEdge = k => GEO[k].x + GEO[k].W + GEO[k].D*CT;
+
+flowArrow(TENSORS[1].x, ["Conv 11×11","Stride 4"], 0);   // input -> 55×55×96
+flowArrow(rightEdge("t1")+16, ["MaxPool"], 0);           // pool1
+flowArrow(TENSORS[2].x, ["Conv 5 × 5"], 1);              // conv2 -> 27×27×256
+flowArrow(TENSORS[3].x, ["MaxPool"], 0);                 // pool2 (+conv3)
+flowArrow(TENSORS[4].x, ["Conv 3 × 3"], 0);              // conv4
+flowArrow(TENSORS[5].x, [], 0);                          // conv5 (covered by bracket)
+flowArrow(FCS[0].x, ["MaxPool + FC"], 2);
+flowArrow(FCS[1].x, ["FC"], 0);
+flowArrow(FCS[2].x, ["FC"], 1);
+flowArrow(FCS[3].x, ["Softmax"], 2);
+
+/* bracket showing the 3×3 convolutions repeat across t3,t4,t5 */
+(function(){
+  const S = {stroke:"#000","stroke-width":1.5,fill:"none"};
+  const aTop = GEO.t3.yTop - GEO.t3.D*ST - 18;
+  const x1 = GEO.t3.x + GEO.t3.W*0.5, x2 = GEO.t4.x + GEO.t4.W*0.5;
+  el("path",Object.assign({d:`M ${x1} ${aTop+12} L ${x1} ${aTop} L ${x2} ${aTop} L ${x2} ${aTop+12}`},S),gBrack);
+  const bBot = BASE + 26;
+  const x3 = GEO.t3.x + 10, x4 = GEO.t5.x + 10;
+  el("path",Object.assign({d:`M ${x3} ${bBot-12} L ${x3} ${bBot} L ${x4} ${bBot} L ${x4} ${bBot-12}`},S),gBrack);
+})();
+
+/* ============================================================
+   8.  DIMENSION LABELS WITH LEADER ARROWS
+   ============================================================ */
+function dimLabel(anchorPt, lines, len, gap){
+  if (typeof lines === "string") lines = [lines];
+  const ax = anchorPt[0] + gap*DIRX, ay = anchorPt[1] + gap*DIRY;
+  const tx = anchorPt[0] + len*DIRX, ty = anchorPt[1] + len*DIRY;
+  el("line",{x1:tx.toFixed(1), y1:ty.toFixed(1), x2:ax.toFixed(1), y2:ay.toFixed(1),
+             stroke:"#000","stroke-width":1.8,"marker-end":"url(#ah)"}, gDims);
+  lines.forEach((s,i)=>{
+    txt(gDims, tx + 10*DIRX + i*21*PERPX, ty + 10*DIRY + i*21*PERPY, s,
+        {size:19, rotate:-30, anchor:"start"});
+  });
+}
+dimLabel(php(150,0), "224×224×3", 190, 6);
+dimLabel(bp(GEO.t1,1,GEO.t1.yTop,1), "55×55×96", 128, 8);
+dimLabel(bp(GEO.t2,1,GEO.t2.yTop,1), "27×27×256", 130, 8);
+dimLabel(bp(GEO.t3,1,GEO.t3.yTop,1), "13×13×384", 108, 8);
+dimLabel(bp(GEO.t5,1,GEO.t5.yTop,1), ["13×13","×256"], 46, 8);
+
+/* ============================================================
+   9.  OVERLAYS — selection ring, badge, receptive field
+   ============================================================ */
+function hull(g){
+  return [bp(g,0,g.yBot,0), bp(g,0,g.yTop,0), bp(g,0,g.yTop,1),
+          bp(g,1,g.yTop,1), bp(g,1,g.yBot,1), bp(g,1,g.yBot,0)];
+}
+function hullOf(key){
+  if (key === "in") return [php(0,0), php(INPUT,0), php(INPUT,INPUT), php(0,INPUT)];
+  if (GEO[key])  return hull(GEO[key]);
+  if (FCG[key])  return hull(FCG[key]);
+  return null;
+}
+const ALLKEYS = TENSORS.map(t=>t.key).concat(FCS.map(f=>f.key));
+
+/* clickable spatial faces */
+TENSORS.filter(t=>t.kind==="vol").forEach(t=>{
+  const g = GEO[t.key];
+  const p = el("polygon",{points:pts([sp2(g,0,0),sp2(g,0,1),sp2(g,1,1),sp2(g,1,0)]),
+                          fill:"transparent", style:"cursor:pointer"}, gHit);
+  p.addEventListener("click", ev=>{
+    const si = STAGES.findIndex(s => TENSORS[s.tensor].key === t.key);
+    if (si < 0) return;
+    stageEl.value = si+1;
+    const r = svg.getBoundingClientRect();
+    const sx = 1180 / r.width, sy = 920 / r.height;
+    const qx = (ev.clientX - r.left)*sx, qy = (ev.clientY - r.top)*sy;
+    const u = (qx - g.x - g.W) / (g.D*CT);
+    const tt = (qy - g.yTop + u*g.D*ST) / (g.yBot - g.yTop);
+    const n = g.n;
+    rfColEl.value = Math.max(0, Math.min(n-1, Math.floor(u*n)));
+    rfRowEl.value = Math.max(0, Math.min(n-1, Math.floor(tt*n)));
+    rfEl.checked = true;
+    render();
+  });
+});
+
+/* ============================================================
+   10.  STATE + RENDER
+   ============================================================ */
+const stageEl = document.getElementById("stage");
+const rfEl    = document.getElementById("rf");
+const rfRowEl = document.getElementById("rfRow");
+const rfColEl = document.getElementById("rfCol");
+let animIdx = -1, timer = null;
+
+const ANIM = [
+  {key:"in", note:"Input image — 224×224×3"},
+  {key:"t1", note:"Conv 11×11, stride 4 → 55×55×96"},
+  {key:"t2", note:"MaxPool 3×3/2, then Conv 5×5 → 27×27×256"},
+  {key:"t3", note:"MaxPool 3×3/2, then Conv 3×3 → 13×13×384"},
+  {key:"t4", note:"Conv 3×3 → 13×13×384"},
+  {key:"t5", note:"Conv 3×3 → 13×13×256"},
+  {key:"f1", note:"MaxPool 3×3/2 → 6×6×256, flatten → FC 4096"},
+  {key:"f2", note:"FC → 4096"},
+  {key:"f3", note:"FC → 1000 class scores"},
+  {key:"f4", note:"Softmax → 1000 class probabilities"}
+];
+
+function clearOver(){ while (gOver.firstChild) gOver.removeChild(gOver.firstChild); }
+
+function ring(key, color, w){
+  const h = hullOf(key); if (!h) return;
+  el("polygon",{points:pts(h), fill:"none", stroke:color, "stroke-width":w,
+                "stroke-linejoin":"round"}, gOver);
+}
+/* Callout card: parked on a clear horizontal band (y = 196) so it never lands on a
+   dimension label, with a dashed leader down to the highlighted volume. */
+const BADGE_Y = 196;
+function badge(anchorPt, lines){
+  const wPx = Math.max(...lines.map(l=>l.length)) * 8.6 + 24;
+  const h = 21*lines.length + 14;
+  let x = Math.max(300, Math.min(1180 - wPx - 10, anchorPt[0] - wPx/2));
+  const y = BADGE_Y;
+  const cx = x + wPx/2;
+  el("line",{x1:cx, y1:y+h, x2:anchorPt[0], y2:anchorPt[1],
+             stroke:"#1d4ed8","stroke-width":1.4,"stroke-dasharray":"5 4",
+             "stroke-opacity":".55"},gOver);
+  el("circle",{cx:anchorPt[0], cy:anchorPt[1], r:3.6, fill:"#1d4ed8"},gOver);
+  el("rect",{x, y, width:wPx, height:h, rx:9, fill:"#ffffff", stroke:"#1d4ed8",
+             "stroke-width":1.8}, gOver);
+  lines.forEach((s,i)=> txt(gOver, x+12, y+23+i*21, s,
+      {size:16, font:"ui-monospace, Menlo, Consolas, monospace", fill:"#1d4ed8", weight:i?"400":"700"}));
+}
+
+function render(){
+  clearOver();
+  const si = +stageEl.value - 1;
+  const stage = STAGES[si];
+  const T = TENSORS[stage.tensor];
+  const g = GEO[T.key];
+  const n = g.n;
+
+  // clamp activation sliders to this tensor's grid
+  rfRowEl.max = n-1; rfColEl.max = n-1;
+  let row = Math.min(+rfRowEl.value, n-1), col = Math.min(+rfColEl.value, n-1);
+  if (+rfRowEl.value > n-1) rfRowEl.value = row;
+  if (+rfColEl.value > n-1) rfColEl.value = col;
+  document.getElementById("stageVal").textContent = si+1;
+  document.getElementById("rfRowVal").textContent = row;
+  document.getElementById("rfColVal").textContent = col;
+
+  /* ---- dimming during animation ---- */
+  const active = animIdx >= 0 ? ANIM[animIdx].key : null;
+  ALLKEYS.forEach(k=>{
+    const grp = (GEO[k] && GEO[k].group) || (FCG[k] && FCG[k].group) || (k==="in" ? gPhoto : null);
+    if (!grp) return;
+    grp.setAttribute("opacity", active ? (k===active ? 1 : 0.28) : 1);
+  });
+  [gFlow, gDims, gBrack].forEach(gg => gg.setAttribute("opacity", active ? 0.35 : 1));
+
+  /* ---- selection ring on the chosen conv stage ---- */
+  if (!active) ring(T.key, "#1d4ed8", 3.4);
+  const conv = OPS[stage.conv];
+  if (active){
+    ring(active, "#1d4ed8", 4);
+    const h = hullOf(active);
+    const topY = Math.min(...h.map(p=>p[1]));
+    const cx = (Math.min(...h.map(p=>p[0])) + Math.max(...h.map(p=>p[0])))/2;
+    badge([cx, topY], [ANIM[animIdx].note]);
+  } else {
+    /* ---- stage badge: kernel size + resulting dims ---- */
+    badge(bp(g,1,g.yTop,1), [
+      `Conv ${conv.k}×${conv.k}   stride ${conv.s}   pad ${conv.p}`,
+      `→ ${n}×${n}×${conv.ch}`
+    ]);
+  }
+
+  /* ---- receptive field overlay ---- */
+  const box = document.getElementById("rfbox");
+  if (rfEl.checked){
+    box.classList.add("on");
+    const rf = rfAt(stage.conv);
+    const c0 = rf.start + col*rf.j, r0 = rf.start + row*rf.j;
+    const half = rf.r/2;
+    const cu = [Math.max(0,c0-half), Math.min(INPUT,c0+half)];
+    const rv = [Math.max(0,r0-half), Math.min(INPUT,r0+half)];
+
+    // (a) patch on the input photograph
+    const q = [php(cu[0],rv[0]), php(cu[1],rv[0]), php(cu[1],rv[1]), php(cu[0],rv[1])];
+    el("polygon",{points:pts(q), fill:"#fbbf24","fill-opacity":".34",
+                  stroke:"#b45309","stroke-width":2.6,"stroke-linejoin":"round"}, gOver);
+
+    // (b) window in the previous drawn tensor
+    const prevT = TENSORS[stage.tensor-1];
+    let prevPt = null;
+    if (prevT.kind === "vol"){
+      const pg = GEO[prevT.key], pn = pg.n;
+      const w = windowBetween(prevT.op, stage.conv, 0);
+      const cC = windowBetween(prevT.op, stage.conv, col).centre;
+      const cR = windowBetween(prevT.op, stage.conv, row).centre;
+      const u0 = Math.max(0,(cC-w.size/2)/pn), u1 = Math.min(1,(cC+w.size/2)/pn);
+      const t0 = Math.max(0,(cR-w.size/2)/pn), t1 = Math.min(1,(cR+w.size/2)/pn);
+      const poly = [sp2(pg,t0,u0), sp2(pg,t0,u1), sp2(pg,t1,u1), sp2(pg,t1,u0)];
+      el("polygon",{points:pts(poly), fill:"#fbbf24","fill-opacity":".5",
+                    stroke:"#fde68a","stroke-width":2.2,"stroke-linejoin":"round"}, gOver);
+      prevPt = sp2(pg,(t0+t1)/2,(u0+u1)/2);
+      box.dataset.prev = `${w.size}×${w.size}`;
+      box.dataset.prevName = `${pn}×${pn}×${chAfter(prevT.op)}`;
+    } else {
+      prevPt = php((cu[0]+cu[1])/2,(rv[0]+rv[1])/2);
+      box.dataset.prev = `${rfAt(stage.conv).r}×${rfAt(stage.conv).r}`;
+      box.dataset.prevName = `${INPUT}×${INPUT}×3`;
+    }
+
+    // (c) the single activation on the selected tensor's spatial face
+    const a0 = sp2(g,row/n,col/n), a1 = sp2(g,row/n,(col+1)/n),
+          a2 = sp2(g,(row+1)/n,(col+1)/n), a3 = sp2(g,(row+1)/n,col/n);
+    el("polygon",{points:pts([a0,a1,a2,a3]), fill:"#f59e0b", stroke:"#7c2d12",
+                  "stroke-width":1.6}, gOver);
+    const actPt = sp2(g,(row+0.5)/n,(col+0.5)/n);
+    el("circle",{cx:actPt[0], cy:actPt[1], r:7.5, fill:"none", stroke:"#b45309","stroke-width":2.6}, gOver);
+
+    // (d) dashed leaders: input patch -> previous window -> activation
+    const ip = php((cu[0]+cu[1])/2,(rv[0]+rv[1])/2);
+    el("line",{x1:ip[0],y1:ip[1],x2:prevPt[0],y2:prevPt[1],stroke:"#b45309",
+               "stroke-width":1.5,"stroke-dasharray":"6 5","stroke-opacity":".8"}, gOver);
+    el("line",{x1:prevPt[0],y1:prevPt[1],x2:actPt[0],y2:actPt[1],stroke:"#b45309",
+               "stroke-width":1.5,"stroke-dasharray":"6 5","stroke-opacity":".8"}, gOver);
+
+    const pct = (100*rf.r*rf.r/(INPUT*INPUT)).toFixed(1);
+    box.innerHTML =
+      `Activation <b>(row ${row}, col ${col})</b> of <b>${n}×${n}×${conv.ch}</b> is computed from a
+       <b>${box.dataset.prev}</b> window of the previous volume (${box.dataset.prevName}),
+       which traces back to a <b>${rf.r}×${rf.r}</b> patch of the 224×224 input
+       — ${pct}% of the image area. Jump between neighbouring activations on the input:
+       <b>${rf.j} px</b>.`;
+  } else {
+    box.classList.remove("on");
+  }
+
+  /* ---- text readout ---- */
+  const chainEl = document.getElementById("chain");
+  chainEl.innerHTML = "";
+  const push = (cls, s) => { const d = document.createElement("span"); d.className = cls; d.textContent = s; chainEl.appendChild(d); };
+  const prevT = TENSORS[stage.tensor-1];
+  let curN = sizeAfter(prevT.op), curC = chAfter(prevT.op);
+  push("dim", `${curN}×${curN}×${curC}`);
+  const seq = stage.pre.concat([stage.conv]);
+  const steps = [];
+  seq.forEach(oi=>{
+    const o = OPS[oi];
+    const nn = outSize(curN,o);
+    steps.push({o, inN:curN, outN:nn});
+    push("op", `— ${o.label} →`);
+    curN = nn; curC = o.ch;
+    push("dim", `${curN}×${curN}×${curC}`);
+  });
+  document.getElementById("formula").textContent = steps.map(s=>
+    `${s.o.id}:  ⌊(${s.inN} + 2·${s.o.p} − ${s.o.k}) / ${s.o.s}⌋ + 1 = ${s.outN}`).join("   ·   ");
+  document.getElementById("stageKernel").textContent =
+    `Conv ${conv.k}×${conv.k}, stride ${conv.s}, padding ${conv.p} → ${n}×${n}×${conv.ch}`;
+  document.getElementById("animLabel").textContent =
+    animIdx >= 0 ? `Step ${animIdx+1}/${ANIM.length} — ${ANIM[animIdx].note}`
+                 : "Stopped — showing the whole network.";
+}
+
+/* ---- controls ---- */
+[stageEl, rfEl, rfRowEl, rfColEl].forEach(e=>e.addEventListener("input", ()=>{ stop(); render(); }));
+
+const playBtn = document.getElementById("play");
+function stop(){ if (timer){ clearInterval(timer); timer=null; playBtn.textContent="▶ Play"; } }
+function advance(){ animIdx = (animIdx+1) % ANIM.length; render(); }
+playBtn.addEventListener("click", ()=>{
+  if (timer){ stop(); return; }
+  if (animIdx < 0) animIdx = -1;
+  advance();
+  timer = setInterval(advance, 1500);
+  playBtn.textContent = "❚❚ Pause";
+});
+document.getElementById("step").addEventListener("click", ()=>{ stop(); advance(); });
+document.getElementById("reset").addEventListener("click", ()=>{ stop(); animIdx=-1; render(); });
+
+render();
+</script>
+</body>
+</html>

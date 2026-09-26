@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts; no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    #ui .limit-box {
+      margin: 2px 0 0;
+      padding: 7px 8px;
+      border: 1px solid #d6d9df;
+      border-radius: 4px;
+      background: #fff;
+      color: #222;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: normal;
+    }
+
+    #ui input[type=text] {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 4px 6px;
+      border: 1px solid #bfc4cb;
+      border-radius: 4px;
+      font: 12px ui-monospace, Consolas, monospace;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>R1 lower boundary
+      <input id="leftLowerInput" type="text" value="-x + 1" spellcheck="false" autocomplete="off">
+    </label>
+    <label>R2 lower boundary
+      <input id="rightLowerInput" type="text" value="x + 1" spellcheck="false" autocomplete="off">
+    </label>
+    <div id="limitReadout" class="limit-box"></div>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        hideTooltip();
+        hidePopup();
+      }
+    });
+
+    var _plotFrame = null;
+
+    function setPlotFrame(opts) {
+      _plotFrame = {
+        xDomain: opts.xDomain || [-1, 1],
+        yDomain: opts.yDomain || [-1, 1],
+        margin: opts.margin || { left: 45, right: 25, top: 25, bottom: 40 },
+        width: 600,
+        height: 450
+      };
+    }
+
+    function plotX(worldX) {
+      var f = _plotFrame;
+      var span = f.xDomain[1] - f.xDomain[0];
+      var w = f.width - f.margin.left - f.margin.right;
+      return f.margin.left + (worldX - f.xDomain[0]) / span * w;
+    }
+
+    function plotY(worldY) {
+      var f = _plotFrame;
+      var span = f.yDomain[1] - f.yDomain[0];
+      var h = f.height - f.margin.top - f.margin.bottom;
+      return f.height - f.margin.bottom - (worldY - f.yDomain[0]) / span * h;
+    }
+
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Equation parser is unavailable');
+      }
+      vars = vars || ['x'];
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var allowed = {};
+      for (var i = 0; i < vars.length; i++) allowed[vars[i]] = true;
+      var names = expr.variables();
+      for (var n = 0; n < names.length; n++) {
+        if (!allowed[names[n]]) throw new Error('Unknown variable ' + names[n]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        var value = expr.evaluate(scope);
+        if (typeof value !== 'number' || !isFinite(value)) throw new Error('Expression is not finite');
+        return value;
+      };
+    }
+
+    function _pathFromPoints(points) {
+      if (!points.length) return '';
+      var d = 'M' + points[0][0].toFixed(2) + ',' + points[0][1].toFixed(2);
+      for (var i = 1; i < points.length; i++) {
+        d += 'L' + points[i][0].toFixed(2) + ',' + points[i][1].toFixed(2);
+      }
+      return d;
+    }
+
+    function _sampleFunction(fn, domain, samples) {
+      var points = [];
+      var n = Math.max(2, samples || 80);
+      for (var i = 0; i <= n; i++) {
+        var x = domain[0] + (domain[1] - domain[0]) * i / n;
+        points.push([plotX(x), plotY(fn(x))]);
+      }
+      return points;
+    }
+
+    function plotFunction(id, opts) {
+      var fn = typeof opts.expr === 'function' ? opts.expr : compileExpr(opts.expr, opts.variables || ['x']);
+      var domain = opts.domain || _plotFrame.xDomain;
+      var samples = opts.samples || 100;
+      var path = draw.path('').fill('none').stroke({
+        color: opts.stroke || '#111',
+        width: opts.width || 2,
+        linecap: 'round',
+        linejoin: 'round'
+      });
+      if (opts.dashed) path.attr({ 'stroke-dasharray': opts.dashed });
+
+      function resample() {
+        path.plot(_pathFromPoints(_sampleFunction(fn, domain, samples)));
+      }
+
+      resample();
+      return {
+        node: path,
+        setExpr: function (src) { fn = compileExpr(src, opts.variables || ['x']); resample(); },
+        setFn: function (nextFn) { fn = nextFn; resample(); },
+        setDomain: function (nextDomain) { domain = nextDomain; resample(); },
+        sample: resample,
+        remove: function () { path.remove(); }
+      };
+    }
+
+    function fillBetween(id, opts) {
+      var lower = typeof opts.lower === 'function' ? opts.lower : compileExpr(opts.lower, opts.variables || ['x']);
+      var upper = typeof opts.upper === 'function' ? opts.upper : compileExpr(opts.upper, opts.variables || ['x']);
+      var domain = opts.domain || _plotFrame.xDomain;
+      var samples = opts.samples || 100;
+      var path = draw.path('').fill({ color: opts.fill || '#ddd', opacity: opts.opacity == null ? 0.6 : opts.opacity }).stroke('none');
+
+      function resample() {
+        var top = _sampleFunction(upper, domain, samples);
+        var bottom = _sampleFunction(lower, domain, samples).reverse();
+        path.plot(_pathFromPoints(top.concat(bottom)) + 'Z');
+      }
+
+      resample();
+      return {
+        node: path,
+        setLower: function (fn) { lower = fn; resample(); },
+        setUpper: function (fn) { upper = fn; resample(); },
+        setDomain: function (nextDomain) { domain = nextDomain; resample(); },
+        sample: resample,
+        remove: function () { path.remove(); }
+      };
+    }
+
+    function plotParametric(id, opts) {
+      var fx = typeof opts.x === 'function' ? opts.x : compileExpr(opts.x, opts.variables || ['t']);
+      var fy = typeof opts.y === 'function' ? opts.y : compileExpr(opts.y, opts.variables || ['t']);
+      var tDomain = opts.tDomain || [0, 1];
+      var samples = opts.samples || 100;
+      var path = draw.path('').fill('none').stroke({ color: opts.stroke || '#111', width: opts.width || 2 });
+
+      function resample() {
+        var points = [];
+        for (var i = 0; i <= samples; i++) {
+          var t = tDomain[0] + (tDomain[1] - tDomain[0]) * i / samples;
+          points.push([plotX(fx(t)), plotY(fy(t))]);
+        }
+        path.plot(_pathFromPoints(points));
+      }
+
+      resample();
+      return {
+        node: path,
+        setX: function (fn) { fx = fn; resample(); },
+        setY: function (fn) { fy = fn; resample(); },
+        setDomain: function (nextDomain) { tDomain = nextDomain; resample(); },
+        sample: resample,
+        remove: function () { path.remove(); }
+      };
+    }
+
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 100);
+      if (n % 2) n++;
+      var h = (b - a) / n;
+      var sum = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) sum += fn(a + i * h) * (i % 2 ? 4 : 2);
+      return sum * h / 3;
+    }
+
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2;
+        var fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) {
+          b = m;
+          fb = fm;
+        } else {
+          a = m;
+          fa = fm;
+        }
+      }
+      return (a + b) / 2;
+    }
+
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error('bindEquationInput("' + inputId + '"): target handle has no method "' + method + '"');
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error('bindEquationInput("' + inputId + '"): this target cannot be driven');
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+    var W = 600;
+    var H = Math.round(W * (3 / 4));
+    draw.viewbox(0, 0, W, H);
+
+    setPlotFrame({
+      xDomain: [-3.35, 3.35],
+      yDomain: [-0.75, 4.25],
+      margin: { left: 30, right: 30, top: 22, bottom: 44 }
+    });
+
+    var cyan = '#25a9df';
+    var axisColor = '#231f20';
+    var stripColor = '#f34f5e';
+    var leftExpr = '-x + 1';
+    var rightExpr = 'x + 1';
+    var leftLowerFn = compileExpr(leftExpr, ['x']);
+    var rightLowerFn = compileExpr(rightExpr, ['x']);
+    var upperFn = function () { return 3; };
+    var labelFont = { family: 'Times New Roman, Georgia, serif', size: 31, anchor: 'middle', fill: '#231f20' };
+    var smallLabelFont = { family: 'Times New Roman, Georgia, serif', size: 22, anchor: 'middle', fill: '#231f20' };
+
+    var axisMarker = draw.marker(14, 14, function (add) {
+      add.path('M0,0 L14,7 L0,14 Z').fill(axisColor);
+    });
+    axisMarker.ref(13, 7).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    var fillLeft = fillBetween('R1Fill', {
+      lower: leftExpr,
+      upper: '3',
+      variables: ['x'],
+      domain: [-2, 0],
+      samples: 90,
+      fill: '#b9dce8',
+      opacity: 0.86
+    });
+    var fillRight = fillBetween('R2Fill', {
+      lower: rightExpr,
+      upper: '3',
+      variables: ['x'],
+      domain: [0, 2],
+      samples: 90,
+      fill: '#f7da98',
+      opacity: 0.78
+    });
+
+    function addRegionInteractivity(el, title, body, tip) {
+      el.css('cursor', 'pointer');
+      el.on('mousemove', function (event) { showTooltip(tip, event); });
+      el.on('mouseleave', function () { hideTooltip(); });
+      el.on('click', function () { showPopup(title, body); });
+    }
+
+    addRegionInteractivity(
+      fillLeft.node,
+      'R1',
+      'For x from -2 to 0, the lower boundary is the left expression. The inner integral runs vertically from that curve up to y = 3.',
+      'R1: -2 <= x <= 0'
+    );
+    addRegionInteractivity(
+      fillRight.node,
+      'R2',
+      'For x from 0 to 2, the lower boundary is the right expression. This is why the type-I description splits at the y-axis.',
+      'R2: 0 <= x <= 2'
+    );
+
+    var axes = draw.group();
+    axes.line(plotX(-3.3), plotY(0), plotX(3.2), plotY(0))
+      .stroke({ color: axisColor, width: 2.4, linecap: 'round' })
+      .marker('end', axisMarker);
+    axes.line(plotX(0), plotY(-0.72), plotX(0), plotY(4.08))
+      .stroke({ color: axisColor, width: 2.4, linecap: 'round' })
+      .marker('end', axisMarker);
+
+    axes.line(plotX(-2), plotY(0), plotX(-2), plotY(0) - 18).stroke({ color: axisColor, width: 2.1 });
+    axes.line(plotX(2), plotY(0), plotX(2), plotY(0) - 18).stroke({ color: axisColor, width: 2.1 });
+
+    draw.text('-2').font(labelFont).center(plotX(-2) - 11, plotY(0) + 34);
+    draw.text('0').font(labelFont).center(plotX(0) + 20, plotY(0) + 34);
+    draw.text('2').font(labelFont).center(plotX(2), plotY(0) + 34);
+    draw.text('x').font(labelFont).center(plotX(3.33), plotY(0) - 31);
+    draw.text('y').font(labelFont).center(plotX(0) + 30, plotY(4.14) + 5);
+
+    var boundaryLeft = plotFunction('leftLower', {
+      expr: leftExpr,
+      variables: ['x'],
+      domain: [-2, 0],
+      samples: 90,
+      stroke: cyan,
+      width: 4.5
+    });
+    var boundaryRight = plotFunction('rightLower', {
+      expr: rightExpr,
+      variables: ['x'],
+      domain: [0, 2],
+      samples: 90,
+      stroke: cyan,
+      width: 4.5
+    });
+
+    draw.line(plotX(-2), plotY(3), plotX(2), plotY(3))
+      .stroke({ color: cyan, width: 4.5, linecap: 'butt' });
+
+    var stripGroup = draw.group();
+    var labelGroup = draw.group();
+
+    function haloText(group, text, x, y, font, italic) {
+      var t = group.text(text).font(font).center(x, y);
+      if (italic) t.attr({ 'font-style': 'italic' });
+      t.attr({
+        'paint-order': 'stroke',
+        stroke: '#fff',
+        'stroke-width': 4,
+        'stroke-linejoin': 'round'
+      });
+      return t;
+    }
+
+    function updateStrips() {
+      stripGroup.clear();
+      var xs = [-1.15, 0.82];
+      var fns = [leftLowerFn, rightLowerFn];
+      for (var i = 0; i < 2; i++) {
+        var x = xs[i];
+        var y0 = Math.min(3, Math.max(-0.5, fns[i](x)));
+        stripGroup.line(plotX(x), plotY(y0), plotX(x), plotY(3))
+          .stroke({ color: stripColor, width: 3.8, linecap: 'butt' })
+          .css('cursor', 'pointer')
+          .on('mousemove', function (event) { showTooltip('vertical dy strip', event); })
+          .on('mouseleave', function () { hideTooltip(); });
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function boundaryLabel(src) {
+      var trimmed = String(src).trim();
+      if (trimmed.length > 18) trimmed = trimmed.slice(0, 17) + '...';
+      return 'y = ' + trimmed;
+    }
+
+    function updateLimitReadout() {
+      var out = document.getElementById('limitReadout');
+      out.innerHTML =
+        '<div>R1: -2 &lt;= x &lt;= 0</div>' +
+        '<div>&nbsp;&nbsp;' + escapeHtml(leftExpr) + ' &lt;= y &lt;= 3</div>' +
+        '<div style="height:5px"></div>' +
+        '<div>R2: 0 &lt;= x &lt;= 2</div>' +
+        '<div>&nbsp;&nbsp;' + escapeHtml(rightExpr) + ' &lt;= y &lt;= 3</div>';
+    }
+
+    updateStrips();
+
+    haloText(labelGroup, 'y = 3', plotX(-1.16), plotY(3) - 30, labelFont, true);
+    haloText(labelGroup, 'y = 3', plotX(0.97), plotY(3) - 30, labelFont, true);
+    var leftBoundaryLabel = haloText(labelGroup, boundaryLabel(leftExpr), plotX(-2.9), plotY(2.0), labelFont, true);
+    var rightBoundaryLabel = haloText(labelGroup, boundaryLabel(rightExpr), plotX(2.17), plotY(2.0), labelFont, true);
+    haloText(labelGroup, 'R', plotX(-0.55), plotY(2.45), labelFont, true);
+    haloText(labelGroup, '1', plotX(-0.38), plotY(2.28), { family: 'Times New Roman, Georgia, serif', size: 18, anchor: 'middle', fill: '#231f20' }, false);
+    haloText(labelGroup, 'R', plotX(0.52), plotY(2.45), labelFont, true);
+    haloText(labelGroup, '2', plotX(0.69), plotY(2.28), { family: 'Times New Roman, Georgia, serif', size: 18, anchor: 'middle', fill: '#231f20' }, false);
+
+    bindEquationInput('leftLowerInput', [
+      boundaryLeft,
+      { handle: fillLeft, method: 'setLower' }
+    ], {
+      variables: ['x'],
+      onChange: function (fn, src) {
+        leftLowerFn = fn;
+        leftExpr = src;
+        leftBoundaryLabel.text(boundaryLabel(src));
+        updateStrips();
+        updateLimitReadout();
+      }
+    });
+
+    bindEquationInput('rightLowerInput', [
+      boundaryRight,
+      { handle: fillRight, method: 'setLower' }
+    ], {
+      variables: ['x'],
+      onChange: function (fn, src) {
+        rightLowerFn = fn;
+        rightExpr = src;
+        rightBoundaryLabel.text(boundaryLabel(src));
+        updateStrips();
+        updateLimitReadout();
+      }
+    });
+
+    updateLimitReadout();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

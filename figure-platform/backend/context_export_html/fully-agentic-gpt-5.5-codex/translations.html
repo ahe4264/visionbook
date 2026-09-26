@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>2D Translation Composition</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #121417;
+      --muted: #596170;
+      --line: #111418;
+      --paper: #f5f7fb;
+      --panel: #ffffff;
+      --orange: #ff8200;
+      --red: #f40f0f;
+      --red-soft: rgba(244, 15, 15, 0.11);
+      --blue: #2563eb;
+      --green: #047857;
+      --border: rgba(116, 129, 151, 0.34);
+      --shadow: 0 18px 48px rgba(19, 25, 35, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, #ffffff 0%, #eef3f8 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .figure-shell {
+      width: min(1260px, 100vw);
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: clamp(12px, 2vw, 24px);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .toolbar,
+    .workspace {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 10px 32px rgba(19, 25, 35, 0.08);
+      backdrop-filter: blur(10px);
+    }
+
+    .toolbar {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px;
+    }
+
+    .title-block {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: min(100%, 260px);
+    }
+
+    .title-block h1 {
+      margin: 0;
+      font-size: clamp(18px, 2.1vw, 26px);
+      line-height: 1.05;
+      letter-spacing: 0;
+      font-weight: 800;
+    }
+
+    .title-block p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 650;
+    }
+
+    .mode-toggle {
+      display: inline-grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 4px;
+      background: #e9eef5;
+      border: 1px solid rgba(116, 129, 151, 0.42);
+      border-radius: 8px;
+      max-width: 100%;
+    }
+
+    .mode-toggle button,
+    .reset-button {
+      appearance: none;
+      border: 0;
+      border-radius: 6px;
+      min-height: 36px;
+      padding: 0 13px;
+      background: transparent;
+      color: #202938;
+      font: 800 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .mode-toggle button[aria-pressed="true"] {
+      color: #ffffff;
+      background: #121826;
+      box-shadow: 0 6px 16px rgba(18, 24, 38, 0.22);
+    }
+
+    .reset-button {
+      border: 1px solid rgba(116, 129, 151, 0.46);
+      background: #ffffff;
+    }
+
+    .readout {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      min-width: 0;
+    }
+
+    .readout span {
+      white-space: nowrap;
+    }
+
+    .readout strong {
+      color: #111827;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(290px, 360px);
+    }
+
+    .scene-panel {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: min(68vh, 690px);
+      max-height: 760px;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .matrix-panel {
+      border-left: 1px solid var(--border);
+      background: #fbfcfe;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      min-width: 0;
+    }
+
+    .matrix-panel h2 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+    }
+
+    .control-row {
+      display: grid;
+      grid-template-columns: 48px minmax(110px, 1fr) 56px;
+      align-items: center;
+      gap: 10px;
+      color: #263243;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .control-row output {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--red);
+    }
+
+    .matrix-stack {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .matrix-block {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .matrix-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      color: #1f2937;
+      font-size: 13px;
+      font-weight: 850;
+      min-width: 0;
+    }
+
+    .matrix-title small {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .matrix {
+      --cell: minmax(44px, 1fr);
+      position: relative;
+      display: grid;
+      grid-template-columns: var(--cell) var(--cell) var(--cell);
+      gap: 0;
+      padding: 6px 13px;
+      color: #111827;
+      font-family: "STIX Two Math", Cambria Math, Georgia, serif;
+      font-size: 19px;
+      line-height: 1.15;
+      font-variant-numeric: tabular-nums;
+      background: #ffffff;
+      border: 1px solid rgba(116, 129, 151, 0.28);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .matrix::before,
+    .matrix::after {
+      content: "";
+      position: absolute;
+      top: 7px;
+      bottom: 7px;
+      width: 8px;
+      border-top: 2px solid #111827;
+      border-bottom: 2px solid #111827;
+      pointer-events: none;
+    }
+
+    .matrix::before {
+      left: 5px;
+      border-left: 2px solid #111827;
+    }
+
+    .matrix::after {
+      right: 5px;
+      border-right: 2px solid #111827;
+    }
+
+    .matrix span {
+      min-height: 28px;
+      display: grid;
+      place-items: center;
+    }
+
+    .equation {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 700;
+    }
+
+    .equation strong {
+      color: #111827;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .grid-line {
+      stroke: #e7ebf2;
+      stroke-width: 1;
+    }
+
+    .tick {
+      stroke: #aeb7c5;
+      stroke-width: 1.3;
+    }
+
+    .tick-label {
+      fill: #7b8493;
+      font: 700 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .axis {
+      stroke: var(--line);
+      stroke-width: 4;
+      stroke-linecap: square;
+    }
+
+    .axis-label {
+      fill: var(--line);
+      font: italic 44px/1 Georgia, "Times New Roman", serif;
+    }
+
+    .square {
+      fill: var(--orange);
+      stroke: #111418;
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .square-shadow {
+      fill: rgba(255, 130, 0, 0.15);
+      stroke: rgba(17, 20, 24, 0.28);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .vector {
+      fill: none;
+      stroke: var(--red);
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      marker-end: url(#arrow-red);
+      vector-effect: non-scaling-stroke;
+    }
+
+    .vector.sum {
+      stroke-width: 4;
+    }
+
+    .projection {
+      fill: none;
+      stroke: #64748b;
+      stroke-width: 1.6;
+      stroke-dasharray: 6 7;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .handle-ring {
+      fill: #ffffff;
+      stroke: var(--red);
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+      cursor: grab;
+    }
+
+    .handle-ring.s {
+      stroke: var(--green);
+    }
+
+    .handle-hit {
+      fill: transparent;
+      cursor: grab;
+      pointer-events: all;
+    }
+
+    .handle-ring:active,
+    .handle-hit:active {
+      cursor: grabbing;
+    }
+
+    .label {
+      fill: #050505;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 5;
+      stroke-linejoin: round;
+      font: 800 32px/1 Georgia, "Times New Roman", serif;
+    }
+
+    .small-label {
+      fill: #263243;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 4;
+      stroke-linejoin: round;
+      font: 800 15px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .coord-label {
+      fill: #4b5563;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 4;
+      stroke-linejoin: round;
+      font: 800 14px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .chain-only[hidden],
+    .s-controls[hidden] {
+      display: none !important;
+    }
+
+    @media (max-width: 940px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix-panel {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+        padding: 14px;
+      }
+
+      svg {
+        min-height: 480px;
+        max-height: none;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .figure-shell {
+        padding: 8px;
+      }
+
+      .toolbar {
+        align-items: stretch;
+      }
+
+      .mode-toggle {
+        width: 100%;
+      }
+
+      .mode-toggle button {
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .readout {
+        width: 100%;
+      }
+
+      .control-row {
+        grid-template-columns: 42px minmax(80px, 1fr) 52px;
+      }
+
+      .matrix {
+        font-size: 17px;
+      }
+
+      svg {
+        min-height: 420px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="figure-shell" aria-label="Interactive figure showing 2D translations">
+    <header class="toolbar">
+      <div class="title-block">
+        <h1>2D translations</h1>
+        <p>Vector addition in the xy-plane and homogeneous coordinates</p>
+      </div>
+
+      <div class="mode-toggle" role="group" aria-label="Translation mode">
+        <button type="button" data-mode="single" aria-pressed="false">Single t</button>
+        <button type="button" data-mode="chain" aria-pressed="true">Chain t then s</button>
+      </div>
+
+      <div class="readout" aria-live="polite">
+        <span>t = <strong id="readT">(3.10, 2.45)</strong></span>
+        <span class="chain-only">s = <strong id="readS">(3.20, -1.35)</strong></span>
+        <span class="chain-only">t+s = <strong id="readSum">(6.30, 1.10)</strong></span>
+        <button class="reset-button" type="button" id="resetButton">Reset</button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <div class="scene-panel">
+        <svg id="translationSvg" viewBox="0 0 1080 640" role="img" aria-labelledby="svgTitle svgDesc">
+          <title id="svgTitle">Translation vectors and composition</title>
+          <desc id="svgDesc">An orange square starts at the origin. Red arrows translate it by vector t, then optionally by vector s, with t+s shown as the equivalent direct translation.</desc>
+          <defs>
+            <marker id="arrow-red" markerWidth="14" markerHeight="14" refX="10.5" refY="5" orient="auto" markerUnits="strokeWidth">
+              <path d="M 0 0 L 11 5 L 0 10 z" fill="#f40f0f"></path>
+            </marker>
+            <marker id="arrow-axis" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto" markerUnits="strokeWidth">
+              <path d="M 0 0 L 10 5.5 L 0 11 z" fill="#111418"></path>
+            </marker>
+          </defs>
+
+          <rect x="0" y="0" width="1080" height="640" fill="#ffffff"></rect>
+          <g id="gridLayer" aria-hidden="true"></g>
+          <g id="projectionLayer">
+            <path id="projX" class="projection"></path>
+            <path id="projY" class="projection"></path>
+            <text id="txLabel" class="coord-label">t_x</text>
+            <text id="tyLabel" class="coord-label">t_y</text>
+          </g>
+
+          <line id="xAxis" class="axis" x1="56" y1="486" x2="1030" y2="486" marker-end="url(#arrow-axis)"></line>
+          <line id="yAxis" class="axis" x1="136" y1="574" x2="136" y2="55" marker-end="url(#arrow-axis)"></line>
+          <text class="axis-label" x="1010" y="530">x</text>
+          <text class="axis-label" x="86" y="50">y</text>
+
+          <g id="squareLayer">
+            <rect id="baseSquare" class="square"></rect>
+            <rect id="ghostSquare" class="square-shadow"></rect>
+            <rect id="tSquare" class="square"></rect>
+            <rect id="sumSquare" class="square chain-only"></rect>
+          </g>
+
+          <g id="vectorLayer">
+            <path id="sumVector" class="vector sum chain-only"></path>
+            <path id="tVector" class="vector"></path>
+            <path id="sVector" class="vector chain-only"></path>
+            <text id="sumVectorLabel" class="label chain-only">t+s</text>
+            <text id="tVectorLabel" class="label">t</text>
+            <text id="sVectorLabel" class="label chain-only">s</text>
+          </g>
+
+          <g id="pointLabels">
+            <text id="originLabel" class="small-label">original</text>
+            <text id="afterTLabel" class="small-label">after t</text>
+            <text id="afterSumLabel" class="small-label chain-only">after t+s</text>
+          </g>
+
+          <g id="handles">
+            <circle id="tHandleRing" class="handle-ring" r="11"></circle>
+            <circle id="sHandleRing" class="handle-ring s chain-only" r="11"></circle>
+            <circle id="tHandleHit" class="handle-hit" r="28" data-drag="t">
+              <title>t endpoint</title>
+            </circle>
+            <circle id="sHandleHit" class="handle-hit chain-only" r="28" data-drag="s">
+              <title>s endpoint</title>
+            </circle>
+          </g>
+        </svg>
+      </div>
+
+      <aside class="matrix-panel" aria-label="Homogeneous translation matrices">
+        <h2>Homogeneous matrices</h2>
+
+        <div class="controls">
+          <label class="control-row">
+            <span>t_x</span>
+            <input id="txInput" type="range" min="0" max="4.8" step="0.05" value="3.1">
+            <output id="txOutput">3.10</output>
+          </label>
+          <label class="control-row">
+            <span>t_y</span>
+            <input id="tyInput" type="range" min="0.3" max="4.2" step="0.05" value="2.45">
+            <output id="tyOutput">2.45</output>
+          </label>
+          <label class="control-row s-controls">
+            <span>s_x</span>
+            <input id="sxInput" type="range" min="-0.8" max="3.4" step="0.05" value="3.2">
+            <output id="sxOutput">3.20</output>
+          </label>
+          <label class="control-row s-controls">
+            <span>s_y</span>
+            <input id="syInput" type="range" min="-2.0" max="1.6" step="0.05" value="-1.35">
+            <output id="syOutput">-1.35</output>
+          </label>
+        </div>
+
+        <div class="matrix-stack">
+          <section class="matrix-block">
+            <div class="matrix-title">
+              <span>T(t)</span>
+              <small id="matrixTLabel">translate by (3.10, 2.45)</small>
+            </div>
+            <div class="matrix" aria-label="Matrix for translation t">
+              <span>1</span><span>0</span><span id="mTx">3.10</span>
+              <span>0</span><span>1</span><span id="mTy">2.45</span>
+              <span>0</span><span>0</span><span>1</span>
+            </div>
+          </section>
+
+          <section class="matrix-block chain-only">
+            <div class="matrix-title">
+              <span>T(s)</span>
+              <small id="matrixSLabel">translate by (3.20, -1.35)</small>
+            </div>
+            <div class="matrix" aria-label="Matrix for translation s">
+              <span>1</span><span>0</span><span id="mSx">3.20</span>
+              <span>0</span><span>1</span><span id="mSy">-1.35</span>
+              <span>0</span><span>0</span><span>1</span>
+            </div>
+          </section>
+
+          <section class="matrix-block chain-only">
+            <div class="matrix-title">
+              <span>T(s)T(t) = T(t+s)</span>
+              <small id="matrixSumLabel">translate by (6.30, 1.10)</small>
+            </div>
+            <div class="matrix" aria-label="Composed matrix">
+              <span>1</span><span>0</span><span id="mSumX">6.30</span>
+              <span>0</span><span>1</span><span id="mSumY">1.10</span>
+              <span>0</span><span>0</span><span>1</span>
+            </div>
+          </section>
+        </div>
+
+        <p class="equation" id="equationText">
+          Applying t then s gives x' = x + <strong id="eqX">6.30</strong> and y' = y + <strong id="eqY">1.10</strong>.
+        </p>
+      </aside>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const svg = document.getElementById("translationSvg");
+      const origin = { x: 136, y: 486 };
+      const unit = 82;
+      const squareSide = 1.28;
+      const half = squareSide / 2;
+      const bounds = {
+        t: { minX: 0, maxX: 4.8, minY: 0.3, maxY: 4.2 },
+        total: { minX: -0.6, maxX: 7.4, minY: -1.35, maxY: 5.1 }
+      };
+
+      const state = {
+        mode: "chain",
+        t: { x: 3.1, y: 2.45 },
+        s: { x: 3.2, y: -1.35 }
+      };
+
+      const el = {
+        gridLayer: document.getElementById("gridLayer"),
+        baseSquare: document.getElementById("baseSquare"),
+        ghostSquare: document.getElementById("ghostSquare"),
+        tSquare: document.getElementById("tSquare"),
+        sumSquare: document.getElementById("sumSquare"),
+        tVector: document.getElementById("tVector"),
+        sVector: document.getElementById("sVector"),
+        sumVector: document.getElementById("sumVector"),
+        tVectorLabel: document.getElementById("tVectorLabel"),
+        sVectorLabel: document.getElementById("sVectorLabel"),
+        sumVectorLabel: document.getElementById("sumVectorLabel"),
+        originLabel: document.getElementById("originLabel"),
+        afterTLabel: document.getElementById("afterTLabel"),
+        afterSumLabel: document.getElementById("afterSumLabel"),
+        projX: document.getElementById("projX"),
+        projY: document.getElementById("projY"),
+        txLabel: document.getElementById("txLabel"),
+        tyLabel: document.getElementById("tyLabel"),
+        tHandleRing: document.getElementById("tHandleRing"),
+        sHandleRing: document.getElementById("sHandleRing"),
+        tHandleHit: document.getElementById("tHandleHit"),
+        sHandleHit: document.getElementById("sHandleHit"),
+        readT: document.getElementById("readT"),
+        readS: document.getElementById("readS"),
+        readSum: document.getElementById("readSum"),
+        txInput: document.getElementById("txInput"),
+        tyInput: document.getElementById("tyInput"),
+        sxInput: document.getElementById("sxInput"),
+        syInput: document.getElementById("syInput"),
+        txOutput: document.getElementById("txOutput"),
+        tyOutput: document.getElementById("tyOutput"),
+        sxOutput: document.getElementById("sxOutput"),
+        syOutput: document.getElementById("syOutput"),
+        mTx: document.getElementById("mTx"),
+        mTy: document.getElementById("mTy"),
+        mSx: document.getElementById("mSx"),
+        mSy: document.getElementById("mSy"),
+        mSumX: document.getElementById("mSumX"),
+        mSumY: document.getElementById("mSumY"),
+        matrixTLabel: document.getElementById("matrixTLabel"),
+        matrixSLabel: document.getElementById("matrixSLabel"),
+        matrixSumLabel: document.getElementById("matrixSumLabel"),
+        eqX: document.getElementById("eqX"),
+        eqY: document.getElementById("eqY"),
+        equationText: document.getElementById("equationText"),
+        resetButton: document.getElementById("resetButton")
+      };
+
+      let activeDrag = null;
+      let activePointer = null;
+
+      function fmt(value) {
+        return (Math.round(value * 100) / 100).toFixed(2);
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function screen(point) {
+        return {
+          x: origin.x + point.x * unit,
+          y: origin.y - point.y * unit
+        };
+      }
+
+      function world(point) {
+        return {
+          x: (point.x - origin.x) / unit,
+          y: (origin.y - point.y) / unit
+        };
+      }
+
+      function add(a, b) {
+        return { x: a.x + b.x, y: a.y + b.y };
+      }
+
+      function midpoint(a, b) {
+        return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      }
+
+      function pathBetween(a, b) {
+        const pa = screen(a);
+        const pb = screen(b);
+        return "M " + pa.x + " " + pa.y + " L " + pb.x + " " + pb.y;
+      }
+
+      function setSquare(rect, center, extraClass) {
+        const topLeft = screen({ x: center.x - half, y: center.y + half });
+        rect.setAttribute("x", topLeft.x);
+        rect.setAttribute("y", topLeft.y);
+        rect.setAttribute("width", squareSide * unit);
+        rect.setAttribute("height", squareSide * unit);
+        if (extraClass) {
+          rect.setAttribute("class", extraClass);
+        }
+      }
+
+      function setCircle(circle, point) {
+        const p = screen(point);
+        circle.setAttribute("cx", p.x);
+        circle.setAttribute("cy", p.y);
+      }
+
+      function setText(text, point, dx, dy) {
+        const p = screen(point);
+        text.setAttribute("x", clamp(p.x + dx, 18, 1042));
+        text.setAttribute("y", clamp(p.y + dy, 32, 610));
+      }
+
+      function setSvgDisplay(selector, show) {
+        document.querySelectorAll(selector).forEach((node) => {
+          node.toggleAttribute("hidden", !show);
+          if (node instanceof SVGElement) {
+            node.style.display = show ? "" : "none";
+          }
+        });
+      }
+
+      function makeLine(x1, y1, x2, y2, className) {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", x1);
+        line.setAttribute("y1", y1);
+        line.setAttribute("x2", x2);
+        line.setAttribute("y2", y2);
+        line.setAttribute("class", className);
+        return line;
+      }
+
+      function makeText(x, y, text, className) {
+        const node = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        node.setAttribute("x", x);
+        node.setAttribute("y", y);
+        node.setAttribute("class", className);
+        node.textContent = text;
+        return node;
+      }
+
+      function drawGrid() {
+        const frag = document.createDocumentFragment();
+        for (let x = -1; x <= 8; x += 1) {
+          const a = screen({ x, y: -1.35 });
+          const b = screen({ x, y: 5.1 });
+          frag.appendChild(makeLine(a.x, a.y, b.x, b.y, "grid-line"));
+          const t1 = screen({ x, y: -0.07 });
+          const t2 = screen({ x, y: 0.07 });
+          frag.appendChild(makeLine(t1.x, t1.y, t2.x, t2.y, "tick"));
+          if (x !== 0 && x <= 7) {
+            const label = makeText(screen({ x, y: -0.18 }).x - 4, screen({ x, y: -0.18 }).y + 20, String(x), "tick-label");
+            frag.appendChild(label);
+          }
+        }
+        for (let y = -1; y <= 5; y += 1) {
+          const a = screen({ x: -0.95, y });
+          const b = screen({ x: 8.15, y });
+          frag.appendChild(makeLine(a.x, a.y, b.x, b.y, "grid-line"));
+          const t1 = screen({ x: -0.07, y });
+          const t2 = screen({ x: 0.07, y });
+          frag.appendChild(makeLine(t1.x, t1.y, t2.x, t2.y, "tick"));
+          if (y !== 0) {
+            const label = makeText(screen({ x: -0.22, y }).x - 26, screen({ x: -0.22, y }).y + 5, String(y), "tick-label");
+            frag.appendChild(label);
+          }
+        }
+        el.gridLayer.appendChild(frag);
+      }
+
+      function syncInputs() {
+        el.txInput.value = state.t.x;
+        el.tyInput.value = state.t.y;
+        el.sxInput.value = state.s.x;
+        el.syInput.value = state.s.y;
+        el.txOutput.textContent = fmt(state.t.x);
+        el.tyOutput.textContent = fmt(state.t.y);
+        el.sxOutput.textContent = fmt(state.s.x);
+        el.syOutput.textContent = fmt(state.s.y);
+      }
+
+      function updateMatrices(sum) {
+        el.readT.textContent = "(" + fmt(state.t.x) + ", " + fmt(state.t.y) + ")";
+        el.readS.textContent = "(" + fmt(state.s.x) + ", " + fmt(state.s.y) + ")";
+        el.readSum.textContent = "(" + fmt(sum.x) + ", " + fmt(sum.y) + ")";
+
+        el.mTx.textContent = fmt(state.t.x);
+        el.mTy.textContent = fmt(state.t.y);
+        el.mSx.textContent = fmt(state.s.x);
+        el.mSy.textContent = fmt(state.s.y);
+        el.mSumX.textContent = fmt(sum.x);
+        el.mSumY.textContent = fmt(sum.y);
+
+        el.matrixTLabel.textContent = "translate by (" + fmt(state.t.x) + ", " + fmt(state.t.y) + ")";
+        el.matrixSLabel.textContent = "translate by (" + fmt(state.s.x) + ", " + fmt(state.s.y) + ")";
+        el.matrixSumLabel.textContent = "translate by (" + fmt(sum.x) + ", " + fmt(sum.y) + ")";
+
+        if (state.mode === "chain") {
+          el.eqX.textContent = fmt(sum.x);
+          el.eqY.textContent = fmt(sum.y);
+          el.equationText.firstChild.nodeValue = "Applying t then s gives x' = x + ";
+        } else {
+          el.eqX.textContent = fmt(state.t.x);
+          el.eqY.textContent = fmt(state.t.y);
+          el.equationText.firstChild.nodeValue = "A single translation gives x' = x + ";
+        }
+      }
+
+      function render() {
+        const zero = { x: 0, y: 0 };
+        const t = state.t;
+        const sum = add(state.t, state.s);
+        const chain = state.mode === "chain";
+
+        setSvgDisplay(".chain-only", chain);
+        setSvgDisplay(".s-controls", chain);
+        document.querySelectorAll("[data-mode]").forEach((button) => {
+          button.setAttribute("aria-pressed", button.dataset.mode === state.mode ? "true" : "false");
+        });
+
+        setSquare(el.baseSquare, zero);
+        setSquare(el.ghostSquare, t, "square-shadow");
+        setSquare(el.tSquare, t);
+        setSquare(el.sumSquare, sum);
+
+        el.tVector.setAttribute("d", pathBetween(zero, t));
+        el.sVector.setAttribute("d", pathBetween(t, sum));
+        el.sumVector.setAttribute("d", pathBetween(zero, sum));
+
+        el.projX.setAttribute("d", pathBetween({ x: t.x, y: 0 }, t));
+        el.projY.setAttribute("d", pathBetween({ x: 0, y: t.y }, t));
+        setText(el.txLabel, { x: t.x / 2, y: 0 }, -10, 28);
+        setText(el.tyLabel, { x: 0, y: t.y / 2 }, -48, 5);
+
+        setText(el.tVectorLabel, midpoint(zero, t), -24, -18);
+        setText(el.sVectorLabel, midpoint(t, sum), 16, -16);
+        setText(el.sumVectorLabel, midpoint(zero, sum), 0, -22);
+
+        setText(el.originLabel, zero, -51, squareSide * unit / 2 + 24);
+        setText(el.afterTLabel, t, -40, -(squareSide * unit / 2 + 16));
+        setText(el.afterSumLabel, sum, -50, -(squareSide * unit / 2 + 16));
+
+        setCircle(el.tHandleRing, t);
+        setCircle(el.tHandleHit, t);
+        setCircle(el.sHandleRing, sum);
+        setCircle(el.sHandleHit, sum);
+
+        syncInputs();
+        updateMatrices(sum);
+      }
+
+      function pointFromEvent(event) {
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        return pt.matrixTransform(svg.getScreenCTM().inverse());
+      }
+
+      function dragTo(event) {
+        if (!activeDrag) {
+          return;
+        }
+        event.preventDefault();
+        const p = world(pointFromEvent(event));
+        if (activeDrag === "t") {
+          state.t.x = clamp(p.x, bounds.t.minX, bounds.t.maxX);
+          state.t.y = clamp(p.y, bounds.t.minY, bounds.t.maxY);
+        } else if (activeDrag === "s") {
+          const endX = clamp(p.x, bounds.total.minX, bounds.total.maxX);
+          const endY = clamp(p.y, bounds.total.minY, bounds.total.maxY);
+          state.s.x = endX - state.t.x;
+          state.s.y = endY - state.t.y;
+        }
+        render();
+      }
+
+      svg.addEventListener("pointerdown", (event) => {
+        const target = event.target.closest("[data-drag]");
+        if (!target) {
+          return;
+        }
+        activeDrag = target.dataset.drag;
+        activePointer = event.pointerId;
+        svg.setPointerCapture(activePointer);
+        dragTo(event);
+      });
+
+      svg.addEventListener("pointermove", dragTo);
+
+      function endDrag(event) {
+        if (activePointer !== null && svg.hasPointerCapture(activePointer)) {
+          svg.releasePointerCapture(activePointer);
+        }
+        activeDrag = null;
+        activePointer = null;
+      }
+
+      svg.addEventListener("pointerup", endDrag);
+      svg.addEventListener("pointercancel", endDrag);
+
+      document.querySelectorAll("[data-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.mode = button.dataset.mode;
+          render();
+        });
+      });
+
+      el.resetButton.addEventListener("click", () => {
+        state.mode = "chain";
+        state.t = { x: 3.1, y: 2.45 };
+        state.s = { x: 3.2, y: -1.35 };
+        render();
+      });
+
+      el.txInput.addEventListener("input", () => {
+        state.t.x = Number(el.txInput.value);
+        render();
+      });
+      el.tyInput.addEventListener("input", () => {
+        state.t.y = Number(el.tyInput.value);
+        render();
+      });
+      el.sxInput.addEventListener("input", () => {
+        state.s.x = Number(el.sxInput.value);
+        render();
+      });
+      el.syInput.addEventListener("input", () => {
+        state.s.y = Number(el.syInput.value);
+        render();
+      });
+
+      drawGrid();
+      render();
+    }());
+  </script>
+</body>
+</html>

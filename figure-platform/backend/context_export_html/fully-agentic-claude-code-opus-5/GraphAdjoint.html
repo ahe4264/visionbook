@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adjoint (line) graph construction</title>
+<style>
+  :root{
+    --ink:#1a1a1a;
+    --orange:#d2795c;
+    --teal:#a0d9d3;
+    --sel:#1550a8;
+    --sel2:#5f9de0;
+    --grey:#b5b5b5;
+    --paper:#ffffff;
+    --page:#f4f3f0;
+    --muted:#5c5c5c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--page);
+    color:var(--ink);
+    font-family:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    font-size:16px;
+    line-height:1.45;
+    padding:22px 18px 46px;
+  }
+  .wrap{max-width:1280px;margin:0 auto}
+  header h1{font-size:23px;margin:0 0 4px;font-weight:650;letter-spacing:.1px}
+  header p.sub{margin:0 0 18px;color:var(--muted);font-size:14.5px;max-width:960px}
+  header p.sub b{color:var(--ink);font-weight:600}
+
+  .card{background:var(--paper);border:1px solid #e2e0da;border-radius:12px;padding:18px 18px 12px}
+
+  /* ---------- three panel figure ---------- */
+  .figure{
+    display:grid;
+    grid-template-columns:repeat(6,1fr);
+    grid-template-rows:auto auto;
+    column-gap:6px;
+    row-gap:4px;
+    align-items:start;
+  }
+  .panel{position:relative;min-width:0}
+  .panel.pA{grid-column:1/3;grid-row:1}
+  .panel.pB{grid-column:3/5;grid-row:1}
+  .panel.pC{grid-column:5/7;grid-row:1}
+  .arrowbox.a1{grid-column:2/4;grid-row:2}
+  .arrowbox.a2{grid-column:4/6;grid-row:2}
+
+  .ptag{position:absolute;left:2px;top:-4px;font-size:22px;color:var(--ink)}
+  .ptitle{text-align:center;font-size:19px;height:28px;margin:0 0 2px;font-weight:500}
+  .panel svg{display:block;width:100%;height:auto;overflow:visible}
+
+  .arrowbox{padding:6px 12px 0;text-align:center}
+  .arrowbox svg{display:block;width:100%;height:auto;margin:0 auto 6px}
+  .arrowbox .cap{font-size:15.5px;line-height:1.3;color:var(--ink)}
+
+  /* ---------- graph drawing ---------- */
+  g.oe .main,g.le .main{stroke:var(--ink);stroke-width:2.4;fill:none;transition:stroke .22s,stroke-width .22s}
+  g.oe .hit,g.le .hit{stroke:#000;stroke-opacity:0;stroke-width:20;fill:none;cursor:pointer}
+  g.on circle,g.en circle{stroke:var(--ink);stroke-width:2.2;cursor:pointer;transition:stroke .22s,stroke-width .22s,fill .22s}
+  g.on circle{fill:var(--orange)}
+  g.en circle{fill:var(--teal)}
+  g text{pointer-events:none;-webkit-user-select:none;user-select:none;fill:var(--ink);font-weight:600}
+  g.on text{font-size:20px}
+  g.en text{font-size:15.5px}
+
+  g.oe,g.le,g.on,g.en{transition:opacity .34s ease}
+  g.hidden{opacity:0;pointer-events:none}
+  g.dim{opacity:.14}
+
+  g.oe.sel .main,g.le.sel .main{stroke:var(--sel);stroke-width:4.6}
+  g.oe.rel .main,g.le.rel .main{stroke:var(--sel2);stroke-width:3.4}
+  g.on.sel circle,g.en.sel circle{stroke:var(--sel);stroke-width:4.4}
+  g.on.rel circle,g.en.rel circle{stroke:var(--sel2);stroke-width:3.6}
+  g.on.via circle{stroke:var(--sel);stroke-width:5;fill:#efb08f}
+  g.oe:hover .main,g.le:hover .main{stroke-width:4}
+
+  /* ---------- compare view ---------- */
+  #compareView .cmp-head{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:center;margin-bottom:6px}
+  #compareView .big{max-width:620px;margin:0 auto}
+  .cmp-note{text-align:center;color:var(--muted);font-size:14px;margin:2px 0 8px}
+  .layer{transition:opacity .45s ease}
+
+  /* ---------- controls ---------- */
+  .controls{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin:16px 0 10px}
+  .lbl{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+  .seg{display:inline-flex;border:1px solid #cfccc4;border-radius:9px;overflow:hidden;background:#fff}
+  .seg button{border:0;background:#fff;padding:7px 12px;font:inherit;font-size:14px;cursor:pointer;color:var(--ink);border-right:1px solid #e6e3dc}
+  .seg button:last-child{border-right:0}
+  .seg button:hover{background:#f0efe9}
+  .seg button.on{background:var(--sel);color:#fff}
+  button.act{border:1px solid #cfccc4;border-radius:9px;background:#fff;padding:7px 14px;font:inherit;font-size:14px;cursor:pointer}
+  button.act:hover{background:#f0efe9}
+  label.chk{font-size:14px;display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+
+  .readout{background:#fff;border:1px solid #e2e0da;border-left:4px solid var(--sel);border-radius:8px;padding:11px 14px;font-size:14.8px;min-height:66px}
+  .readout b{color:var(--sel)}
+  .hint{color:var(--muted);font-size:13.5px;margin:10px 2px 2px}
+  .counts{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+
+  @media (max-width:900px){
+    .figure{display:flex;flex-direction:column;gap:2px}
+    .arrowbox{max-width:360px;align-self:center}
+    .panel{width:100%;max-width:520px;align-self:center}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Adjoint (line) graph construction</h1>
+    <p class="sub">Every <b>edge</b> of the original graph becomes a <b>node</b> of the edge graph, and two of those new nodes are joined whenever the original edges shared an endpoint. Click any edge or node to trace it through the construction.</p>
+  </header>
+
+  <div class="card">
+    <section id="stepsView">
+      <div class="figure">
+        <div class="panel pA">
+          <span class="ptag">a)</span>
+          <p class="ptitle">Original graph</p>
+          <svg id="svgA" viewBox="0 0 500 440" role="img" aria-label="Original graph with six nodes"></svg>
+        </div>
+
+        <div class="arrowbox a1">
+          <svg viewBox="0 0 200 22" aria-hidden="true">
+            <line x1="4" y1="11" x2="172" y2="11" stroke="#b5b5b5" stroke-width="7"/>
+            <polygon points="168,1.5 197,11 168,20.5" fill="#b5b5b5"/>
+          </svg>
+          <div class="cap">Add new node<br>at each original edge</div>
+        </div>
+
+        <div class="panel pB">
+          <span class="ptag">b)</span>
+          <p class="ptitle">&nbsp;</p>
+          <svg id="svgB" viewBox="0 0 500 440" role="img" aria-label="Intermediate step: a new node placed on every original edge"></svg>
+        </div>
+
+        <div class="arrowbox a2">
+          <svg viewBox="0 0 200 22" aria-hidden="true">
+            <line x1="4" y1="11" x2="172" y2="11" stroke="#b5b5b5" stroke-width="7"/>
+            <polygon points="168,1.5 197,11 168,20.5" fill="#b5b5b5"/>
+          </svg>
+          <div class="cap">Connect new nodes if<br>original edges shared node</div>
+        </div>
+
+        <div class="panel pC">
+          <span class="ptag">c)</span>
+          <p class="ptitle">Edge graph</p>
+          <svg id="svgC" viewBox="0 0 500 440" role="img" aria-label="Resulting edge graph"></svg>
+        </div>
+      </div>
+    </section>
+
+    <section id="compareView" hidden>
+      <div class="cmp-head">
+        <div class="seg" id="cmpSeg">
+          <button data-cmp="orig" class="on">Original graph</button>
+          <button data-cmp="edge">Edge graph</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="ghostBox" checked> ghost the other graph</label>
+      </div>
+      <div class="panel big">
+        <svg id="svgD" viewBox="0 0 500 440" role="img" aria-label="Overlay comparison of the original graph and its edge graph"></svg>
+      </div>
+      <p class="cmp-note">Both graphs are drawn in the same coordinates: each edge-graph node sits exactly on the midpoint of the original edge it replaces.</p>
+    </section>
+
+    <div class="controls">
+      <span class="lbl stepctl">Step</span>
+      <div class="seg stepctl" id="stepSeg">
+        <button data-step="1">1 &middot; Original</button>
+        <button data-step="2">2 &middot; New node per edge</button>
+        <button data-step="3">3 &middot; New nodes only</button>
+        <button data-step="4" class="on">4 &middot; Edge graph</button>
+      </div>
+      <button class="act" id="playBtn">&#9654; Animate</button>
+      <span class="lbl" style="margin-left:6px">View</span>
+      <div class="seg" id="viewSeg">
+        <button data-view="steps" class="on">Three panels</button>
+        <button data-view="compare">Toggle / compare</button>
+      </div>
+      <button class="act" id="clearBtn">Clear selection</button>
+    </div>
+
+    <div class="readout" id="readout" aria-live="polite"></div>
+    <p class="hint" id="hint"></p>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+var NS="http://www.w3.org/2000/svg";
+
+/* ---------- graph data (panel a coordinates, viewBox 500x440) ---------- */
+var ORIG={1:[445,163],2:[120,130],3:[312,55],4:[157,385],5:[35,280],6:[462,385]};
+var NODES=[1,2,3,4,5,6];
+var EDGES=[[2,3],[1,3],[2,5],[1,5],[1,4],[1,6],[4,5],[4,6]];
+
+function key(e){return Math.min(e[0],e[1])+"/"+Math.max(e[0],e[1]);}
+var LABEL=EDGES.map(key);
+
+/* a new node sits at the midpoint of the edge it replaces */
+var MID=EDGES.map(function(e){
+  var p=ORIG[e[0]],q=ORIG[e[1]];
+  return [(p[0]+q[0])/2,(p[1]+q[1])/2];
+});
+/* panel c: same layout, gently expanded about its centroid to fill the panel */
+var cx=0,cy=0;
+MID.forEach(function(p){cx+=p[0];cy+=p[1];});
+cx/=MID.length; cy/=MID.length;
+var S=1.08;
+var SPREAD=MID.map(function(p){return [cx+(p[0]-cx)*S, cy+(p[1]-cy)*S];});
+
+/* incident edges of every original node */
+var INC={};
+NODES.forEach(function(v){
+  INC[v]=[];
+  EDGES.forEach(function(e,i){ if(e[0]===v||e[1]===v) INC[v].push(i); });
+});
+
+/* line-graph edges: one clique per original node */
+var LEDGES=[];
+NODES.forEach(function(v){
+  var inc=INC[v];
+  for(var a=0;a<inc.length;a++)
+    for(var b=a+1;b<inc.length;b++)
+      LEDGES.push({i:inc[a],j:inc[b],via:v});
+});
+
+/* which line-graph edges touch new node i */
+var LINC=EDGES.map(function(_,i){
+  var out=[];
+  LEDGES.forEach(function(le,k){ if(le.i===i||le.j===i) out.push(k); });
+  return out;
+});
+
+var R_ON=21, R_EN=24;
+
+/* ---------- svg helpers ---------- */
+function el(tag,attrs){
+  var e=document.createElementNS(NS,tag);
+  for(var k in attrs) e.setAttribute(k,attrs[k]);
+  return e;
+}
+
+function buildGraph(svg,opts){
+  var posEN = opts.spread ? SPREAD : MID;
+  var gOE=el("g",{"class":"layer oeL"}), gLE=el("g",{"class":"layer leL"}),
+      gON=el("g",{"class":"layer onL"}), gEN=el("g",{"class":"layer enL"});
+  svg.appendChild(gOE); svg.appendChild(gLE); svg.appendChild(gON); svg.appendChild(gEN);
+
+  var P={svg:svg,oe:[],le:[],on:{},en:[],layers:{oe:gOE,le:gLE,on:gON,en:gEN}};
+
+  EDGES.forEach(function(e,i){
+    var p=ORIG[e[0]],q=ORIG[e[1]];
+    var g=el("g",{"class":"oe"});
+    g.appendChild(el("line",{"class":"hit",x1:p[0],y1:p[1],x2:q[0],y2:q[1]}));
+    g.appendChild(el("line",{"class":"main",x1:p[0],y1:p[1],x2:q[0],y2:q[1]}));
+    g.addEventListener("click",function(ev){ev.stopPropagation();selectEdge(i);});
+    gOE.appendChild(g); P.oe.push(g);
+  });
+
+  LEDGES.forEach(function(le,k){
+    var p=posEN[le.i],q=posEN[le.j];
+    var g=el("g",{"class":"le"});
+    g.appendChild(el("line",{"class":"hit",x1:p[0],y1:p[1],x2:q[0],y2:q[1]}));
+    g.appendChild(el("line",{"class":"main",x1:p[0],y1:p[1],x2:q[0],y2:q[1]}));
+    g.addEventListener("click",function(ev){ev.stopPropagation();selectVia(le.via);});
+    gLE.appendChild(g); P.le.push(g);
+  });
+
+  NODES.forEach(function(v){
+    var p=ORIG[v];
+    var g=el("g",{"class":"on"});
+    g.appendChild(el("circle",{cx:p[0],cy:p[1],r:R_ON}));
+    var t=el("text",{x:p[0],y:p[1],"text-anchor":"middle","dominant-baseline":"central"});
+    t.textContent=String(v); g.appendChild(t);
+    g.addEventListener("click",function(ev){ev.stopPropagation();selectVia(v);});
+    gON.appendChild(g); P.on[v]=g;
+  });
+
+  EDGES.forEach(function(e,i){
+    var p=posEN[i];
+    var g=el("g",{"class":"en"});
+    g.appendChild(el("circle",{cx:p[0],cy:p[1],r:R_EN}));
+    var t=el("text",{x:p[0],y:p[1],"text-anchor":"middle","dominant-baseline":"central"});
+    t.textContent=LABEL[i]; g.appendChild(t);
+    g.addEventListener("click",function(ev){ev.stopPropagation();selectEdge(i);});
+    gEN.appendChild(g); P.en.push(g);
+  });
+
+  ["oe","le","on","en"].forEach(function(k){
+    if(!opts.show[k]) P.layers[k].style.display="none";
+  });
+  svg.addEventListener("click",function(){clearSel();});
+  return P;
+}
+
+var PA=buildGraph(document.getElementById("svgA"),{show:{oe:1,on:1,le:0,en:0}});
+var PB=buildGraph(document.getElementById("svgB"),{show:{oe:1,on:1,le:0,en:1}});
+var PC=buildGraph(document.getElementById("svgC"),{spread:true,show:{oe:0,on:0,le:1,en:1}});
+var PD=buildGraph(document.getElementById("svgD"),{show:{oe:1,on:1,le:1,en:1}});
+var PANELS=[PA,PB,PC,PD];
+
+/* ---------- step / reveal state ---------- */
+var STEPTEXT={
+  1:"<b>Step 1.</b> The original graph G: 6 nodes and 8 edges. The edges are what we are about to turn into nodes.",
+  2:"<b>Step 2.</b> A new node is placed on each of the 8 original edges and is named after that edge's two endpoints &mdash; the edge 2&ndash;3 becomes node <b>2/3</b>.",
+  3:"<b>Step 3.</b> Keep only the 8 new nodes. Nothing is connected yet &mdash; the old edges still have to be translated into adjacencies.",
+  4:"<b>Step 4.</b> The edge graph L(G): two new nodes are joined exactly when their original edges shared an endpoint. Result: 8 nodes and 15 edges."
+};
+var step=4;
+function setStep(n,quiet){
+  step=n;
+  PB.en.forEach(function(g){ g.classList.toggle("hidden", n<2); });
+  PC.en.forEach(function(g){ g.classList.toggle("hidden", n<3); });
+  PC.le.forEach(function(g){ g.classList.toggle("hidden", n<4); });
+  Array.prototype.forEach.call(document.querySelectorAll("#stepSeg button"),function(b){
+    b.classList.toggle("on", +b.getAttribute("data-step")===n);
+  });
+  if(!quiet) say(STEPTEXT[n]);
+}
+
+/* ---------- selection ---------- */
+var sel=null;
+
+function clearClasses(){
+  PANELS.forEach(function(P){
+    P.oe.forEach(function(g){g.classList.remove("sel","rel","dim");});
+    P.le.forEach(function(g){g.classList.remove("sel","rel","dim");});
+    P.en.forEach(function(g){g.classList.remove("sel","rel","dim");});
+    NODES.forEach(function(v){P.on[v].classList.remove("sel","rel","dim","via");});
+  });
+}
+function clearSel(){ sel=null; clearClasses(); say(view==="compare"?cmpText():STEPTEXT[step]); }
+function markAll(fn){ PANELS.forEach(fn); }
+
+function list(arr){
+  if(arr.length===0) return "nothing";
+  if(arr.length===1) return "<b>"+arr[0]+"</b>";
+  return arr.slice(0,-1).map(function(s){return "<b>"+s+"</b>";}).join(", ")+" and <b>"+arr[arr.length-1]+"</b>";
+}
+
+function selectEdge(i){
+  if(playing) stop();
+  sel={kind:"edge",id:i};
+  clearClasses();
+  var e=EDGES[i], a=e[0], b=e[1];
+  var relEdges={}, relLE={};
+  LINC[i].forEach(function(k){
+    relLE[k]=1;
+    var le=LEDGES[k];
+    relEdges[le.i===i?le.j:le.i]=1;
+  });
+  markAll(function(P){
+    P.oe.forEach(function(g,j){
+      if(j===i) g.classList.add("sel");
+      else if(relEdges[j]) g.classList.add("rel");
+      else g.classList.add("dim");
+    });
+    P.en.forEach(function(g,j){
+      if(j===i) g.classList.add("sel");
+      else if(relEdges[j]) g.classList.add("rel");
+      else g.classList.add("dim");
+    });
+    P.le.forEach(function(g,k){
+      if(relLE[k]) g.classList.add("sel"); else g.classList.add("dim");
+    });
+    NODES.forEach(function(v){
+      if(v===a||v===b) P.on[v].classList.add("sel"); else P.on[v].classList.add("dim");
+    });
+  });
+  var sa=INC[a].filter(function(j){return j!==i;}).map(function(j){return LABEL[j];});
+  var sb=INC[b].filter(function(j){return j!==i;}).map(function(j){return LABEL[j];});
+  var parts=[];
+  if(sa.length) parts.push("node "+a+" with "+list(sa));
+  if(sb.length) parts.push("node "+b+" with "+list(sb));
+  say("<b>Edge "+a+"&ndash;"+b+"</b> becomes node <b>"+LABEL[i]+"</b> of the edge graph. It shares "+
+      (parts.length?parts.join(", and "):"no endpoint with any other edge")+
+      ", so <b>"+LABEL[i]+"</b> has degree "+(sa.length+sb.length)+
+      " in the edge graph = (deg "+a+" − 1) + (deg "+b+" − 1) = "+sa.length+" + "+sb.length+".");
+}
+
+function selectVia(v){
+  if(playing) stop();
+  sel={kind:"node",id:v};
+  clearClasses();
+  var inc={}; INC[v].forEach(function(i){inc[i]=1;});
+  markAll(function(P){
+    P.oe.forEach(function(g,j){ g.classList.add(inc[j]?"sel":"dim"); });
+    P.en.forEach(function(g,j){ g.classList.add(inc[j]?"sel":"dim"); });
+    P.le.forEach(function(g,k){ g.classList.add(LEDGES[k].via===v?"sel":"dim"); });
+    NODES.forEach(function(w){ P.on[w].classList.add(w===v?"via":"dim"); });
+  });
+  var d=INC[v].length, c=d*(d-1)/2;
+  say("<b>Node "+v+"</b> has degree "+d+". Its incident edges "+list(INC[v].map(function(i){return LABEL[i];}))+
+      " all meet at node "+v+", so in the edge graph they become a complete subgraph K<sub>"+d+"</sub>: "+
+      c+" edge"+(c===1?"":"s")+" = C("+d+",2). Summing C(deg&nbsp;v,&nbsp;2) over all six nodes gives the "+
+      LEDGES.length+" edges of L(G).");
+}
+
+var readout=document.getElementById("readout");
+function say(html){ readout.innerHTML=html; }
+
+/* ---------- animation ---------- */
+var timers=[], playing=false;
+function at(t,fn){ timers.push(setTimeout(fn,t)); }
+function stop(){
+  timers.forEach(clearTimeout); timers=[]; playing=false;
+  document.getElementById("playBtn").innerHTML="&#9654; Animate";
+}
+function play(){
+  stop();
+  if(view!=="steps") setView("steps");
+  clearClasses(); sel=null;
+  playing=true;
+  document.getElementById("playBtn").innerHTML="&#9632; Stop";
+  setStep(1);
+  var t=950;
+
+  EDGES.forEach(function(e,i){
+    at(t,function(){
+      clearClasses();
+      PB.en[i].classList.remove("hidden");
+      PA.oe[i].classList.add("sel");
+      PB.oe[i].classList.add("sel");
+      PB.en[i].classList.add("sel");
+      say("<b>Step 2 &mdash; add a node on each edge.</b> Edge "+e[0]+"&ndash;"+e[1]+
+          " → new node <b>"+LABEL[i]+"</b>. ("+(i+1)+" of "+EDGES.length+")");
+    });
+    t+=470;
+  });
+
+  at(t,function(){ clearClasses(); say(STEPTEXT[2]); }); t+=800;
+  at(t,function(){ setStep(3); }); t+=1000;
+
+  NODES.forEach(function(v){
+    at(t,function(){
+      clearClasses();
+      var inc={}; INC[v].forEach(function(i){inc[i]=1;});
+      [PA,PB].forEach(function(P){
+        NODES.forEach(function(w){ if(w!==v) P.on[w].classList.add("dim"); });
+        P.on[v].classList.add("via");
+        P.oe.forEach(function(g,j){ g.classList.add(inc[j]?"sel":"dim"); });
+        P.en.forEach(function(g,j){ if(inc[j]) g.classList.add("sel"); else g.classList.add("dim"); });
+      });
+      PC.en.forEach(function(g,j){ if(inc[j]) g.classList.add("sel"); });
+      LEDGES.forEach(function(le,k){
+        if(le.via===v){ PC.le[k].classList.remove("hidden"); PC.le[k].classList.add("sel"); }
+      });
+      var d=INC[v].length, c=d*(d-1)/2;
+      say("<b>Step 3 &mdash; connect new nodes whose edges shared a node.</b> The "+d+
+          " edges meeting at node "+v+" become the clique "+list(INC[v].map(function(i){return LABEL[i];}))+
+          ": "+c+" new edge"+(c===1?"":"s")+" in the edge graph.");
+    });
+    t+=1150;
+  });
+
+  at(t,function(){
+    clearClasses(); setStep(4);
+    playing=false;
+    document.getElementById("playBtn").innerHTML="&#9654; Animate";
+  });
+}
+
+/* ---------- view switching ---------- */
+var view="steps", cmpMode="orig";
+function cmpText(){
+  return (cmpMode==="orig")
+    ? "<b>Original graph G</b> &mdash; "+NODES.length+" nodes, "+EDGES.length+
+      " edges. Switch to the edge graph to watch every edge collapse onto the new node sitting on it."
+    : "<b>Edge graph L(G)</b> &mdash; "+EDGES.length+" nodes, "+LEDGES.length+
+      " edges. Each teal node is one of the 8 old edges; every line here marks a place where two old edges touched.";
+}
+function setView(v){
+  view=v;
+  document.getElementById("stepsView").hidden = (v!=="steps");
+  document.getElementById("compareView").hidden = (v!=="compare");
+  Array.prototype.forEach.call(document.querySelectorAll("#viewSeg button"),function(b){
+    b.classList.toggle("on", b.getAttribute("data-view")===v);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".stepctl"),function(e){
+    e.style.display = (v==="compare") ? "none" : "";
+  });
+  if(v==="compare") updateCompare();
+  else say(STEPTEXT[step]);
+}
+function updateCompare(){
+  var showOrig = (cmpMode==="orig");
+  var ghost = document.getElementById("ghostBox").checked ? 0.15 : 0;
+  function set(layer,vis){
+    layer.style.opacity = vis?1:ghost;
+    layer.style.pointerEvents = vis?"auto":"none";
+  }
+  set(PD.layers.oe, showOrig); set(PD.layers.on, showOrig);
+  set(PD.layers.le, !showOrig); set(PD.layers.en, !showOrig);
+  Array.prototype.forEach.call(document.querySelectorAll("#cmpSeg button"),function(b){
+    b.classList.toggle("on", b.getAttribute("data-cmp")===cmpMode);
+  });
+  say(cmpText());
+}
+
+/* ---------- wiring ---------- */
+function btn(ev){ var t=ev.target; while(t&&t.tagName!=="BUTTON"){t=t.parentNode;} return t; }
+
+document.getElementById("stepSeg").addEventListener("click",function(ev){
+  var b=btn(ev); if(!b) return;
+  stop(); clearClasses(); sel=null; setStep(+b.getAttribute("data-step"));
+});
+document.getElementById("viewSeg").addEventListener("click",function(ev){
+  var b=btn(ev); if(!b) return;
+  stop(); clearClasses(); sel=null; setView(b.getAttribute("data-view"));
+});
+document.getElementById("cmpSeg").addEventListener("click",function(ev){
+  var b=btn(ev); if(!b) return;
+  cmpMode=b.getAttribute("data-cmp"); clearClasses(); sel=null; updateCompare();
+});
+document.getElementById("ghostBox").addEventListener("change",updateCompare);
+document.getElementById("playBtn").addEventListener("click",function(){
+  if(playing){ stop(); setStep(4); } else play();
+});
+document.getElementById("clearBtn").addEventListener("click",function(){ stop(); clearSel(); });
+
+document.getElementById("hint").innerHTML=
+  "<span class='counts'>G: "+NODES.length+" nodes, "+EDGES.length+" edges &nbsp;&rarr;&nbsp; L(G): "+
+  EDGES.length+" nodes, "+LEDGES.length+" edges.</span> &nbsp; Click an edge (or a new node) to follow one edge through the construction; click an original node to see the clique it generates.";
+
+setStep(4);
+})();
+</script>
+</body>
+</html>

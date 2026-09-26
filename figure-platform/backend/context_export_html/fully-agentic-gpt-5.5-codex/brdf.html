@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bidirectional Reflectance Distribution Function</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #121417;
+      --muted: #5c6470;
+      --panel: #ffffff;
+      --edge: #d8dee7;
+      --green: #68ff00;
+      --green-deep: #087c00;
+      --amber: #f7b51c;
+      --orange: #ff6d2d;
+      --blue: #2467b2;
+      --shadow: 0 18px 44px rgba(23, 32, 45, 0.13);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #eef2f6;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .figure-shell {
+      width: min(1240px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 286px;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .stage,
+    .controls {
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .stage {
+      min-width: 0;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 820px;
+      height: min(78vh, 720px);
+      min-height: 520px;
+      background: #ffffff;
+      border-radius: 6px;
+      touch-action: none;
+      user-select: none;
+      cursor: crosshair;
+    }
+
+    .controls {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .control-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 760;
+      line-height: 1.25;
+    }
+
+    .control-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
+      padding: 4px;
+      background: #eef3f8;
+      border: 1px solid #d5dde8;
+      border-radius: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 9px 6px;
+      color: #243041;
+      background: transparent;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button[aria-pressed="true"] {
+      background: #ffffff;
+      color: #0c5a12;
+      box-shadow: 0 1px 4px rgba(31, 43, 54, 0.16);
+    }
+
+    label {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      color: #303946;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    label span:last-child {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-weight: 650;
+    }
+
+    input[type="range"] {
+      grid-column: 1 / -1;
+      width: 100%;
+      accent-color: #1b8f21;
+    }
+
+    .readout {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px 12px;
+      padding-top: 4px;
+      border-top: 1px solid #e2e8ef;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .readout strong {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .math {
+      font-family: Georgia, "Times New Roman", serif;
+      font-style: italic;
+    }
+
+    .small-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 10px;
+        place-items: start center;
+      }
+
+      .figure-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        order: -1;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .control-title,
+      .readout,
+      .small-note {
+        grid-column: 1 / -1;
+      }
+
+      svg {
+        height: 560px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .controls {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="figure-shell">
+    <main class="stage" aria-label="Interactive BRDF figure">
+      <svg id="scene" viewBox="0 0 1200 720" role="img" aria-labelledby="svg-title svg-desc">
+        <title id="svg-title">Interactive BRDF surface interaction model</title>
+        <desc id="svg-desc">An incoming light ray strikes a green plane. The local normal and tangent frame are labeled n, p, and q. Outgoing arrows in a hemisphere change length as the incoming direction and material controls change.</desc>
+        <defs>
+          <linearGradient id="incoming-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#fff100"></stop>
+            <stop offset="55%" stop-color="#ffad00"></stop>
+            <stop offset="100%" stop-color="#ff3d2d"></stop>
+          </linearGradient>
+          <filter id="soft-shadow" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#000000" flood-opacity="0.18"></feDropShadow>
+          </filter>
+        </defs>
+
+        <rect x="0" y="0" width="1200" height="720" fill="#ffffff"></rect>
+        <g id="surface-layer"></g>
+        <g id="hemisphere-layer"></g>
+        <g id="outgoing-layer"></g>
+        <g id="incoming-layer"></g>
+        <g id="axes-layer"></g>
+        <g id="label-layer"></g>
+      </svg>
+    </main>
+
+    <aside class="controls">
+      <h1 class="control-title">BRDF surface model</h1>
+
+      <section class="control-group" aria-label="Material preset">
+        <div class="segmented">
+          <button type="button" data-material="matte" aria-pressed="false">matte</button>
+          <button type="button" data-material="satin" aria-pressed="true">satin</button>
+          <button type="button" data-material="glossy" aria-pressed="false">glossy</button>
+        </div>
+      </section>
+
+      <section class="control-group" aria-label="BRDF parameters">
+        <label>
+          <span>roughness</span>
+          <span id="roughness-value">0.48</span>
+          <input id="roughness" type="range" min="0.08" max="0.95" value="0.48" step="0.01">
+        </label>
+        <label>
+          <span>specular</span>
+          <span id="specular-value">0.33</span>
+          <input id="specular" type="range" min="0" max="0.85" value="0.33" step="0.01">
+        </label>
+        <label>
+          <span><span class="math">&lambda;</span> wavelength</span>
+          <span id="lambda-value">540 nm</span>
+          <input id="lambda" type="range" min="450" max="650" value="540" step="5">
+        </label>
+      </section>
+
+      <section class="readout" aria-label="Current reflected radiance">
+        <span>incident angle</span><strong id="angle-value">35.1 deg</strong>
+        <span>peak <span class="math">l</span><sub>out</sub></span><strong id="peak-value">0.74</strong>
+        <span>dominant lobe</span><strong id="lobe-value">satin</strong>
+      </section>
+
+      <p class="small-note">The arrow lengths are recomputed from <span class="math">l</span><sub>in</sub>, <span class="math">n</span>, <span class="math">&lambda;</span>, and the local <span class="math">p,q</span> frame.</p>
+    </aside>
+  </div>
+
+  <script>
+    (() => {
+      const svg = document.getElementById("scene");
+      const surfaceLayer = document.getElementById("surface-layer");
+      const hemisphereLayer = document.getElementById("hemisphere-layer");
+      const outgoingLayer = document.getElementById("outgoing-layer");
+      const incomingLayer = document.getElementById("incoming-layer");
+      const axesLayer = document.getElementById("axes-layer");
+      const labelLayer = document.getElementById("label-layer");
+
+      const roughnessInput = document.getElementById("roughness");
+      const specularInput = document.getElementById("specular");
+      const lambdaInput = document.getElementById("lambda");
+      const roughnessValue = document.getElementById("roughness-value");
+      const specularValue = document.getElementById("specular-value");
+      const lambdaValue = document.getElementById("lambda-value");
+      const angleValue = document.getElementById("angle-value");
+      const peakValue = document.getElementById("peak-value");
+      const lobeValue = document.getElementById("lobe-value");
+      const materialButtons = Array.from(document.querySelectorAll("[data-material]"));
+
+      const NS = "http://www.w3.org/2000/svg";
+      const center = { x: 557, y: 470 };
+      const scale = 76;
+      const presets = {
+        matte: { roughness: 0.86, specular: 0.07 },
+        satin: { roughness: 0.48, specular: 0.33 },
+        glossy: { roughness: 0.16, specular: 0.72 }
+      };
+
+      const state = {
+        material: "satin",
+        roughness: 0.48,
+        specular: 0.33,
+        wavelength: 540,
+        incoming: normalize({ x: -0.53, y: 0.82, z: 0.21 })
+      };
+
+      const outgoingDirs = [];
+      [18, 36, 54, 70].forEach((thetaDeg, ring) => {
+        const count = ring === 0 ? 6 : ring === 1 ? 8 : 10;
+        for (let i = 0; i < count; i += 1) {
+          const phi = (Math.PI * 2 * (i + ring * 0.31)) / count;
+          outgoingDirs.push(direction(thetaDeg * Math.PI / 180, phi));
+        }
+      });
+
+      const dragCandidates = [];
+      for (let theta = 12; theta <= 74; theta += 2) {
+        for (let phi = 0; phi < 360; phi += 3) {
+          const dir = direction(theta * Math.PI / 180, phi * Math.PI / 180);
+          dragCandidates.push({ dir, point: project(mul(dir, 6.2)) });
+        }
+      }
+
+      function el(name, attrs = {}) {
+        const node = document.createElementNS(NS, name);
+        Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+        return node;
+      }
+
+      function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function normalize(v) {
+        const len = Math.hypot(v.x, v.y, v.z) || 1;
+        return { x: v.x / len, y: v.y / len, z: v.z / len };
+      }
+
+      function mul(v, s) {
+        return { x: v.x * s, y: v.y * s, z: v.z * s };
+      }
+
+      function dot(a, b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+      }
+
+      function direction(theta, phi) {
+        const sinTheta = Math.sin(theta);
+        return {
+          x: sinTheta * Math.cos(phi),
+          y: Math.cos(theta),
+          z: sinTheta * Math.sin(phi)
+        };
+      }
+
+      function project(v) {
+        return {
+          x: center.x + scale * (v.x - 0.62 * v.z),
+          y: center.y + scale * (0.52 * v.z - v.y)
+        };
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function screenPoint(evt) {
+        const pt = svg.createSVGPoint();
+        pt.x = evt.clientX;
+        pt.y = evt.clientY;
+        return pt.matrixTransform(svg.getScreenCTM().inverse());
+      }
+
+      function arrow(parent, from, to, options = {}) {
+        const width = options.width || 7;
+        const head = options.head || 20;
+        const color = options.color || "#111111";
+        const fill = options.fill || color;
+        const opacity = options.opacity == null ? 1 : options.opacity;
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const bx = to.x - ux * head;
+        const by = to.y - uy * head;
+        const nx = -uy;
+        const ny = ux;
+
+        const group = el("g", { opacity });
+        const shaft = el("line", {
+          x1: from.x,
+          y1: from.y,
+          x2: bx,
+          y2: by,
+          stroke: color,
+          "stroke-width": width,
+          "stroke-linecap": "round"
+        });
+        const points = [
+          `${to.x},${to.y}`,
+          `${bx + nx * head * 0.42},${by + ny * head * 0.42}`,
+          `${bx - nx * head * 0.42},${by - ny * head * 0.42}`
+        ].join(" ");
+        const cap = el("polygon", { points, fill, stroke: fill, "stroke-linejoin": "round" });
+
+        if (options.filter) {
+          shaft.setAttribute("filter", options.filter);
+          cap.setAttribute("filter", options.filter);
+        }
+        group.append(shaft, cap);
+        parent.appendChild(group);
+        return group;
+      }
+
+      function polyline(parent, points, attrs) {
+        parent.appendChild(el("polyline", {
+          points: points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" "),
+          fill: "none",
+          ...attrs
+        }));
+      }
+
+      function text(parent, x, y, html, attrs = {}) {
+        const node = el("text", { x, y, ...attrs });
+        node.innerHTML = html;
+        parent.appendChild(node);
+        return node;
+      }
+
+      function radiance(wo) {
+        const wi = state.incoming;
+        const cosI = clamp(wi.y, 0, 1);
+        const mirror = normalize({ x: -wi.x, y: wi.y, z: -wi.z });
+        const rough = state.roughness;
+        const spec = state.specular;
+        const greenReflectance = 0.28 + 0.72 * Math.exp(-Math.pow((state.wavelength - 540) / 78, 2));
+        const diffuse = (1 - spec * 0.66) * 0.58;
+        const shininess = 4 + Math.pow(1 - rough, 2.2) * 96;
+        const specular = spec * (0.45 + 2.3 * (1 - rough)) * Math.pow(clamp(dot(wo, mirror), 0, 1), shininess);
+        const forwardScatter = 0.06 * (1 - rough) * Math.pow(clamp(dot(wo, wi), 0, 1), 5);
+        return cosI * greenReflectance * (diffuse + specular + forwardScatter);
+      }
+
+      function drawSurface() {
+        const corners = [
+          { x: -5.95, y: 0, z: -3.15 },
+          { x: 5.95, y: 0, z: -3.15 },
+          { x: 5.95, y: 0, z: 3.15 },
+          { x: -5.95, y: 0, z: 3.15 }
+        ].map(project);
+        surfaceLayer.appendChild(el("polygon", {
+          points: corners.map((p) => `${p.x},${p.y}`).join(" "),
+          fill: "var(--green)",
+          stroke: "#121417",
+          "stroke-width": 6,
+          "stroke-linejoin": "round"
+        }));
+        const origin = project({ x: 0, y: 0, z: 0 });
+        surfaceLayer.appendChild(el("ellipse", {
+          cx: origin.x,
+          cy: origin.y,
+          rx: 28,
+          ry: 9,
+          fill: "#49d821",
+          stroke: "#101214",
+          "stroke-width": 4
+        }));
+      }
+
+      function drawHemisphereGuides() {
+        [26, 48, 68].forEach((thetaDeg) => {
+          const points = [];
+          for (let i = 0; i <= 120; i += 1) {
+            points.push(project(mul(direction(thetaDeg * Math.PI / 180, (i / 120) * Math.PI * 2), 2.35)));
+          }
+          polyline(hemisphereLayer, points, {
+            stroke: "#328c3d",
+            "stroke-width": 2,
+            "stroke-dasharray": "6 8",
+            opacity: 0.23
+          });
+        });
+        [0, 60, 120, 180, 240, 300].forEach((phiDeg) => {
+          const points = [];
+          for (let theta = 0; theta <= 78; theta += 3) {
+            points.push(project(mul(direction(theta * Math.PI / 180, phiDeg * Math.PI / 180), 2.35)));
+          }
+          polyline(hemisphereLayer, points, {
+            stroke: "#328c3d",
+            "stroke-width": 2,
+            opacity: 0.16
+          });
+        });
+      }
+
+      function drawOutgoing() {
+        const origin = project({ x: 0, y: 0, z: 0 });
+        const samples = outgoingDirs.map((dir) => ({ dir, value: radiance(dir) }));
+        const maxValue = Math.max(...samples.map((s) => s.value), 0.001);
+        samples.sort((a, b) => project(mul(a.dir, 2)).y - project(mul(b.dir, 2)).y);
+
+        let strongest = samples[0];
+        samples.forEach((sample) => {
+          const strength = sample.value / maxValue;
+          if (sample.value > strongest.value) strongest = sample;
+          const length = 0.55 + strength * 2.28;
+          const tip = project(mul(sample.dir, length));
+          const weakMix = 120 - Math.round(strength * 90);
+          const color = strength > 0.72 ? "#087c00" : `rgb(${weakMix}, ${178 + Math.round(strength * 52)}, ${22 + Math.round(strength * 22)})`;
+          arrow(outgoingLayer, origin, tip, {
+            width: 4 + strength * 6,
+            head: 17 + strength * 13,
+            color,
+            fill: color,
+            opacity: 0.30 + strength * 0.62
+          });
+        });
+
+        const strongLength = 0.65 + strongest.value / maxValue * 2.42;
+        const strongTip = project(mul(strongest.dir, strongLength));
+        arrow(outgoingLayer, origin, strongTip, {
+          width: 8.5,
+          head: 29,
+          color: "#087c00",
+          fill: "#087c00",
+          opacity: 1,
+          filter: "url(#soft-shadow)"
+        });
+
+        const labelX = clamp(strongTip.x + 22, 760, 1030);
+        const labelY = clamp(strongTip.y - 18, 78, 210);
+        text(labelLayer, labelX, labelY, "<tspan font-style=\"italic\">&#8467;</tspan><tspan baseline-shift=\"sub\" font-size=\"62%\">out</tspan>", {
+          "font-family": "Georgia, Times New Roman, serif",
+          "font-size": 58,
+          fill: "#111111"
+        });
+
+        peakValue.textContent = maxValue.toFixed(2);
+      }
+
+      function drawIncoming() {
+        const origin = project({ x: 0, y: 0, z: 0 });
+        const source = project(mul(state.incoming, 6.2));
+        arrow(incomingLayer, source, origin, {
+          width: 18,
+          head: 34,
+          color: "url(#incoming-gradient)",
+          fill: "#ff3d2d",
+          opacity: 0.96,
+          filter: "url(#soft-shadow)"
+        });
+        incomingLayer.appendChild(el("circle", {
+          cx: source.x,
+          cy: source.y,
+          r: 13,
+          fill: "#fff100",
+          stroke: "#141414",
+          "stroke-width": 3,
+          opacity: 0.96
+        }));
+
+        const labelX = clamp(source.x - 10, 145, 510);
+        const labelY = clamp(source.y - 28, 62, 170);
+        text(labelLayer, labelX, labelY, "<tspan font-style=\"italic\">&#8467;</tspan><tspan baseline-shift=\"sub\" font-size=\"62%\">in</tspan>(&#955;)", {
+          "font-family": "Georgia, Times New Roman, serif",
+          "font-size": 54,
+          fill: "#111111"
+        });
+      }
+
+      function drawAxes() {
+        const origin = project({ x: 0, y: 0, z: 0 });
+        const axes = [
+          { name: "p", tip: { x: -1.33, y: 0, z: -0.26 }, label: { dx: -62, dy: -18 } },
+          { name: "q", tip: { x: 1.30, y: 0, z: -0.16 }, label: { dx: 20, dy: -10 } },
+          { name: "n", tip: { x: 0, y: 1.55, z: 0 }, label: { dx: -38, dy: -24 } }
+        ];
+        axes.forEach((axis) => {
+          const tip = project(axis.tip);
+          arrow(axesLayer, origin, tip, {
+            width: 7.5,
+            head: 24,
+            color: "#050505",
+            fill: "#050505",
+            opacity: 1
+          });
+          text(axesLayer, tip.x + axis.label.dx, tip.y + axis.label.dy, axis.name, {
+            "font-family": "Georgia, Times New Roman, serif",
+            "font-size": 58,
+            "font-weight": 700,
+            fill: "#050505"
+          });
+        });
+      }
+
+      function drawEquation() {
+        const equation = [
+          "<tspan font-style=\"italic\">&#8467;</tspan>",
+          "<tspan baseline-shift=\"sub\" font-size=\"62%\">out</tspan>",
+          "<tspan>=F(</tspan>",
+          "<tspan font-style=\"italic\">&#8467;</tspan>",
+          "<tspan baseline-shift=\"sub\" font-size=\"62%\">in</tspan>",
+          "<tspan>,</tspan>",
+          "<tspan font-weight=\"700\">n</tspan>",
+          "<tspan>,&#955;,</tspan>",
+          "<tspan font-weight=\"700\">p</tspan>",
+          "<tspan>,</tspan>",
+          "<tspan font-weight=\"700\">q</tspan>",
+          "<tspan>)</tspan>"
+        ].join("");
+        text(labelLayer, 716, 136, equation, {
+          "font-family": "Georgia, Times New Roman, serif",
+          "font-size": 52,
+          fill: "#111111"
+        });
+      }
+
+      function updateControls() {
+        roughnessValue.textContent = state.roughness.toFixed(2);
+        specularValue.textContent = state.specular.toFixed(2);
+        lambdaValue.textContent = `${Math.round(state.wavelength)} nm`;
+        roughnessInput.value = state.roughness;
+        specularInput.value = state.specular;
+        lambdaInput.value = state.wavelength;
+        const theta = Math.acos(clamp(state.incoming.y, 0, 1)) * 180 / Math.PI;
+        angleValue.textContent = `${theta.toFixed(1)} deg`;
+        lobeValue.textContent = state.specular > 0.55 ? "glossy" : state.roughness > 0.7 ? "broad" : "satin";
+        materialButtons.forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.material === state.material));
+        });
+      }
+
+      function render() {
+        [surfaceLayer, hemisphereLayer, outgoingLayer, incomingLayer, axesLayer, labelLayer].forEach(clear);
+        drawSurface();
+        drawHemisphereGuides();
+        drawOutgoing();
+        drawIncoming();
+        drawAxes();
+        drawEquation();
+        updateControls();
+      }
+
+      function setIncomingFromPointer(evt) {
+        const point = screenPoint(evt);
+        let nearest = dragCandidates[0];
+        let bestDistance = Infinity;
+        dragCandidates.forEach((candidate) => {
+          const dx = candidate.point.x - point.x;
+          const dy = candidate.point.y - point.y;
+          const distance = dx * dx + dy * dy;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            nearest = candidate;
+          }
+        });
+        state.incoming = nearest.dir;
+        render();
+      }
+
+      let dragging = false;
+      svg.addEventListener("pointerdown", (evt) => {
+        dragging = true;
+        svg.setPointerCapture(evt.pointerId);
+        setIncomingFromPointer(evt);
+      });
+      svg.addEventListener("pointermove", (evt) => {
+        if (dragging) setIncomingFromPointer(evt);
+      });
+      svg.addEventListener("pointerup", (evt) => {
+        dragging = false;
+        if (svg.hasPointerCapture(evt.pointerId)) svg.releasePointerCapture(evt.pointerId);
+      });
+      svg.addEventListener("pointercancel", () => {
+        dragging = false;
+      });
+
+      materialButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const preset = presets[button.dataset.material];
+          state.material = button.dataset.material;
+          state.roughness = preset.roughness;
+          state.specular = preset.specular;
+          render();
+        });
+      });
+
+      roughnessInput.addEventListener("input", () => {
+        state.material = "custom";
+        state.roughness = Number(roughnessInput.value);
+        render();
+      });
+      specularInput.addEventListener("input", () => {
+        state.material = "custom";
+        state.specular = Number(specularInput.value);
+        render();
+      });
+      lambdaInput.addEventListener("input", () => {
+        state.wavelength = Number(lambdaInput.value);
+        render();
+      });
+
+      render();
+    })();
+  </script>
+</body>
+</html>

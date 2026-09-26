@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PerfSmoothness</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111;
+      --muted: #767676;
+      --panel: #ffffff;
+      --paper: #f6f5f1;
+      --fit: #9bdad7;
+      --fit-strong: #62c9c5;
+      --sample: #cf7855;
+      --accent: #2e807c;
+      --ring: #f0b35d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    main {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: 18px clamp(10px, 2vw, 28px) 28px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(250px, 1fr) auto;
+      gap: 12px 18px;
+      align-items: end;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      border: 1px solid #d9d3c7;
+      background: #fffdf9;
+      border-radius: 8px;
+      box-shadow: 0 2px 16px rgba(30, 22, 10, 0.08);
+    }
+
+    .sliderBlock {
+      display: grid;
+      gap: 9px;
+    }
+
+    .controlLabel {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.94rem;
+      font-weight: 700;
+      color: #2f2b24;
+    }
+
+    .readout {
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .ticks {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
+      color: #69645d;
+      font-size: 0.78rem;
+      text-align: center;
+    }
+
+    .toggleGroup {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid #bbb3a4;
+      background: #fff;
+      color: #25221e;
+      border-radius: 7px;
+      padding: 9px 12px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      min-height: 40px;
+    }
+
+    button:hover,
+    button:focus-visible {
+      border-color: var(--accent);
+      outline: 2px solid rgba(46, 128, 124, 0.22);
+      outline-offset: 2px;
+    }
+
+    button.active {
+      background: #e5f4f2;
+      border-color: var(--accent);
+      color: #174e4a;
+    }
+
+    .figureWrap {
+      overflow-x: auto;
+      background: #fff;
+      border: 1px solid #ddd7ce;
+      border-radius: 8px;
+      box-shadow: 0 8px 30px rgba(37, 32, 22, 0.10);
+    }
+
+    svg {
+      display: block;
+    }
+
+    #mainFigure {
+      width: 100%;
+      min-width: 820px;
+      height: auto;
+      background: #fff;
+    }
+
+    .panelHit {
+      cursor: zoom-in;
+      fill: transparent;
+      pointer-events: all;
+    }
+
+    .frame {
+      fill: var(--panel);
+      stroke: #0d0d0d;
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .panel.active .frame {
+      stroke: var(--ring);
+      stroke-width: 6;
+    }
+
+    .minorTick {
+      stroke: #777;
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .majorTick {
+      stroke: #777;
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .tickLabel {
+      fill: #7a7a7a;
+      font-size: 28px;
+    }
+
+    .axisLabel {
+      fill: #000;
+      font-size: 38px;
+    }
+
+    .panelTitle {
+      fill: #000;
+      font-size: 42px;
+      font-weight: 400;
+    }
+
+    .panelLetter {
+      fill: #000;
+      font-size: 48px;
+      font-weight: 400;
+    }
+
+    .truthCurve {
+      fill: none;
+      stroke: #000;
+      stroke-width: 8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .fitCurve {
+      fill: none;
+      stroke: var(--fit);
+      stroke-width: 7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .fitCurve.activeFit {
+      stroke: var(--fit-strong);
+      stroke-width: 9;
+    }
+
+    .samplePoint {
+      fill: var(--sample);
+      stroke: var(--sample);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .zoomBackdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(25, 22, 18, 0.55);
+      z-index: 10;
+    }
+
+    .zoomBackdrop.open {
+      display: flex;
+    }
+
+    .zoomPanel {
+      width: min(880px, 96vw);
+      max-height: 94vh;
+      overflow: auto;
+      background: #fffdf9;
+      border-radius: 8px;
+      border: 1px solid #d5ccbf;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+    }
+
+    .zoomTop {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px 6px;
+    }
+
+    .zoomTitle {
+      font-size: 1rem;
+      font-weight: 800;
+      color: #2c2822;
+    }
+
+    #zoomFigure {
+      width: 100%;
+      height: auto;
+      min-height: 420px;
+      background: #fff;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        padding-inline: 8px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .toggleGroup {
+        justify-content: stretch;
+      }
+
+      .toggleGroup button {
+        flex: 1 1 150px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="controls" aria-label="Figure controls">
+      <div class="sliderBlock">
+        <label class="controlLabel" for="unitSlider">
+          <span>Hidden units</span>
+          <span class="readout" id="unitReadout">6 hidden units</span>
+        </label>
+        <input id="unitSlider" type="range" min="0" max="4" step="1" value="0" aria-label="Number of hidden units" />
+        <div class="ticks" aria-hidden="true">
+          <span>6</span>
+          <span>7</span>
+          <span>8</span>
+          <span>10</span>
+          <span>50</span>
+        </div>
+      </div>
+      <div class="toggleGroup" aria-label="Capacity contrast">
+        <button type="button" id="underfitBtn" class="active">6 units underfit</button>
+        <button type="button" id="overfitBtn">50 units overfit</button>
+      </div>
+    </section>
+
+    <div class="figureWrap">
+      <svg id="mainFigure" viewBox="0 0 1630 1010" role="img" aria-labelledby="figTitle figDesc">
+        <title id="figTitle">Smoothness of shallow neural network fits as hidden units change</title>
+        <desc id="figDesc">Six panels show scalar output y as a function of input x. Orange samples and a black target curve are compared with cyan fitted curves for networks with 6, 7, 8, 10, and 50 hidden units.</desc>
+      </svg>
+    </div>
+  </main>
+
+  <div class="zoomBackdrop" id="zoomBackdrop" role="dialog" aria-modal="true" aria-labelledby="zoomTitle">
+    <div class="zoomPanel">
+      <div class="zoomTop">
+        <div class="zoomTitle" id="zoomTitle">6 hidden units</div>
+        <button type="button" id="closeZoom">Close</button>
+      </div>
+      <svg id="zoomFigure" viewBox="0 0 760 560" role="img" aria-label="Zoomed panel"></svg>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const svgNS = "http://www.w3.org/2000/svg";
+      const units = [6, 7, 8, 10, 50];
+      const samplesX = Array.from({ length: 151 }, (_, i) => i / 150);
+      const dataPoints = [
+        [0.035, -0.08],
+        [0.120, 0.19],
+        [0.190, 0.47],
+        [0.815, -0.66],
+        [0.925, -0.42],
+        [0.985, -0.47]
+      ];
+
+      const truthKnots = [
+        [0.000, -0.28],
+        [0.055, -0.05],
+        [0.120, 0.22],
+        [0.200, 0.55],
+        [0.255, 0.61],
+        [0.335, 0.42],
+        [0.445, -0.06],
+        [0.560, -0.43],
+        [0.690, -0.58],
+        [0.815, -0.58],
+        [0.935, -0.45],
+        [1.000, -0.27]
+      ];
+
+      const fitKnots = {
+        6: [
+          [0.000, -0.15],
+          [0.120, 0.20],
+          [0.220, 0.58],
+          [0.330, 1.34],
+          [0.395, 1.36],
+          [0.470, 0.12],
+          [0.545, -1.10],
+          [0.670, -1.45],
+          [0.770, -1.25],
+          [0.835, -0.40],
+          [0.915, -0.44],
+          [1.000, -0.47]
+        ],
+        7: [
+          [0.000, -0.16],
+          [0.120, 0.19],
+          [0.280, 0.90],
+          [0.425, 0.34],
+          [0.570, -0.60],
+          [0.700, -1.04],
+          [0.850, -0.40],
+          [0.925, -0.42],
+          [1.000, -0.47]
+        ],
+        8: [
+          [0.000, -0.17],
+          [0.120, 0.18],
+          [0.250, 0.75],
+          [0.380, 0.55],
+          [0.500, -0.08],
+          [0.620, -0.62],
+          [0.750, -0.84],
+          [0.875, -0.38],
+          [0.960, -0.42],
+          [1.000, -0.47]
+        ],
+        10: [
+          [0.000, -0.18],
+          [0.120, 0.18],
+          [0.230, 0.48],
+          [0.300, 0.55],
+          [0.400, 0.37],
+          [0.505, 0.05],
+          [0.610, -0.34],
+          [0.710, -0.61],
+          [0.820, -0.63],
+          [0.925, -0.42],
+          [1.000, -0.47]
+        ],
+        50: [
+          [0.000, -0.17],
+          [0.070, 0.02],
+          [0.155, 0.39],
+          [0.255, 0.61],
+          [0.360, 0.54],
+          [0.470, 0.19],
+          [0.590, -0.25],
+          [0.705, -0.54],
+          [0.775, -0.68],
+          [0.850, -0.62],
+          [0.925, -0.43],
+          [1.000, -0.47]
+        ]
+      };
+
+      const panels = [
+        { letter: "a", x: 100, y: 58, w: 473, h: 382, title: "", kind: "reference" },
+        { letter: "b", x: 625, y: 58, w: 473, h: 382, title: "6 hidden units", units: 6 },
+        { letter: "c", x: 1142, y: 58, w: 473, h: 382, title: "7 hidden units", units: 7 },
+        { letter: "d", x: 100, y: 550, w: 473, h: 382, title: "8 hidden units", units: 8 },
+        { letter: "e", x: 625, y: 550, w: 473, h: 382, title: "10 hidden units", units: 10 },
+        { letter: "f", x: 1142, y: 550, w: 473, h: 382, title: "50 hidden units", units: 50 }
+      ];
+
+      const mainSvg = document.getElementById("mainFigure");
+      const zoomSvg = document.getElementById("zoomFigure");
+      const slider = document.getElementById("unitSlider");
+      const readout = document.getElementById("unitReadout");
+      const underfitBtn = document.getElementById("underfitBtn");
+      const overfitBtn = document.getElementById("overfitBtn");
+      const zoomBackdrop = document.getElementById("zoomBackdrop");
+      const zoomTitle = document.getElementById("zoomTitle");
+      const closeZoom = document.getElementById("closeZoom");
+
+      const truthSamples = sampleKnots(truthKnots);
+      const fitSamples = Object.fromEntries(units.map((u) => [u, sampleKnots(fitKnots[u])]));
+
+      let activeIndex = 0;
+      let currentYs = fitSamples[6].map((point) => point.y);
+      let zoomPanel = null;
+      let animationFrame = null;
+
+      function el(name, attrs = {}, parent = null) {
+        const node = document.createElementNS(svgNS, name);
+        Object.entries(attrs).forEach(([key, value]) => {
+          if (key === "text") {
+            node.textContent = value;
+          } else if (key === "className") {
+            node.setAttribute("class", value);
+          } else {
+            node.setAttribute(key, value);
+          }
+        });
+        if (parent) parent.appendChild(node);
+        return node;
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function ease(t) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      }
+
+      function interpKnots(knots, x) {
+        for (let i = 0; i < knots.length - 1; i += 1) {
+          const a = knots[i];
+          const b = knots[i + 1];
+          if (x >= a[0] && x <= b[0]) {
+            const t = (x - a[0]) / (b[0] - a[0]);
+            return lerp(a[1], b[1], t);
+          }
+        }
+        return knots[knots.length - 1][1];
+      }
+
+      function sampleKnots(knots) {
+        return samplesX.map((x) => ({ x, y: interpKnots(knots, x) }));
+      }
+
+      function sx(panel, x) {
+        return panel.x + x * panel.w;
+      }
+
+      function sy(panel, y) {
+        return panel.y + (1 - (y + 1) / 2) * panel.h;
+      }
+
+      function pathFromSamples(panel, samplesOrYs) {
+        return samplesOrYs.map((point, i) => {
+          const x = typeof point === "number" ? samplesX[i] : point.x;
+          const y = typeof point === "number" ? point : point.y;
+          return `${i === 0 ? "M" : "L"}${sx(panel, x).toFixed(2)},${sy(panel, y).toFixed(2)}`;
+        }).join(" ");
+      }
+
+      function drawTextWithItalicX(parent, x, y, mainText, anchor, size, rotate) {
+        const text = el("text", {
+          x,
+          y,
+          "text-anchor": anchor,
+          className: "axisLabel",
+          "font-size": size,
+          transform: rotate ? `rotate(${rotate} ${x} ${y})` : ""
+        }, parent);
+        el("tspan", { text: mainText }, text);
+        const xSpan = el("tspan", { text: "x" }, text);
+        xSpan.setAttribute("font-style", "italic");
+        xSpan.setAttribute("font-family", "Georgia, serif");
+      }
+
+      function drawTextWithItalicY(parent, x, y, mainText, anchor, size, rotate) {
+        const text = el("text", {
+          x,
+          y,
+          "text-anchor": anchor,
+          className: "axisLabel",
+          "font-size": size,
+          transform: rotate ? `rotate(${rotate} ${x} ${y})` : ""
+        }, parent);
+        el("tspan", { text: mainText }, text);
+        const ySpan = el("tspan", { text: "y" }, text);
+        ySpan.setAttribute("font-style", "italic");
+        ySpan.setAttribute("font-family", "Georgia, serif");
+      }
+
+      function drawPanel(parent, panel, options = {}) {
+        const group = el("g", {
+          className: `panel ${options.active ? "active" : ""}`,
+          "data-letter": panel.letter
+        }, parent);
+        const clipId = options.clipId || `clip-${panel.letter}`;
+
+        el("rect", { className: "frame", x: panel.x, y: panel.y, width: panel.w, height: panel.h }, group);
+        drawTicks(group, panel, options);
+
+        if (panel.title) {
+          el("text", {
+            className: "panelTitle",
+            x: panel.x + panel.w / 2,
+            y: panel.y - 17,
+            "text-anchor": "middle",
+            text: panel.title
+          }, group);
+        }
+
+        const letterX = panel.x - (panel.x < 200 ? 96 : 50);
+        el("text", {
+          className: "panelLetter",
+          x: letterX,
+          y: panel.y - 20,
+          text: `${panel.letter})`
+        }, group);
+
+        const curveGroup = el("g", { "clip-path": `url(#${clipId})` }, group);
+        if (panel.units) {
+          const staticFit = fitSamples[panel.units];
+          el("path", {
+            className: "fitCurve",
+            d: pathFromSamples(panel, staticFit),
+            opacity: options.active ? "0.28" : "1"
+          }, curveGroup);
+
+          if (options.active) {
+            el("path", {
+              id: options.zoom ? "zoomActiveFit" : "activeFit",
+              className: "fitCurve activeFit",
+              d: pathFromSamples(panel, currentYs)
+            }, curveGroup);
+          }
+        }
+
+        el("path", { className: "truthCurve", d: pathFromSamples(panel, truthSamples) }, curveGroup);
+
+        dataPoints.forEach(([x, y]) => {
+          el("circle", {
+            className: "samplePoint",
+            cx: sx(panel, x),
+            cy: sy(panel, y),
+            r: options.pointRadius || 9
+          }, group);
+        });
+
+        if (!options.zoom) {
+          const hit = el("rect", {
+            className: "panelHit",
+            x: panel.x - 6,
+            y: panel.y - 48,
+            width: panel.w + 12,
+            height: panel.h + 88,
+            tabindex: "0",
+            role: "button",
+            "aria-label": panel.title ? `Zoom panel ${panel.letter}, ${panel.title}` : "Zoom panel a, reference data"
+          }, group);
+          hit.addEventListener("click", () => openZoom(panel));
+          hit.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              openZoom(panel);
+            }
+          });
+        }
+
+        return group;
+      }
+
+      function drawTicks(group, panel, options = {}) {
+        const minorLen = options.zoom ? 9 : 7;
+        const majorLen = options.zoom ? 14 : 10;
+        for (let i = 0; i <= 10; i += 1) {
+          const x = panel.x + panel.w * i / 10;
+          const tickClass = i % 5 === 0 ? "majorTick" : "minorTick";
+          const len = i % 5 === 0 ? majorLen : minorLen;
+          el("line", { className: tickClass, x1: x, x2: x, y1: panel.y + panel.h, y2: panel.y + panel.h + len }, group);
+          const y = panel.y + panel.h * i / 10;
+          el("line", { className: tickClass, x1: panel.x - len, x2: panel.x, y1: y, y2: y }, group);
+        }
+
+        [0, 0.5, 1].forEach((value) => {
+          const label = value.toFixed(1);
+          el("text", {
+            className: "tickLabel",
+            x: sx(panel, value),
+            y: panel.y + panel.h + (options.zoom ? 42 : 36),
+            "text-anchor": "middle",
+            text: label
+          }, group);
+        });
+
+        if (panel.x < 200 || options.zoom) {
+          [
+            [1, "1.0"],
+            [0, "0.0"],
+            [-1, "-1.0"]
+          ].forEach(([value, label]) => {
+            el("text", {
+              className: "tickLabel",
+              x: panel.x - (options.zoom ? 30 : 14),
+              y: sy(panel, value) + 10,
+              "text-anchor": "end",
+              text: label
+            }, group);
+          });
+        }
+
+        if (panel.y > 500 || options.zoom) {
+          drawTextWithItalicX(group, panel.x + panel.w / 2, panel.y + panel.h + (options.zoom ? 92 : 72), "Input, ", "middle", options.zoom ? 42 : 38, 0);
+        }
+
+        if (panel.x < 200 || options.zoom) {
+          drawTextWithItalicY(group, panel.x - (options.zoom ? 94 : 66), panel.y + panel.h / 2, "Output, ", "middle", options.zoom ? 42 : 38, -90);
+        }
+      }
+
+      function renderMain() {
+        mainSvg.replaceChildren();
+        const defs = el("defs", {}, mainSvg);
+        panels.forEach((panel) => {
+          const clip = el("clipPath", { id: `clip-${panel.letter}` }, defs);
+          el("rect", { x: panel.x, y: panel.y, width: panel.w, height: panel.h }, clip);
+        });
+
+        const activeUnits = units[activeIndex];
+        panels.forEach((panel) => {
+          drawPanel(mainSvg, panel, { active: panel.units === activeUnits });
+        });
+      }
+
+      function renderZoom(panel) {
+        zoomSvg.replaceChildren();
+        const zoomed = {
+          ...panel,
+          x: 122,
+          y: 78,
+          w: 560,
+          h: 360,
+          title: panel.units ? `${panel.units} hidden units` : "reference data"
+        };
+        const defs = el("defs", {}, zoomSvg);
+        const clip = el("clipPath", { id: "zoomClip" }, defs);
+        el("rect", { x: zoomed.x, y: zoomed.y, width: zoomed.w, height: zoomed.h }, clip);
+
+        const activeUnits = units[activeIndex];
+        if (panel.units && panel.units !== activeUnits) {
+          zoomed.units = activeUnits;
+          zoomed.letter = panels.find((candidate) => candidate.units === activeUnits).letter;
+          zoomed.title = `${activeUnits} hidden units`;
+        }
+
+        drawPanel(zoomSvg, zoomed, {
+          active: Boolean(zoomed.units),
+          zoom: true,
+          clipId: "zoomClip",
+          pointRadius: 11
+        });
+        zoomTitle.textContent = zoomed.units ? `${zoomed.units} hidden units` : "reference data";
+      }
+
+      function updateActivePaths() {
+        const activePanel = panels.find((panel) => panel.units === units[activeIndex]);
+        const mainPath = document.getElementById("activeFit");
+        if (mainPath && activePanel) {
+          mainPath.setAttribute("d", pathFromSamples(activePanel, currentYs));
+        }
+
+        const zoomPath = document.getElementById("zoomActiveFit");
+        if (zoomPath) {
+          const zoomPanelShape = { x: 122, y: 78, w: 560, h: 360 };
+          zoomPath.setAttribute("d", pathFromSamples(zoomPanelShape, currentYs));
+        }
+      }
+
+      function setCapacity(index, animate = true) {
+        const nextIndex = Math.max(0, Math.min(units.length - 1, index));
+        const nextUnits = units[nextIndex];
+        const targetYs = fitSamples[nextUnits].map((point) => point.y);
+        const startYs = currentYs.slice();
+        activeIndex = nextIndex;
+        slider.value = String(nextIndex);
+        readout.textContent = `${nextUnits} hidden units`;
+        underfitBtn.classList.toggle("active", nextUnits === 6);
+        overfitBtn.classList.toggle("active", nextUnits === 50);
+        renderMain();
+        if (zoomPanel) {
+          renderZoom(zoomPanel);
+        }
+
+        if (animationFrame) {
+          cancelAnimationFrame(animationFrame);
+        }
+
+        if (!animate) {
+          currentYs = targetYs;
+          updateActivePaths();
+          return;
+        }
+
+        const start = performance.now();
+        const duration = 520;
+        const tick = (now) => {
+          const t = Math.min(1, (now - start) / duration);
+          const eased = ease(t);
+          currentYs = targetYs.map((target, i) => lerp(startYs[i], target, eased));
+          updateActivePaths();
+          if (t < 1) {
+            animationFrame = requestAnimationFrame(tick);
+          } else {
+            animationFrame = null;
+          }
+        };
+        animationFrame = requestAnimationFrame(tick);
+      }
+
+      function openZoom(panel) {
+        zoomPanel = panel;
+        if (panel.units) {
+          const idx = units.indexOf(panel.units);
+          if (idx !== activeIndex) {
+            setCapacity(idx, true);
+          }
+        }
+        renderZoom(panel);
+        zoomBackdrop.classList.add("open");
+        closeZoom.focus();
+      }
+
+      function closeZoomPanel() {
+        zoomBackdrop.classList.remove("open");
+        zoomPanel = null;
+      }
+
+      slider.addEventListener("input", () => {
+        setCapacity(Number(slider.value), true);
+      });
+
+      underfitBtn.addEventListener("click", () => setCapacity(0, true));
+      overfitBtn.addEventListener("click", () => setCapacity(4, true));
+      closeZoom.addEventListener("click", closeZoomPanel);
+      zoomBackdrop.addEventListener("click", (event) => {
+        if (event.target === zoomBackdrop) {
+          closeZoomPanel();
+        }
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && zoomBackdrop.classList.contains("open")) {
+          closeZoomPanel();
+        }
+      });
+
+      renderMain();
+      setCapacity(0, false);
+    })();
+  </script>
+</body>
+</html>

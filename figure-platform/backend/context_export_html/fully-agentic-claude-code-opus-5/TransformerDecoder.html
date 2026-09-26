@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transformer Decoder</title>
+<style>
+  :root{
+    --ink:#161616;
+    --line:#1b1b1b;
+    --orange:#d3775a;
+    --orange-dk:#8e4429;
+    --teal:#83d2c2;
+    --teal-dk:#2e7f70;
+    --blue:#8fa9c4;
+    --blue-dk:#33506c;
+    --gray:#c8c8c8;
+    --hot:#d2460f;
+    --panel:#ffffff;
+    --bg:#f4f3ef;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:22px 20px 60px;
+    background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  .wrap{max-width:1660px;margin:0 auto}
+  h1{
+    font-family:Georgia,"Times New Roman",serif;
+    font-size:23px;font-weight:600;margin:0 0 4px;
+  }
+  .sub{font-size:13.5px;color:#54524d;margin:0 0 18px;max-width:105ch;line-height:1.5}
+  .controls{
+    display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;
+    background:var(--panel);border:1px solid #dcd9d2;border-radius:10px;
+    padding:12px 16px;margin-bottom:14px;font-size:13.5px;
+  }
+  .ctl{display:flex;align-items:center;gap:8px}
+  .ctl label{font-weight:600;white-space:nowrap}
+  input[type=range]{width:150px;accent-color:#2e7f70}
+  .kval{font-family:Georgia,serif;font-style:italic;min-width:52px}
+  button{
+    font:inherit;font-size:13px;padding:6px 13px;border-radius:7px;
+    border:1px solid #b9b5ac;background:#fff;color:#1c1c1c;cursor:pointer;
+  }
+  button:hover{background:#efece6}
+  button.primary{background:#2e7f70;border-color:#246457;color:#fff}
+  button.primary:hover{background:#27705f}
+  .figbox{
+    background:var(--panel);border:1px solid #dcd9d2;border-radius:10px;
+    padding:8px 10px 4px;position:relative;overflow:hidden;
+  }
+  svg{display:block;width:100%;height:auto;font-family:Georgia,"Times New Roman",serif}
+  .clickable{cursor:pointer}
+  .info{
+    margin-top:14px;background:var(--panel);border:1px solid #dcd9d2;border-radius:10px;
+    padding:13px 16px;font-size:13.5px;line-height:1.55;min-height:86px;
+  }
+  .info h3{margin:0 0 5px;font-size:14.5px;font-family:Georgia,serif}
+  .info .tag{
+    display:inline-block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    color:#7a756c;margin-bottom:6px;
+  }
+  .wrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .wchip{
+    font-family:Georgia,serif;font-size:12px;border:1px solid #cfcabf;border-radius:5px;
+    padding:2px 7px;background:#fbfaf7;white-space:nowrap;
+  }
+  .wbar{display:inline-block;height:7px;background:#d3775a;border-radius:2px;vertical-align:middle;margin-left:5px}
+  .hint{font-size:12.5px;color:#6d6860;margin-top:9px}
+  #tip{
+    position:fixed;pointer-events:none;z-index:20;max-width:300px;
+    background:#1f1f1f;color:#fff;font-size:12.3px;line-height:1.45;
+    padding:7px 10px;border-radius:7px;opacity:0;transition:opacity .12s;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Autoregressive transformer decoder</h1>
+  <p class="sub">Seven token positions run left to right through word embeddings, a stack of <em>K</em> masked-attention layers, and a shared Linear + softmax head that emits a probability distribution over the vocabulary at every position. The lower-triangular line pattern is the causal mask: position <em>j</em> may read positions <em>i</em> &le; <em>j</em> only, so each output row predicts the <em>next</em> token without ever seeing it.</p>
+
+  <div class="controls">
+    <div class="ctl">
+      <label for="kslider">Decoder layers <span style="font-family:Georgia,serif;font-style:italic">K</span></label>
+      <input type="range" id="kslider" min="1" max="6" step="1" value="6">
+      <span class="kval" id="kval">K = 6</span>
+    </div>
+    <div class="ctl">
+      <label><input type="checkbox" id="expand"> Expand the (&times;<span style="font-family:Georgia,serif;font-style:italic">K</span>) block</label>
+    </div>
+    <div class="ctl">
+      <button class="primary" id="play">&#9654; Animate &ldquo;yourself&rdquo;</button>
+      <button id="reset">Reset view</button>
+    </div>
+  </div>
+
+  <div class="figbox">
+    <svg id="fig" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+
+  <div class="info" id="info"></div>
+  <p class="hint">Click any block (embeddings, the orange masked-attention panel, an &oplus; node, the feed-forward pills, Linear + softmax, or a probability row) to read what it does. Click a token row on the left to pick a query position and see its computed causal attention weights.</p>
+</div>
+<div id="tip"></div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Data + genuine computation
+ * ------------------------------------------------------------------ */
+const TOK   = ["&lt;start&gt;","It","takes","great","courage","to","let"];
+const TOKP  = ["<start>","It","takes","great","courage","to","let"];
+const TGT   = ["It","takes","great","courage","to","let","yourself"];
+const TOKH  = ["&lt;start&gt;","It","takes","great","courage","to","let"];
+const N = 7, D = 6;
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rng = mulberry32(20260921);
+
+// token embeddings + sinusoidal positional encoding (really computed)
+const EMB = [];
+for(let i=0;i<N;i++){
+  const v=[];
+  for(let k=0;k<D;k++){
+    const tokv = rng()*2-1;
+    const pos  = (k%2===0) ? Math.sin(i/Math.pow(100,k/D)) : Math.cos(i/Math.pow(100,(k-1)/D));
+    v.push(0.85*tokv + 0.45*pos);
+  }
+  EMB.push(v);
+}
+const dot=(a,b)=>a.reduce((s,x,k)=>s+x*b[k],0);
+function softmax(v){const m=Math.max(...v);const e=v.map(x=>Math.exp(x-m));const z=e.reduce((a,b)=>a+b,0);return e.map(x=>x/z);}
+
+// causal masked self-attention weights: ATT[j][i] for i <= j, else 0
+const ATT = [];
+for(let j=0;j<N;j++){
+  const s=[];
+  for(let i=0;i<N;i++) s.push(i<=j ? dot(EMB[j],EMB[i])/Math.sqrt(D) : -Infinity);
+  const row = softmax(s).map((p,i)=> i<=j ? p : 0);
+  ATT.push(row);
+}
+const maskCount = j => j+1;                       // positions visible to query j
+
+// output head: |V| logits per position, softmaxed.  Displayed columns are the
+// first three and last two vocabulary entries; the target token lives in the
+// elided middle, which is where almost all of the probability mass sits.
+const V = 40;
+const VOCAB_SHOWN = ["a","aardvark","abacus","zero","zeta"];
+const SHOWN_IDX   = [0,1,2,V-2,V-1];
+const PROBS = [];
+for(let j=0;j<N;j++){
+  const logits=[];
+  for(let v=0;v<V;v++) logits.push(rng()*1.6-0.8);
+  const tIdx = 11 + j*3;                            // index of the target token
+  logits[tIdx] = 4.0 + rng()*1.1;
+  const p = softmax(logits);
+  PROBS.push({p, tIdx, shown: SHOWN_IDX.map(v=>p[v]), pt: p[tIdx]});
+}
+let SHOWN_MAX = 0;
+PROBS.forEach(r=>r.shown.forEach(v=>{if(v>SHOWN_MAX)SHOWN_MAX=v;}));
+
+/* ------------------------------------------------------------------ *
+ *  State
+ * ------------------------------------------------------------------ */
+const state = { K:6, expanded:false, selected:null, focus:null, anim:null };
+let animTimer=null;
+
+const BLOCKS = {
+  emb:{title:"Word embeddings",
+       short:"Each token becomes a d-dimensional vector (6 cells shown) plus a positional encoding.",
+       text:"Every input token is looked up in an embedding table and a positional encoding is added, so the vector carries both <em>what</em> the token is and <em>where</em> it sits. All 7 vectors for &lt;start&gt; … let enter the decoder at once &mdash; the sequence is processed in parallel, not one step at a time."},
+  attn:{title:"Masked (causal) self-attention",
+       short:"Position j mixes positions i ≤ j only. The triangular line pattern is the mask.",
+       text:"Query position <em>j</em> forms a weighted average of the value vectors at positions <em>i</em>. A connection is drawn only when <em>i</em> &le; <em>j</em>, so the softmax for row <em>j</em> is taken over the first <em>j</em>+1 scores and the rest are set to &minus;&infin;. That lower-triangular pattern is the whole reason the decoder is autoregressive: while predicting the token after position <em>j</em>, the model cannot peek at it."},
+  add:{title:"Residual add ⊕ and normalisation",
+       short:"x + Sublayer(x), then layer norm — the teal bar.",
+       text:"The sublayer output is added back to its own input (the skip arrow that loops over the top) and the sum is layer-normalised (teal bar). The residual path gives gradients a direct route through all <em>K</em> layers and lets each layer write a small refinement instead of replacing the representation."},
+  ffn:{title:"Position-wise feed-forward network",
+       short:"The same small MLP applied independently at every position.",
+       text:"One shared two-layer MLP is applied to each position separately &mdash; no information crosses positions here. Attention mixes <em>across</em> positions; this sublayer mixes <em>within</em> the feature dimension. It is followed by its own residual add and layer norm."},
+  tf:{title:"Transformer decoder block (×K)",
+       short:"masked attention → add & norm → feed-forward → add & norm, repeated K times.",
+       text:"The four sublayers form one decoder layer, repeated <em>K</em> times. Every repetition re-applies the same causal mask, so stacking layers never leaks future information: the composition of causal maps is still causal. Use the slider to change <em>K</em> and the checkbox to unroll the repetition."},
+  lin:{title:"Linear + softmax",
+       short:"Project the final vector to |V| logits, then softmax.",
+       text:"The final d-dimensional vector at each position is multiplied by one shared output matrix to give |V| vocabulary logits, and a softmax turns them into a probability distribution. The same head is reused at every position &mdash; that is why all 7 predictions can be produced in a single forward pass."},
+  prob:{title:"Probability of the target token",
+       short:"Row j is p(next token | tokens ≤ j).",
+       text:"Row <em>j</em> holds p(&middot; | tokens &le; <em>j</em>). Training shifts the input by one and maximises the probability of the token named on the right, so the row fed by &ldquo;let&rdquo; must put its mass on <em>yourself</em>. At generation time only the last row is sampled; the earlier rows are what makes training parallel."}
+};
+
+const STAGE_TEXT = [
+  "",
+  "<b>1 &mdash; Embed the prefix.</b> The tokens &lt;start&gt;, It, takes, great, courage, to, let become 7 vectors (token embedding + positional encoding). They all enter the decoder together.",
+  "<b>2 &mdash; Masked attention.</b> The last query position (<em>j</em> = 7, the token &ldquo;let&rdquo;) reads every earlier position <em>i</em> &le; 7. There is no line coming from any later position, because there is none &mdash; &ldquo;yourself&rdquo; has not been produced yet.",
+  "<b>3 &mdash; Add &amp; norm.</b> The attention output is added to its own input through the residual skip and layer-normalised.",
+  "<b>4 &mdash; Feed-forward, add &amp; norm.</b> A position-wise MLP refines the vector at position 7 alone, then another residual add and layer norm. Repeat the whole layer <em>K</em> times.",
+  "<b>5 &mdash; Linear + softmax.</b> The final vector at position 7 is projected to |V| vocabulary logits and softmaxed.",
+  "<b>6 &mdash; Prediction.</b> The distribution in row 7 puts p = PT on the target token <em>yourself</em>. The five visible columns (a, aardvark, abacus, &hellip;, zero, zeta) hold only a sliver of the mass; the winning entry sits in the elided middle of the vocabulary."
+];
+
+/* ------------------------------------------------------------------ *
+ *  Layout
+ * ------------------------------------------------------------------ */
+const HOT = "#d2460f";
+const rowY = i => 118 + i*58;
+const MID  = rowY(3);
+const PW = 150, PGAP = 14;   // compact layer panel
+
+function layout(){
+  const L = {};
+  L.boxX = 384;
+  L.boxW = state.expanded ? (68 + state.K*PW + (state.K-1)*PGAP) : 494;
+  L.boxR = L.boxX + L.boxW;
+  L.splitX = L.boxR + (state.expanded ? 78 : 232);
+  L.linX0 = L.splitX + 24;
+  L.linX1 = L.linX0 + 136;
+  L.probX0 = L.linX1 + 28;
+  L.labelX = L.probX0 + 226;
+  L.W = L.labelX + 122;
+  L.H = 612;
+  return L;
+}
+
+/* opacity for a group, given its block id, animation stage and row */
+function op(block, stage, row){
+  if(state.anim!==null){
+    if(stage===0) return 0.85;
+    if(stage==null) return 0.12;
+    let o;
+    if(stage>state.anim) o = 0.12;
+    else if(stage<state.anim) o = 0.5;
+    else o = 1;
+    if(row!=null && row!==N-1 && stage>=3) o = Math.min(o,0.1);
+    return o;
+  }
+  if(state.selected){
+    if(stage===0) return 0.85;
+    return block===state.selected ? 1 : 0.28;
+  }
+  return 1;
+}
+function isHot(stage,row){
+  return state.anim!==null && stage===state.anim && (row==null||row===N-1);
+}
+const MK = h => `url(#${h?'arrowHot':'arrow'})`;
+
+/* ------------------------------------------------------------------ *
+ *  Render
+ * ------------------------------------------------------------------ */
+function render(){
+  const L = layout();
+  const p = [];
+  const S = L.W>1700 ? (L.W/1700) : 1;   // scale-aware font bump for wide layouts
+  p.push(`<defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,1 L10,5 L0,9 z" fill="#1b1b1b"/></marker>
+    <marker id="arrowHot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,1 L10,5 L0,9 z" fill="${HOT}"/></marker>
+  </defs>`);
+
+  /* ---------- column headers ---------- */
+  const hdr = (cx,l1,l2,click)=>`<g class="clickable" data-click="${click}" opacity="${op(click,0,null)}">
+      <text x="${cx}" y="30" text-anchor="middle" font-size="25">${l1}</text>
+      ${l2?`<text x="${cx}" y="58" text-anchor="middle" font-size="25">${l2}</text>`:''}
+    </g>`;
+  p.push(hdr(238,"Word","embeddings","emb"));
+  p.push(hdr(L.boxX+L.boxW/2,"Transformer with","masked attention","tf"));
+  p.push(hdr(L.linX0+68,"Linear +","softmax","lin"));
+  p.push(hdr(L.probX0+106,"Probability of","target token","prob"));
+
+  /* ---------- word embeddings ---------- */
+  {
+    const o = op("emb",1,null), h = isHot(1,null), c = h?HOT:"#1b1b1b";
+    p.push(`<g opacity="${o}">`);
+    p.push(`<rect x="142" y="92" width="192" height="402" rx="14" fill="none" stroke="${c}" stroke-width="1.8" stroke-dasharray="9 7"/>`);
+    for(let i=0;i<N;i++){
+      const y = rowY(i), foc = state.focus===i;
+      p.push(`<g class="clickable" data-click="row:${i}">`);
+      p.push(`<rect x="0" y="${y-22}" width="334" height="44" fill="transparent"/>`);
+      p.push(`<text x="96" y="${y+7}" text-anchor="end" font-size="22" fill="${foc?HOT:'#161616'}" font-weight="${foc?'bold':'normal'}">${TOK[i]}</text>`);
+      p.push(`<line x1="104" y1="${y}" x2="140" y2="${y}" stroke="${c}" stroke-width="1.7" marker-end="${MK(h)}"/>`);
+      for(let k=0;k<D;k++){
+        const cw = 170/D, x = 152 + k*cw;
+        p.push(`<rect x="${x}" y="${y-13}" width="${cw}" height="26" fill="#fff" stroke="${foc?HOT:c}" stroke-width="${foc?2.2:1.6}"/>`);
+      }
+      p.push(`</g>`);
+    }
+    // gathering bracket
+    p.push(`<line x1="352" y1="${rowY(0)}" x2="352" y2="${rowY(N-1)}" stroke="${c}" stroke-width="1.9"/>`);
+    for(let i=0;i<N;i++) p.push(`<line x1="336" y1="${rowY(i)}" x2="352" y2="${rowY(i)}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="352" y1="${MID}" x2="${L.boxX+(state.expanded?30:40)}" y2="${MID}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+    p.push(`</g>`);
+  }
+
+  /* ---------- transformer container ---------- */
+  p.push(`<g class="clickable" data-click="tf" opacity="${op('tf',0,null)}">
+      <rect x="${L.boxX}" y="80" width="${L.boxW}" height="420" rx="16" fill="${state.selected==='tf'?'#cfd6d4':'#c8c8c8'}" stroke="#1b1b1b" stroke-width="2" stroke-dasharray="9 7"/>
+    </g>`);
+
+  if(!state.expanded) p.push(detailedLayer(L));
+  else for(let k=0;k<state.K;k++) p.push(compactLayer(L,k));
+
+  /* ---------- (xK) + dots ---------- */
+  {
+    const o = op('tf',5,null), h = isHot(5,null), c = h?HOT:"#1b1b1b";
+    p.push(`<g opacity="${o}">`);
+    if(!state.expanded){
+      p.push(`<line x1="${L.boxR}" y1="${MID}" x2="${L.boxR+40}" y2="${MID}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+      p.push(`<text x="${L.boxR+72}" y="${MID-30}" text-anchor="middle" font-size="26" font-style="italic">(&#215;K)</text>`);
+      p.push(`<text x="${L.boxR+72}" y="${MID-56}" text-anchor="middle" font-size="15" fill="#5d5851" font-style="italic">K = ${state.K}</text>`);
+      p.push(`<text x="${L.boxR+134}" y="${MID+8}" text-anchor="middle" font-size="26" letter-spacing="3">&#183;&#183;&#183;</text>`);
+      p.push(`<line x1="${L.boxR+166}" y1="${MID}" x2="${L.splitX}" y2="${MID}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+    }else{
+      p.push(`<line x1="${L.boxR}" y1="${MID}" x2="${L.splitX}" y2="${MID}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+      p.push(`<text x="${L.boxX+L.boxW/2}" y="548" text-anchor="middle" font-size="16" fill="#5d5851" font-style="italic">K = ${state.K} layers unrolled</text>`);
+    }
+    // split bracket
+    p.push(`<line x1="${L.splitX}" y1="${rowY(0)}" x2="${L.splitX}" y2="${rowY(N-1)}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`</g>`);
+  }
+
+  /* ---------- linear + softmax ---------- */
+  for(let i=0;i<N;i++){
+    const o = op('lin',5,i), h = isHot(5,i), c = h?HOT:"#1b1b1b", y = rowY(i);
+    p.push(`<g class="clickable" data-click="lin" opacity="${o}">`);
+    p.push(`<line x1="${L.splitX}" y1="${y}" x2="${L.linX0-2}" y2="${y}" stroke="${c}" stroke-width="1.8" marker-end="${MK(h)}"/>`);
+    p.push(`<rect x="${L.linX0}" y="${y-21}" width="136" height="42" rx="21" fill="#83d2c2" stroke="${h?HOT:'#2e7f70'}" stroke-width="${h?3:2}"/>`);
+    p.push(`<line x1="${L.linX1}" y1="${y}" x2="${L.probX0-4}" y2="${y}" stroke="${c}" stroke-width="1.8" marker-end="${MK(h)}"/>`);
+    p.push(`</g>`);
+  }
+
+  /* ---------- probability rows ---------- */
+  for(let i=0;i<N;i++){
+    const o = op('prob',6,i), h = isHot(6,i), y = rowY(i), foc = state.focus===i;
+    const ec = h?HOT:'#33506c';
+    p.push(`<g class="clickable" data-click="probrow:${i}" opacity="${o}">`);
+    const xs = [L.probX0, L.probX0+30, L.probX0+60, L.probX0+152, L.probX0+182];
+    xs.forEach((x,ci)=>{
+      const pr = PROBS[i].shown[ci];
+      const fo = 0.30 + 0.70*(pr/SHOWN_MAX);
+      p.push(`<rect x="${x}" y="${y-14}" width="30" height="28" fill="#8fa9c4" fill-opacity="${fo.toFixed(3)}" stroke="${ec}" stroke-width="${h||foc?2.2:1.5}"/>`);
+    });
+    // elided middle
+    const gx0 = L.probX0+90, gx1 = L.probX0+152;
+    p.push(`<line x1="${gx0}" y1="${y-14}" x2="${gx1}" y2="${y-14}" stroke="${ec}" stroke-width="1.5" stroke-dasharray="2.5 3.5"/>`);
+    p.push(`<line x1="${gx0}" y1="${y+14}" x2="${gx1}" y2="${y+14}" stroke="${ec}" stroke-width="1.5" stroke-dasharray="2.5 3.5"/>`);
+    p.push(`<text x="${(gx0+gx1)/2}" y="${y+7}" text-anchor="middle" font-size="19" letter-spacing="2" fill="${ec}">&#183;&#183;&#183;</text>`);
+    p.push(`<text x="${L.labelX}" y="${y+8}" font-size="22" fill="${h||foc?HOT:'#161616'}" font-weight="${h||foc?'bold':'normal'}">${TGT[i]}</text>`);
+    if(h||foc) p.push(`<text x="${L.labelX}" y="${y+26}" font-size="13" fill="${HOT}" font-style="italic">p = ${PROBS[i].pt.toFixed(2)}</text>`);
+    p.push(`</g>`);
+  }
+  /* vocabulary column labels under the last row */
+  {
+    const o = op('prob',6,N-1), y = rowY(N-1)+22;
+    p.push(`<g opacity="${o}">`);
+    const xs = [L.probX0+15, L.probX0+45, L.probX0+75, L.probX0+167, L.probX0+197];
+    xs.forEach((cx,ci)=>{
+      p.push(`<text x="${cx}" y="${y}" text-anchor="end" font-size="17" transform="rotate(-90 ${cx} ${y})">${VOCAB_SHOWN[ci]}</text>`);
+    });
+    const gc = L.probX0+121;
+    p.push(`<text x="${gc}" y="${y+22}" text-anchor="middle" font-size="19" letter-spacing="2">&#183;&#183;&#183;</text>`);
+    p.push(`<text x="${L.probX0+106}" y="${y+108}" text-anchor="middle" font-size="14" fill="#5d5851" font-style="italic">vocabulary (|V| entries)</text>`);
+    p.push(`</g>`);
+  }
+
+  const svg = document.getElementById('fig');
+  svg.setAttribute('viewBox',`0 0 ${L.W} ${L.H}`);
+  svg.innerHTML = p.join('');
+}
+
+/* ---------- one fully detailed decoder layer ---------- */
+function detailedLayer(L){
+  const B = L.boxX, p=[];
+  const oxA = B+44, oxB = B+196;
+  const plus1 = B+228, n1a = B+256, n1b = B+270;
+  const tap1  = B+22,  tap2  = B+286;
+  const fdist = B+298, fx0 = B+320, fx1 = B+368, fcol = B+392;
+  const plus2 = B+422, n2a = B+454, n2b = B+468;
+  const TOPY = 94, TY0 = 102, TY1 = 482;
+
+  /* masked attention */
+  {
+    const o = op('attn',2,null), h = isHot(2,null);
+    p.push(`<g class="clickable" data-click="attn" opacity="${o}">`);
+    p.push(`<line x1="${B+30}" y1="${MID}" x2="${oxA-4}" y2="${MID}" stroke="${h?HOT:'#1b1b1b'}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+    p.push(`<rect x="${oxA}" y="${TY0}" width="${oxB-oxA}" height="${TY1-TY0}" rx="12" fill="#d3775a" stroke="${h||state.selected==='attn'?HOT:'#8e4429'}" stroke-width="${h||state.selected==='attn'?3:2}"/>`);
+    const lx = oxA+8, rx = oxB-8;
+    for(let j=0;j<N;j++) for(let i=0;i<=j;i++){
+      const foc = state.focus;
+      let sw = 1.15, col = "#40200f", lo = 1;
+      if(foc!==null){ if(j===foc){ sw = 0.9 + 4.2*ATT[j][i]; col = "#2a1206"; } else { lo = 0.16; } }
+      if(state.anim!==null && state.anim>=2){ if(j===N-1){ sw = state.anim===2?2.4:1.5; col = "#160800"; lo=1; } else lo = 0.16; }
+      p.push(`<line x1="${lx}" y1="${rowY(i)}" x2="${rx}" y2="${rowY(j)}" stroke="${col}" stroke-width="${sw.toFixed(2)}" opacity="${lo}"/>`);
+    }
+    for(let i=0;i<N;i++){
+      p.push(`<circle cx="${lx}" cy="${rowY(i)}" r="2.6" fill="#2a1206"/>`);
+      p.push(`<circle cx="${rx}" cy="${rowY(i)}" r="2.6" fill="#2a1206"/>`);
+    }
+    p.push(`</g>`);
+  }
+
+  /* add & norm #1 */
+  {
+    const o = op('add',3,null), h = isHot(3,null), c = h?HOT:"#1b1b1b";
+    p.push(`<g class="clickable" data-click="add" opacity="${o}">`);
+    p.push(`<line x1="${tap1}" y1="${MID}" x2="${tap1}" y2="${TOPY}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${tap1}" y1="${TOPY}" x2="${plus1}" y2="${TOPY}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${plus1}" y1="${TOPY}" x2="${plus1}" y2="${MID-14}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+    p.push(`<line x1="${oxB}" y1="${MID}" x2="${plus1-12}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(plusNode(plus1,MID,12,c));
+    p.push(`<line x1="${plus1+12}" y1="${MID}" x2="${n1a}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<rect x="${n1a}" y="${TY0}" width="${n1b-n1a}" height="${TY1-TY0}" rx="7" fill="#83d2c2" stroke="${h||state.selected==='add'?HOT:'#2e7f70'}" stroke-width="2"/>`);
+    p.push(`</g>`);
+  }
+
+  /* feed-forward */
+  {
+    const o = op('ffn',4,null), h = isHot(4,null), c = h?HOT:"#1b1b1b";
+    p.push(`<g class="clickable" data-click="ffn" opacity="${o}">`);
+    p.push(`<line x1="${n1b}" y1="${MID}" x2="${fdist}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${fdist}" y1="${rowY(0)}" x2="${fdist}" y2="${rowY(N-1)}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${fcol}" y1="${rowY(0)}" x2="${fcol}" y2="${rowY(N-1)}" stroke="${c}" stroke-width="1.9"/>`);
+    for(let i=0;i<N;i++){
+      const y=rowY(i), rh = (state.anim!==null&&state.anim>=4&&i!==N-1)?0.12:1;
+      p.push(`<g opacity="${rh}">`);
+      p.push(`<line x1="${fdist}" y1="${y}" x2="${fx0-3}" y2="${y}" stroke="${c}" stroke-width="1.7" marker-end="${MK(h&&i===N-1)}"/>`);
+      p.push(`<rect x="${fx0}" y="${y-10}" width="${fx1-fx0}" height="20" rx="10" fill="#8fa9c4" stroke="${(h&&i===N-1)||state.selected==='ffn'?HOT:'#33506c'}" stroke-width="2"/>`);
+      p.push(`<line x1="${fx1}" y1="${y}" x2="${fcol}" y2="${y}" stroke="${c}" stroke-width="1.7"/>`);
+      p.push(`</g>`);
+    }
+    p.push(`</g>`);
+  }
+
+  /* add & norm #2 */
+  {
+    const o = op('add',4,null), h = isHot(4,null), c = h?HOT:"#1b1b1b";
+    p.push(`<g class="clickable" data-click="add" opacity="${o}">`);
+    p.push(`<line x1="${tap2}" y1="${MID}" x2="${tap2}" y2="${TOPY}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${tap2}" y1="${TOPY}" x2="${plus2}" y2="${TOPY}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<line x1="${plus2}" y1="${TOPY}" x2="${plus2}" y2="${MID-14}" stroke="${c}" stroke-width="1.9" marker-end="${MK(h)}"/>`);
+    p.push(`<line x1="${fcol}" y1="${MID}" x2="${plus2-12}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(plusNode(plus2,MID,12,c));
+    p.push(`<line x1="${plus2+12}" y1="${MID}" x2="${n2a}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`<rect x="${n2a}" y="${TY0}" width="${n2b-n2a}" height="${TY1-TY0}" rx="7" fill="#83d2c2" stroke="${h||state.selected==='add'?HOT:'#2e7f70'}" stroke-width="2"/>`);
+    p.push(`<line x1="${n2b}" y1="${MID}" x2="${L.boxR}" y2="${MID}" stroke="${c}" stroke-width="1.9"/>`);
+    p.push(`</g>`);
+  }
+  return p.join('');
+}
+
+/* ---------- one compact layer panel (expanded mode) ---------- */
+function compactLayer(L,k){
+  const px = L.boxX + 34 + k*(PW+PGAP);
+  const p = [];
+  const TOPY = 94, TY0 = 102, TY1 = 482;
+  const oA = px+8, oB = px+58, pl1 = px+70, n1a = px+80, n1b = px+90;
+  const fx0 = px+98, fx1 = px+122, pl2 = px+132, n2a = px+138, n2b = px+148;
+
+  const oAtt = op('attn',2,null), hAtt = isHot(2,null);
+  const oAdd = op('add',3,null),  hAdd = isHot(3,null);
+  const oFfn = op('ffn',4,null),  hFfn = isHot(4,null);
+  const cA = hAtt?HOT:"#1b1b1b", cB = hAdd?HOT:"#1b1b1b", cC = hFfn?HOT:"#1b1b1b";
+
+  // entry arrow
+  const prevEnd = k===0 ? L.boxX+30 : px-16;
+  p.push(`<g opacity="${oAtt}"><line x1="${prevEnd}" y1="${MID}" x2="${oA-4}" y2="${MID}" stroke="${cA}" stroke-width="1.8" marker-end="${MK(hAtt)}"/></g>`);
+
+  // masked attention
+  p.push(`<g class="clickable" data-click="attn" opacity="${oAtt}">`);
+  p.push(`<rect x="${oA}" y="${TY0}" width="${oB-oA}" height="${TY1-TY0}" rx="9" fill="#d3775a" stroke="${hAtt||state.selected==='attn'?HOT:'#8e4429'}" stroke-width="2"/>`);
+  const lx = oA+5, rx = oB-5;
+  for(let j=0;j<N;j++) for(let i=0;i<=j;i++){
+    const foc = state.focus;
+    let sw=0.85, col="#40200f", lo=1;
+    if(foc!==null){ if(j===foc){ sw=0.8+3.4*ATT[j][i]; } else lo=0.16; }
+    if(state.anim!==null && state.anim>=2){ if(j===N-1){ col = "#160800"; sw = state.anim===2?1.9:1.2;} else lo=0.16; }
+    p.push(`<line x1="${lx}" y1="${rowY(i)}" x2="${rx}" y2="${rowY(j)}" stroke="${col}" stroke-width="${sw.toFixed(2)}" opacity="${lo}"/>`);
+  }
+  p.push(`</g>`);
+
+  // add & norm 1
+  p.push(`<g class="clickable" data-click="add" opacity="${oAdd}">`);
+  p.push(`<line x1="${px+3}" y1="${MID}" x2="${px+3}" y2="${TOPY}" stroke="${cB}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${px+3}" y1="${TOPY}" x2="${pl1}" y2="${TOPY}" stroke="${cB}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${pl1}" y1="${TOPY}" x2="${pl1}" y2="${MID-9}" stroke="${cB}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${oB}" y1="${MID}" x2="${pl1-8}" y2="${MID}" stroke="${cB}" stroke-width="1.6"/>`);
+  p.push(plusNode(pl1,MID,8,cB));
+  p.push(`<line x1="${pl1+8}" y1="${MID}" x2="${n1a}" y2="${MID}" stroke="${cB}" stroke-width="1.6"/>`);
+  p.push(`<rect x="${n1a}" y="${TY0}" width="${n1b-n1a}" height="${TY1-TY0}" rx="5" fill="#83d2c2" stroke="${hAdd?HOT:'#2e7f70'}" stroke-width="1.8"/>`);
+  p.push(`</g>`);
+
+  // ffn
+  p.push(`<g class="clickable" data-click="ffn" opacity="${oFfn}">`);
+  for(let i=0;i<N;i++){
+    const rh = (state.anim!==null&&state.anim>=4&&i!==N-1)?0.12:1;
+    p.push(`<rect x="${fx0}" y="${rowY(i)-9}" width="${fx1-fx0}" height="18" rx="9" fill="#8fa9c4" stroke="${(hFfn&&i===N-1)||state.selected==='ffn'?HOT:'#33506c'}" stroke-width="1.6" opacity="${rh}"/>`);
+  }
+  p.push(`<line x1="${n1b}" y1="${MID}" x2="${fx0}" y2="${MID}" stroke="${cC}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${fx1}" y1="${MID}" x2="${pl2-8}" y2="${MID}" stroke="${cC}" stroke-width="1.6"/>`);
+  p.push(`</g>`);
+  // add & norm 2
+  const oAdd2 = op('add',4,null), cD = hFfn?HOT:"#1b1b1b";
+  p.push(`<g class="clickable" data-click="add" opacity="${oAdd2}">`);
+  p.push(`<line x1="${n1b+2}" y1="${MID}" x2="${n1b+2}" y2="${TOPY}" stroke="${cD}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${n1b+2}" y1="${TOPY}" x2="${pl2}" y2="${TOPY}" stroke="${cD}" stroke-width="1.6"/>`);
+  p.push(`<line x1="${pl2}" y1="${TOPY}" x2="${pl2}" y2="${MID-9}" stroke="${cD}" stroke-width="1.6"/>`);
+  p.push(plusNode(pl2,MID,8,cD));
+  p.push(`<line x1="${pl2+8}" y1="${MID}" x2="${n2a}" y2="${MID}" stroke="${cD}" stroke-width="1.6"/>`);
+  p.push(`<rect x="${n2a}" y="${TY0}" width="${n2b-n2a}" height="${TY1-TY0}" rx="5" fill="#83d2c2" stroke="${hFfn||state.selected==='add'?HOT:'#2e7f70'}" stroke-width="1.8"/>`);
+  if(k===state.K-1) p.push(`<line x1="${n2b}" y1="${MID}" x2="${L.boxR}" y2="${MID}" stroke="${cD}" stroke-width="1.6"/>`);
+  p.push(`</g>`);
+
+  p.push(`<text x="${px+PW/2}" y="518" text-anchor="middle" font-size="15" fill="#3a3a3a" font-style="italic">layer ${k+1}</text>`);
+  return p.join('');
+}
+
+function plusNode(cx,cy,r,c){
+  const d = r*0.62;
+  return `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="#fff" stroke="${c}" stroke-width="1.9"/>`
+       + `<line x1="${cx-d}" y1="${cy}" x2="${cx+d}" y2="${cy}" stroke="${c}" stroke-width="1.7"/>`
+       + `<line x1="${cx}" y1="${cy-d}" x2="${cx}" y2="${cy+d}" stroke="${c}" stroke-width="1.7"/></g>`;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Info panel
+ * ------------------------------------------------------------------ */
+function updateInfo(){
+  const el = document.getElementById('info');
+  if(state.anim!==null){
+    let t = STAGE_TEXT[state.anim].replace('PT', PROBS[N-1].pt.toFixed(2));
+    el.innerHTML = `<span class="tag">Predicting &ldquo;yourself&rdquo; &mdash; step ${state.anim} of 6</span><div>${t}</div>`;
+    return;
+  }
+  if(state.focus!==null){
+    const j = state.focus;
+    let chips = '';
+    for(let i=0;i<N;i++){
+      if(i>j){
+        chips += `<span class="wchip" style="opacity:.45">${TOKH[i]} &nbsp;masked</span>`;
+      }else{
+        const w = ATT[j][i];
+        chips += `<span class="wchip">${TOKH[i]} &nbsp;${w.toFixed(3)}<span class="wbar" style="width:${(4+w*54).toFixed(1)}px"></span></span>`;
+      }
+    }
+    el.innerHTML = `<span class="tag">Query position ${j+1}</span>
+      <h3>&ldquo;${TOKH[j]}&rdquo; ${j===0?'can attend to itself only':`attends to ${maskCount(j)} of ${N} positions`}</h3>
+      <div>Scores are computed from the embeddings, every position after ${j+1} is set to &minus;&infin;, and the softmax is taken over the surviving ${maskCount(j)} ${maskCount(j)===1?'entry':'entries'} &mdash; so the weights below sum to 1 while every future position gets exactly 0. This row predicts <b>${TGT[j]}</b>.</div>
+      <div class="wrow">${chips}</div>`;
+    return;
+  }
+  if(state.selected){
+    const b = BLOCKS[state.selected];
+    el.innerHTML = `<span class="tag">Block</span><h3>${b.title}</h3><div>${b.text}</div>`;
+    return;
+  }
+  el.innerHTML = `<span class="tag">Overview</span>
+    <h3>Decoder-only transformer, ${state.K} layer${state.K>1?'s':''}</h3>
+    <div>The 7 input tokens are embedded, passed through ${state.K} identical masked-attention layer${state.K>1?'s':''}, and decoded by one shared Linear + softmax head. Because the mask is lower-triangular, row <em>j</em> of the output can only depend on tokens 1&hellip;<em>j</em>, so the shifted targets on the right (It, takes, &hellip;, yourself) can all be scored in a single parallel pass instead of one generation step at a time.</div>`;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Events
+ * ------------------------------------------------------------------ */
+const tip = document.getElementById('tip');
+function showTip(e,txt){
+  tip.innerHTML = txt;
+  tip.style.opacity = 1;
+  const x = Math.min(e.clientX+14, window.innerWidth-320);
+  tip.style.left = x+'px';
+  tip.style.top = (e.clientY+16)+'px';
+}
+function hideTip(){ tip.style.opacity = 0; }
+
+const svg = document.getElementById('fig');
+svg.addEventListener('click', e=>{
+  const g = e.target.closest('[data-click]');
+  if(!g){ state.selected=null; state.focus=null; stopAnim(); render(); updateInfo(); return; }
+  const v = g.dataset.click;
+  stopAnim();
+  if(v.startsWith('row:') || v.startsWith('probrow:')){
+    const i = +v.split(':')[1];
+    if(v.startsWith('probrow:') && state.focus!==i && state.selected!=='prob'){ state.selected='prob'; state.focus=i; }
+    else { state.focus = (state.focus===i)?null:i; state.selected=null; }
+  }else{
+    state.selected = (state.selected===v)?null:v;
+    state.focus = null;
+  }
+  render(); updateInfo();
+});
+svg.addEventListener('mousemove', e=>{
+  const g = e.target.closest('[data-click]');
+  if(!g){ hideTip(); return; }
+  const v = g.dataset.click;
+  if(v.startsWith('row:')){
+    const i=+v.split(':')[1];
+    showTip(e,`<b>Position ${i+1}: &ldquo;${TOKH[i]}&rdquo;</b><br>Click to see the causal attention weights of this query (it may read ${maskCount(i)} of the ${N} positions).`);
+  }else if(v.startsWith('probrow:')){
+    const i=+v.split(':')[1];
+    showTip(e,`<b>Row ${i+1}</b><br>p(&middot; | tokens &le; ${i+1}); target <b>${TGT[i]}</b>, p = ${PROBS[i].pt.toFixed(2)}.`);
+  }else if(BLOCKS[v]){
+    showTip(e,`<b>${BLOCKS[v].title}</b><br>${BLOCKS[v].short}`);
+  }
+});
+svg.addEventListener('mouseleave', hideTip);
+
+document.getElementById('kslider').addEventListener('input', e=>{
+  state.K = +e.target.value;
+  document.getElementById('kval').textContent = 'K = '+state.K;
+  render(); updateInfo();
+});
+document.getElementById('expand').addEventListener('change', e=>{
+  state.expanded = e.target.checked;
+  render(); updateInfo();
+});
+document.getElementById('reset').addEventListener('click', ()=>{
+  stopAnim(); state.selected=null; state.focus=null; render(); updateInfo();
+});
+document.getElementById('play').addEventListener('click', startAnim);
+
+function stopAnim(){ if(animTimer){clearInterval(animTimer);animTimer=null;} if(state.anim!==null){state.anim=null;} }
+function startAnim(){
+  stopAnim();
+  state.selected=null; state.focus=null;
+  state.anim = 1; render(); updateInfo();
+  animTimer = setInterval(()=>{
+    if(state.anim>=6){
+      clearInterval(animTimer); animTimer=null;
+      setTimeout(()=>{ if(state.anim===6){ state.anim=null; render(); updateInfo(); } }, 3000);
+      return;
+    }
+    state.anim++; render(); updateInfo();
+  }, 1500);
+}
+
+render(); updateInfo();
+</script>
+</body>
+</html>

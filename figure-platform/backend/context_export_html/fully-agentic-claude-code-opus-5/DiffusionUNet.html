@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diffusion U-Net</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --ink:#1d2328;
+    --muted:#5d6b75;
+    --rule:#dfe4e8;
+    --panel:#f6f8f9;
+    --steel:#3e5766;      /* res-block arrows / time path */
+    --steel-lite:#aec3cf; /* attention arrows */
+    --steel-text:#557a91;
+    --skip:#cf7e58;       /* concatenate lines */
+    --skip-text:#8f4a24;
+    --accent:#1f6f8b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Inter","Segoe UI",system-ui,-apple-system,sans-serif;}
+  .wrap{max-width:1500px;margin:0 auto;padding:22px 20px 56px;}
+  h1{font-size:23px;line-height:1.25;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}
+  h1 em{font-style:normal;font-family:Georgia,"Times New Roman",serif}
+  .sub{margin:0 0 18px;color:var(--muted);font-size:14.5px;line-height:1.55;max-width:1050px}
+  .sub code{font-family:Georgia,serif;font-style:italic;font-size:15px;color:var(--ink)}
+
+  .panel{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;
+    border:1px solid var(--rule);border-radius:12px;background:var(--panel);
+    padding:12px 14px;margin-bottom:14px}
+  .ctl{display:flex;flex-direction:column;gap:7px;padding:2px 14px 2px 0}
+  .ctl + .ctl{border-left:1px solid var(--rule);padding-left:16px}
+  .ctl h3{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.075em;
+    text-transform:uppercase;color:var(--muted)}
+  .row{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  button{font:inherit;font-size:13px;padding:6px 12px;border-radius:7px;
+    border:1px solid #c6ced4;background:#fff;color:var(--ink);cursor:pointer;
+    transition:background .12s,border-color .12s,color .12s}
+  button:hover{background:#eef3f6;border-color:#9fb3bf}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#17596f}
+  .seg{display:inline-flex;border:1px solid #c6ced4;border-radius:7px;overflow:hidden;background:#fff}
+  .seg button{border:0;border-radius:0;padding:6px 11px}
+  .seg button + button{border-left:1px solid #dde3e7}
+  .seg button.on{background:var(--accent);color:#fff}
+  .seg button.on:hover{background:#17596f}
+  input[type=range]{width:230px;accent-color:var(--accent);cursor:pointer}
+  .val{font-family:"SF Mono",Consolas,monospace;font-size:12.5px;color:var(--ink);
+    background:#fff;border:1px solid var(--rule);border-radius:6px;padding:3px 7px;white-space:nowrap}
+  .mini{font-size:12px;color:var(--muted);line-height:1.45}
+  .mini b{color:var(--ink);font-weight:600}
+
+  .figbox{position:relative;border:1px solid var(--rule);border-radius:12px;
+    background:#fff;padding:4px 2px;overflow:hidden}
+  svg{display:block;width:100%;height:auto}
+
+  .status{margin-top:12px;display:flex;gap:10px;align-items:flex-start;
+    font-size:14px;line-height:1.5;min-height:42px}
+  .pill{flex:none;font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    background:#e8eff3;color:#2b5468;border-radius:999px;padding:4px 11px;margin-top:1px}
+  #stageText b{font-weight:650}
+  #stageText i{font-family:Georgia,serif}
+
+  .tip{position:absolute;pointer-events:none;z-index:9;background:#1d2328f2;color:#fff;
+    font-size:12px;line-height:1.5;padding:7px 10px;border-radius:7px;opacity:0;
+    transition:opacity .11s;max-width:260px;transform:translate(-50%,-115%)}
+  .tip b{color:#ffd9a8}
+  .foot{margin-top:18px;border-top:1px solid var(--rule);padding-top:12px;
+    font-size:12.5px;color:var(--muted);line-height:1.6;max-width:1050px}
+
+  /* ---- SVG classes ---- */
+  .blk{cursor:pointer}
+  .blk .face{stroke:#111;stroke-width:1.4;stroke-linejoin:round}
+  .dim{opacity:.16}
+  .semi{opacity:.42}
+  .cur .face{stroke-width:2.6;stroke:#111}
+  .halo{fill:none;stroke:#f2b705;stroke-width:9;opacity:0;stroke-linejoin:round}
+  .cur .halo{opacity:.95}
+  .attnBadge{opacity:0}
+  .showAttn .attnBadge{opacity:1}
+
+  .arw{stroke-linecap:butt}
+  .arw.res{stroke:var(--steel)}
+  .arw.att{stroke:var(--steel-lite)}
+  .arw.flash{animation:aflash .75s ease-out}
+  @keyframes aflash{0%{stroke:#f2b705;stroke-width:7}100%{stroke-width:5}}
+
+  .skip path{fill:none;stroke:var(--skip);stroke-width:2.3;stroke-linejoin:round}
+  .skip.used path{stroke-width:3.1}
+  .skip.pulse path{animation:spulse 1.05s ease-out}
+  @keyframes spulse{0%{stroke:#f2b705;stroke-width:6.5}60%{stroke:#f2b705;stroke-width:4}100%{stroke-width:3.1}}
+  .skipLabel{fill:var(--skip-text);font-family:Georgia,"Times New Roman",serif}
+
+  .timeG path,.timeG line{stroke:var(--steel);fill:none}
+  .timeG.flash path,.timeG.flash line{animation:tflash .85s ease-out}
+  @keyframes tflash{0%{stroke:#f2b705}55%{stroke:#f2b705}100%{stroke:var(--steel)}}
+  .dimlabel{font-family:Georgia,"Times New Roman",serif;font-style:italic;fill:#1d2328}
+  .serif{font-family:Georgia,"Times New Roman",serif}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>The U&#8209;Net noise predictor <em>&epsilon;<sub>&theta;</sub>(x<sub>t</sub>, t)</em> of a diffusion model</h1>
+<p class="sub">
+  A diffusion model denoises by repeatedly asking one network the same question: <em>&ldquo;given this noisy image
+  <code>x<sub>t</sub></code> and the timestep <code>t</code>, which part of it is noise?&rdquo;</em>
+  The network is a U&#8209;Net: an encoder that shrinks the image while growing the channel count, a bottleneck,
+  and a decoder that mirrors the encoder back up to full resolution. <b>Concatenate</b> arrows carry each encoder
+  feature map across to the decoder stage of the same spatial size, so fine detail lost by downsampling is
+  restored. The circled <code>t</code> at the bottom is turned into a time embedding &gamma;(t) that is injected
+  into <em>every</em> residual block, which is what lets a single set of weights serve all 1000 noise levels.
+</p>
+
+<div class="panel">
+  <div class="ctl">
+    <h3>1 &middot; Encoder &rarr; decoder pass</h3>
+    <div class="row">
+      <button id="play" class="primary">&#9654;&nbsp; Play pass</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="row">
+      <input type="range" id="stage" min="0" max="16" step="1" value="0">
+      <span class="val" id="stageVal">0 / 16</span>
+    </div>
+  </div>
+
+  <div class="ctl">
+    <h3>2 &middot; Diffusion timestep <i>t</i></h3>
+    <div class="row">
+      <input type="range" id="tslider" min="0" max="1000" step="1" value="250">
+      <span class="val" id="tVal">t = 400</span>
+    </div>
+    <div class="mini" id="tInfo"></div>
+  </div>
+
+  <div class="ctl">
+    <h3>3 &middot; Block type</h3>
+    <div class="row">
+      <div class="seg" id="seg">
+        <button data-mode="all" class="on">All blocks</button>
+        <button data-mode="res">Res. block</button>
+        <button data-mode="att">Res. + self&#8209;attention</button>
+      </div>
+    </div>
+    <div class="mini" id="modeInfo">Every arrow is one residual block. Three of them also run self&#8209;attention.</div>
+  </div>
+</div>
+
+<div class="figbox">
+  <svg id="fig" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="tip" id="tip"></div>
+</div>
+
+<div class="status">
+  <span class="pill" id="pill">Stage 0</span>
+  <span id="stageText"></span>
+</div>
+
+<div class="foot">
+  <b>How to read the volumes.</b> Every box is a real feature-map tensor drawn with an oblique projection
+  (depth axis at 31.8&deg;): its <b>height</b> is proportional to the spatial resolution <i>S</i>, its
+  <b>width</b> (the pale front face) is proportional to the channel count <i>C</i>, and its <b>depth</b>
+  (the dark face) is the second spatial axis, drawn compressed (&prop;&radic;<i>S</i>) so that the 8&times;8 maps
+  stay visible. Hover any volume for its exact shape and cost. Halving the resolution doubles or keeps the
+  channels, so the tensors get short and wide as you go deeper &mdash; the classic U&#8209;Net trade of space for semantics.
+</div>
+
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   1.  ARCHITECTURE  (DDPM-style 256x256 U-Net)
+   ============================================================ */
+const SEQ = [
+  {id:"in", s:256, c:3,   img:"in"},
+  {id:"e1", s:256, c:128},
+  {id:"e2", s:256, c:128},
+  {id:"e3", s:128, c:128},
+  {id:"e4", s:64,  c:256},
+  {id:"e5", s:32,  c:256},
+  {id:"e6", s:16,  c:512},
+  {id:"e7", s:8,   c:512},
+  {id:"m1", s:8,   c:512},
+  {id:"d1", s:8,   c:512},
+  {id:"d2", s:16,  c:512},
+  {id:"d3", s:32,  c:256},
+  {id:"d4", s:64,  c:256},
+  {id:"d5", s:128, c:128},
+  {id:"d6", s:256, c:128},
+  {id:"d7", s:256, c:128},
+  {id:"out",s:256, c:3,   img:"out"}
+];
+/* arrow i  :  SEQ[i] -> SEQ[i+1].   Arrow 0 (image -> 128ch) is the input
+   convolution and is drawn as no arrow, exactly as in the reference figure. */
+const ARROWS = [];
+for (let i=1;i<=15;i++) ARROWS.push(i);
+const ATTN = new Set([5,7,10]);          // arrows that also run self-attention
+/* skip connections: encoder index -> decoder index, same spatial size */
+const SKIPS = [
+  {src:2, tgt:14, rise:118, label:"Concatenate", big:true},
+  {src:3, tgt:13, rise:118, label:"Concatenate", big:true},
+  {src:4, tgt:12, rise:96,  label:"Concatenate", big:true},
+  {src:5, tgt:11, rise:86,  label:"Concatenate", big:true},
+  {src:6, tgt:10, rise:62,  label:"Concatenate", big:false},
+  {src:7, tgt:9,  rise:44,  label:"Concatenate", big:false}
+];
+const SKIP_OF_TGT = {}; SKIPS.forEach((k,i)=>SKIP_OF_TGT[k.tgt]=i);
+
+/* ============================================================
+   2.  GEOMETRY  —  oblique projection, everything computed
+   ============================================================ */
+const THETA = 31.8*Math.PI/180;
+const UX = Math.cos(THETA), UY = -Math.sin(THETA);   // one unit of depth on screen
+const SLOPE = Math.tan(THETA);                        // 0.6197 : rise per unit x
+const HS = 1.23;      // px per unit of spatial resolution  (box height)
+const CS = 0.20;      // px per channel                     (box width)
+const DS = 2.70;      // px per sqrt(resolution)            (box depth)
+const BASE = 500, X0 = 172, ARY = BASE + 9, TY = 578;
+
+const hOf = s => s*HS, wOf = c => c*CS, dOf = s => DS*Math.sqrt(s);
+function P(x,y,z){ return [x + z*UX, BASE - y + z*UY]; }
+const pts = a => a.map(p=>p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ");
+
+/* lay the sequence out along x */
+let cx = X0;
+SEQ.forEach((b,i)=>{
+  b.i=i; b.h=hOf(b.s); b.w=b.img?0:wOf(b.c); b.d=dOf(b.s);
+  b.foot = b.d*UX;                  // horizontal extent of the depth face
+  b.x = cx;
+  b.gap = Math.max(6, 38 - b.foot); // keep every arrow ~38px long
+  cx += b.w + b.foot + b.gap;
+  b.topBackR = P(b.x+b.w, b.h, b.d);  // far top corner (right)
+  b.topBackL = P(b.x,     b.h, b.d);  // far top corner (left)
+});
+const RIGHT = cx;
+
+/* ============================================================
+   3.  PROCEDURAL IMAGES  —  x_t = sqrt(a)x0 + sqrt(1-a)eps
+   ============================================================ */
+const N = 176;
+function rng(seed){ let s=seed>>>0; return ()=>{ s^=s<<13;s>>>=0;s^=s>>17;s^=s<<5;s>>>=0; return s/4294967296; }; }
+function gauss(r){ let u=1-r(),v=r(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+/* smooth value-noise "photograph" */
+function smoothField(seed,freq){
+  const r=rng(seed), g=[];
+  for(let j=0;j<=freq;j++){ g[j]=[]; for(let i=0;i<=freq;i++) g[j][i]=r(); }
+  const f=t=>t*t*(3-2*t);
+  return (u,v)=>{
+    const x=u*freq, y=v*freq, i=Math.floor(x), j=Math.floor(y);
+    const tx=f(x-i), ty=f(y-j);
+    const a=g[j][i]*(1-tx)+g[j][i+1]*tx, b=g[j+1][i]*(1-tx)+g[j+1][i+1]*tx;
+    return a*(1-ty)+b*ty;
+  };
+}
+const BASE_IMG = (()=>{
+  const ch=[new Float32Array(N*N),new Float32Array(N*N),new Float32Array(N*N)];
+  const L1=smoothField(7,3), L2=smoothField(101,7), L3=smoothField(211,15);
+  const C1=smoothField(55,2), C2=smoothField(77,2);
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    const u=x/N,v=y/N,i=y*N+x;
+    let lum=0.58*L1(u,v)+0.29*L2(u,v)+0.13*L3(u,v);
+    lum=Math.max(0,Math.min(1,(lum-0.5)*1.55+0.5));          // contrast
+    const a=(C1(u,v)-0.5)*0.30, b=(C2(u,v)-0.5)*0.30;        // gentle chroma
+    ch[0][i]=Math.max(-1,Math.min(1,(lum+a)*2-1));
+    ch[1][i]=Math.max(-1,Math.min(1,(lum-0.35*a-0.25*b)*2-1));
+    ch[2][i]=Math.max(-1,Math.min(1,(lum+b)*2-1));
+  }
+  return ch;
+})();
+/* the noise that was actually added: mostly luminance, faintly coloured, unit variance */
+const EPS = (()=>{
+  const r=rng(4242), ch=[new Float32Array(N*N),new Float32Array(N*N),new Float32Array(N*N)];
+  const wl=0.92, wc=0.14, norm=1/Math.sqrt(wl*wl+wc*wc);
+  for(let i=0;i<N*N;i++){
+    const l=gauss(r);
+    for(let k=0;k<3;k++) ch[k][i]=(wl*l+wc*gauss(r))*norm;
+  }
+  return ch;
+})();
+
+/* DDPM linear beta schedule, T = 1000 */
+const T=1000, ABAR=new Float64Array(T+1);
+(()=>{ let p=1; ABAR[0]=1;
+  for(let t=1;t<=T;t++){ const beta=1e-4+(0.02-1e-4)*(t-1)/(T-1); p*=(1-beta); ABAR[t]=p; }
+})();
+
+const cvIn=document.createElement("canvas"); cvIn.width=cvIn.height=N;
+const cvOut=document.createElement("canvas"); cvOut.width=cvOut.height=N;
+const ctxIn=cvIn.getContext("2d"), ctxOut=cvOut.getContext("2d");
+const imgDataIn=ctxIn.createImageData(N,N), imgDataOut=ctxOut.createImageData(N,N);
+function paintNoisy(t){
+  const a=Math.sqrt(ABAR[t]), b=Math.sqrt(1-ABAR[t]), D=imgDataIn.data;
+  for(let i=0;i<N*N;i++){
+    for(let k=0;k<3;k++){
+      const v=a*BASE_IMG[k][i]+b*EPS[k][i];
+      D[i*4+k]=Math.round((Math.tanh(0.78*v)+1)*127.5);
+    }
+    D[i*4+3]=255;
+  }
+  ctxIn.putImageData(imgDataIn,0,0);
+  return cvIn.toDataURL();
+}
+function paintEps(){
+  const D=imgDataOut.data;
+  for(let i=0;i<N*N;i++){
+    for(let k=0;k<3;k++) D[i*4+k]=Math.round((Math.tanh(0.78*EPS[k][i])+1)*127.5);
+    D[i*4+3]=255;
+  }
+  ctxOut.putImageData(imgDataOut,0,0);
+  return cvOut.toDataURL();
+}
+
+/* ============================================================
+   4.  SVG CONSTRUCTION
+   ============================================================ */
+const NS="http://www.w3.org/2000/svg";
+const svg=document.getElementById("fig");
+const VW = RIGHT + 155, VH = 646;
+svg.setAttribute("viewBox","0 0 "+VW.toFixed(0)+" "+VH);
+function el(tag,attr,parent){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attr) e.setAttribute(k,attr[k]);
+  (parent||svg).appendChild(e); return e;
+}
+function txt(s,attr,parent){ const e=el("text",attr,parent); e.textContent=s; return e; }
+
+/* defs: arrow heads */
+const defs=el("defs",{});
+function head(id,color,w,h){
+  const m=el("marker",{id:id,markerWidth:w,markerHeight:h,refX:w-0.5,refY:h/2,
+    orient:"auto",markerUnits:"userSpaceOnUse"},defs);
+  el("path",{d:`M0,0 L${w},${h/2} L0,${h} L${h*0.28},${h/2} Z`,fill:color},m);
+}
+head("hRes","#3e5766",15,13);
+head("hAtt","#aec3cf",15,13);
+head("hTime","#3e5766",12,10);
+head("hSkip","#cf7e58",12,10);
+head("hBlack","#111",11,9);
+
+const gSkipBack=el("g",{});     // (unused layer kept for ordering clarity)
+const gBlocks=el("g",{});
+const gArrows=el("g",{});
+const gSkips=el("g",{});
+const gTime=el("g",{class:"timeG"});
+const gLabels=el("g",{});
+const gLegend=el("g",{});
+
+/* ---------- blocks ---------- */
+const FRONT="#d4875f", TOP="#c9784f", SIDE="#7a3c25";
+const blockEls=[];
+const imgIn = SEQ[0], imgOut = SEQ[16];
+SEQ.forEach(b=>{
+  const g=el("g",{class:"blk"},gBlocks);
+  if(b.img){
+    /* an image plane: the H x W spatial face, no channel thickness */
+    const q=[P(b.x,0,0),P(b.x,b.h,0),P(b.x,b.h,b.d),P(b.x,0,b.d)];
+    const cp=el("clipPath",{id:"clip_"+b.id},defs);
+    el("polygon",{points:pts(q)},cp);
+    const TL=P(b.x,b.h,0), vx=[b.d*UX,b.d*UY], vy=[0,b.h];
+    const gc=el("g",{"clip-path":"url(#clip_"+b.id+")"},g);
+    const im=el("image",{width:1,height:1,preserveAspectRatio:"none",
+      transform:`matrix(${vx[0]},${vx[1]},${vy[0]},${vy[1]},${TL[0]},${TL[1]})`},gc);
+    el("polygon",{points:pts(q),class:"face",fill:"none"},g);
+    b.imgEl=im;
+  }else{
+    el("polygon",{points:pts([P(b.x,0,0),P(b.x+b.w,0,0),P(b.x+b.w,b.h,0),P(b.x,b.h,0),
+                             P(b.x,b.h,b.d),P(b.x+b.w,b.h,b.d),P(b.x+b.w,0,b.d)]),class:"halo"},g);
+    el("polygon",{points:pts([P(b.x+b.w,0,0),P(b.x+b.w,b.h,0),P(b.x+b.w,b.h,b.d),P(b.x+b.w,0,b.d)]),
+      class:"face",fill:SIDE},g);                                   // depth face
+    el("polygon",{points:pts([P(b.x,b.h,0),P(b.x+b.w,b.h,0),P(b.x+b.w,b.h,b.d),P(b.x,b.h,b.d)]),
+      class:"face",fill:TOP},g);                                    // top face
+    el("polygon",{points:pts([P(b.x,0,0),P(b.x+b.w,0,0),P(b.x+b.w,b.h,0),P(b.x,b.h,0)]),
+      class:"face",fill:FRONT},g);                                  // channel face
+  }
+  b.g=g; blockEls.push(g);
+});
+
+/* ---------- residual-block arrows ---------- */
+const arrowEls={};
+ARROWS.forEach(i=>{
+  const a=SEQ[i], b=SEQ[i+1];
+  const x1=a.x+a.w+1.5, x2=b.x-1.5;
+  const att=ATTN.has(i);
+  const p=el("line",{x1:x1,y1:ARY,x2:x2,y2:ARY,
+    class:"arw "+(att?"att":"res"),"stroke-width":5,
+    "marker-end":"url(#"+(att?"hAtt":"hRes")+")"},gArrows);
+  arrowEls[i]=p;
+  a.arrowOut=p;
+});
+
+/* ---------- skip (concatenate) connections ---------- */
+const skipEls=[];
+SKIPS.forEach((k,idx)=>{
+  const s=SEQ[k.src], t=SEQ[k.tgt];
+  const A=s.topBackR, B=t.topBackL;
+  const level=Math.min(A[1],B[1])-k.rise;
+  const xL=A[0]+(A[1]-level)/SLOPE;
+  const xR=B[0]+(B[1]-level)/SLOPE;
+  const g=el("g",{class:"skip"},gSkips);
+  el("path",{d:`M${A[0].toFixed(1)},${A[1].toFixed(1)} L${xL.toFixed(1)},${level.toFixed(1)}
+      L${xR.toFixed(1)},${level.toFixed(1)} L${(B[0]+7).toFixed(1)},${(B[1]-4.4).toFixed(1)}`,
+      "marker-end":"url(#hSkip)"},g);
+  const labX = k.big ? (xL+xR)/2 : xL+0.62*(xR-xL);
+  txt(k.label,{x:labX.toFixed(1),y:(level-9).toFixed(1),"text-anchor":"middle",
+    class:"skipLabel","font-size":k.big?21:14},g);
+  k.g=g; k.level=level; k.xL=xL; k.xR=xR;
+  skipEls.push(g);
+
+  /* resolution label, written along the rising diagonal, with a black leader arrow */
+  const nx=-Math.sin(THETA), ny=-Math.cos(THETA);     // perpendicular, up-left
+  const ax=A[0]+62*UX+13*nx, ay=A[1]+62*UY+13*ny;
+  const bx=A[0]+16*UX+12*nx, by=A[1]+16*UY+12*ny;
+  el("line",{x1:ax,y1:ay,x2:bx,y2:by,stroke:"#111","stroke-width":2.2,
+    "marker-end":"url(#hBlack)"},gLabels);
+  const lx=A[0]+78*UX+16*nx, ly=A[1]+78*UY+16*ny;
+  txt(`${s.s}×${s.s}×${s.c}`,{x:lx.toFixed(1),y:ly.toFixed(1),class:"dimlabel",
+    "font-size":17,transform:`rotate(${(-THETA*180/Math.PI).toFixed(2)} ${lx.toFixed(1)} ${ly.toFixed(1)})`},gLabels);
+});
+
+/* label for the input image plane (no skip line of its own) */
+(function(){
+  const A=imgIn.topBackR;
+  const nx=-Math.sin(THETA), ny=-Math.cos(THETA);
+  const ax=A[0]+62*UX+13*nx, ay=A[1]+62*UY+13*ny;
+  const bx=A[0]+16*UX+12*nx, by=A[1]+16*UY+12*ny;
+  el("line",{x1:ax,y1:ay,x2:bx,y2:by,stroke:"#111","stroke-width":2.2,
+    "marker-end":"url(#hBlack)"},gLabels);
+  const lx=A[0]+78*UX+16*nx, ly=A[1]+78*UY+16*ny;
+  txt("256×256×3",{x:lx.toFixed(1),y:ly.toFixed(1),class:"dimlabel","font-size":17,
+    transform:`rotate(${(-THETA*180/Math.PI).toFixed(2)} ${lx.toFixed(1)} ${ly.toFixed(1)})`},gLabels);
+})();
+
+/* captions beside the two image planes */
+txt("xₜ",{x:(imgIn.x-16).toFixed(1),y:BASE-hOf(256)/2-4,class:"serif","font-size":26,
+  fill:"#2d3d45","text-anchor":"end"},gLabels);
+txt("noisy image",{x:(imgIn.x-16).toFixed(1),y:BASE-hOf(256)/2+18,class:"serif","font-size":16,
+  fill:"#5d6b75","text-anchor":"end"},gLabels);
+txt("ε̂θ(xₜ, t)",{x:(RIGHT+8).toFixed(1),y:BASE-hOf(256)/2-4,class:"serif","font-size":24,
+  fill:"#2d3d45","text-anchor":"start"},gLabels);
+txt("predicted noise",{x:(RIGHT+8).toFixed(1),y:BASE-hOf(256)/2+18,class:"serif","font-size":16,
+  fill:"#5d6b75","text-anchor":"start"},gLabels);
+
+/* ---------- time-embedding path ---------- */
+const tapXs=[];
+tapXs.push(imgIn.x+imgIn.foot);                       // input convolution
+ARROWS.slice(0,14).forEach(i=>tapXs.push(SEQ[i].x+SEQ[i].w+3));
+const lastOrigin=tapXs[tapXs.length-1]-62;
+el("line",{x1:60,y1:TY,x2:lastOrigin,y2:TY,"stroke-width":3.2},gTime);
+tapXs.forEach(tx=>{
+  el("path",{d:`M${(tx-62).toFixed(1)},${TY} L${tx.toFixed(1)},${(ARY+8).toFixed(1)}`,
+    "stroke-width":3.2,"marker-end":"url(#hTime)"},gTime);
+});
+el("circle",{cx:36,cy:TY,r:21,fill:"#fff",stroke:"#3e5766","stroke-width":3},gTime);
+txt("t",{x:36,y:TY+8,"text-anchor":"middle",class:"serif","font-size":22,
+  fill:"#3e5766",stroke:"none"},gTime).setAttribute("stroke","none");
+txt("time embedding",{x:78,y:TY+28,class:"serif","font-size":20,fill:"#3e5766",stroke:"none"},gTime);
+
+/* sinusoidal embedding strip gamma(t) */
+const EMB_D=48, EMB_X=300, EMB_Y=TY+14, EMB_W=200, EMB_H=15;
+const embCells=[];
+for(let i=0;i<EMB_D;i++){
+  embCells.push(el("rect",{x:(EMB_X+i*EMB_W/EMB_D).toFixed(2),y:EMB_Y,
+    width:(EMB_W/EMB_D+0.4).toFixed(2),height:EMB_H,stroke:"none"},gLabels));
+}
+el("rect",{x:EMB_X,y:EMB_Y,width:EMB_W,height:EMB_H,fill:"none",stroke:"#8fa3ad","stroke-width":1},gLabels);
+txt("γ(t)  sinusoidal embedding",{x:EMB_X+EMB_W+9,y:EMB_Y+12,class:"serif","font-size":15,
+  fill:"#5d6b75"},gLabels);
+const tValText=txt("",{x:36,y:TY+44,"text-anchor":"middle","font-size":14,
+  fill:"#3e5766","font-family":"Georgia, serif"},gLabels);
+
+/* ---------- legend ---------- */
+(function(){
+  el("rect",{x:10,y:10,width:192,height:122,rx:12,fill:"#fff",stroke:"#111","stroke-width":2.6},gLegend);
+  el("line",{x1:88,y1:32,x2:136,y2:32,stroke:"#3e5766","stroke-width":5,
+    "marker-end":"url(#hRes)"},gLegend);
+  txt("Res. block",{x:26,y:57,class:"serif","font-size":21,fill:"#3e4f56"},gLegend);
+  el("line",{x1:88,y1:74,x2:136,y2:74,stroke:"#aec3cf","stroke-width":5,
+    "marker-end":"url(#hAtt)"},gLegend);
+  txt("Res. block +",{x:18,y:99,class:"serif","font-size":21,fill:"#6f97ae"},gLegend);
+  txt("self-attention",{x:18,y:123,class:"serif","font-size":21,fill:"#6f97ae"},gLegend);
+})();
+
+/* attention badges on the three attention blocks */
+ATTN.forEach(i=>{
+  const b=SEQ[i+1];
+  const top=P(b.x+b.w/2,b.h,b.d/2);
+  const g=el("g",{class:"attnBadge"},gLabels);
+  el("circle",{cx:top[0],cy:top[1]-22,r:11,fill:"#aec3cf",stroke:"#3e5766","stroke-width":1.6},g);
+  txt("A",{x:top[0],y:top[1]-17,"text-anchor":"middle","font-size":13,"font-weight":700,
+    fill:"#24414f","font-family":"Georgia, serif"},g);
+  b.badge=g;
+});
+
+/* ============================================================
+   5.  INTERACTION
+   ============================================================ */
+const tip=document.getElementById("tip"), figbox=tip.parentElement;
+function fmtParams(b){
+  const px=b.s*b.s*b.c;
+  return (px/1e6>=1? (px/1e6).toFixed(2)+" M" : Math.round(px/1e3)+" K")+" activations";
+}
+SEQ.forEach(b=>{
+  b.g.addEventListener("mousemove",ev=>{
+    const r=figbox.getBoundingClientRect();
+    tip.style.left=(ev.clientX-r.left)+"px";
+    tip.style.top=(ev.clientY-r.top)+"px";
+    tip.style.opacity=1;
+    const role = b.img ? (b.id==="in"?"input &mdash; the noisy image fed to the network"
+                                      :"output &mdash; the noise the network thinks is present")
+               : (b.i<=7?"encoder":(b.i<=9?"bottleneck":"decoder"));
+    tip.innerHTML=`<b>${b.s}&times;${b.s}&times;${b.c}</b><br>${role}<br>${fmtParams(b)}`;
+  });
+  b.g.addEventListener("mouseleave",()=>tip.style.opacity=0);
+});
+
+/* ----- stage animation ----- */
+const stageSlider=document.getElementById("stage"),
+      stageVal=document.getElementById("stageVal"),
+      stageText=document.getElementById("stageText"),
+      pill=document.getElementById("pill");
+let stage=0, timer=null, mode="all";
+
+function describe(i){
+  const b=SEQ[i];
+  if(i===0) return `<b>Input.</b> The noisy image <i>x<sub>t</sub></i>, <b>256&times;256&times;3</b>. Nothing has been processed yet.`;
+  if(i===16) return `<b>Output.</b> A 3&times;3 convolution maps 128 channels back to <b>256&times;256&times;3</b>: the predicted noise <i>&epsilon;&#770;<sub>&theta;</sub>(x<sub>t</sub>,t)</i>, which the sampler subtracts to get <i>x<sub>t-1</sub></i>.`;
+  if(i===1) return `<b>Input convolution.</b> A 3&times;3 conv lifts 3 colour channels to <b>256&times;256&times;128</b> features. No resolution change.`;
+  const prev=SEQ[i-1], att=ATTN.has(i-1), sk=SKIP_OF_TGT[i];
+  let what = att? "Residual block <b>+ self-attention</b>" : "Residual block";
+  let geo  = prev.s>b.s ? ` and downsamples ${prev.s}&rarr;${b.s}`
+           : prev.s<b.s ? ` and upsamples ${prev.s}&rarr;${b.s}` : "";
+  let ch   = prev.c!==b.c ? ` Channels ${prev.c}&rarr;${b.c}.` : "";
+  let cc   = sk!==undefined
+      ? ` <b>Concatenate</b> pulls the ${SEQ[SKIPS[sk].src].s}&times;${SEQ[SKIPS[sk].src].s} encoder features back in, so this block sees ${b.c}+${SEQ[SKIPS[sk].src].c} channels before mixing them down to ${b.c}.`
+      : "";
+  const zone = i<=7?"Encoder":(i<=9?"Bottleneck":"Decoder");
+  return `<b>${zone}.</b> ${what}${geo}, conditioned on &gamma;(t).${ch} Result: <b>${b.s}&times;${b.s}&times;${b.c}</b>.${cc}`;
+}
+
+function renderStage(){
+  stageVal.textContent=stage+" / 16";
+  stageSlider.value=stage;
+  pill.textContent = stage===0?"Input":(stage===16?"Output":(stage<=7?"Encoder":(stage<=9?"Bottleneck":"Decoder")));
+  stageText.innerHTML=describe(stage);
+
+  const walking = stage>0;                     /* stage 0 = the plain, full figure */
+  SEQ.forEach(b=>{
+    b.g.classList.toggle("dim", walking && b.i>stage);
+    b.g.classList.toggle("cur", walking && b.i===stage);
+  });
+  ARROWS.forEach(i=>{
+    const a=arrowEls[i];
+    a.style.opacity = (!walking || i+1<=stage) ? 1 : 0.14;
+    a.classList.toggle("flash", i+1===stage);
+  });
+  SKIPS.forEach(k=>{
+    const used=walking && stage>=k.tgt;
+    k.g.classList.toggle("used",used);
+    k.g.style.opacity = !walking ? 1 : (stage>=k.src ? (used?1:0.55) : 0.13);
+  });
+  applyMode();
+}
+function pulseSkipFor(i){
+  const idx=SKIP_OF_TGT[i];
+  if(idx===undefined) return;
+  const g=SKIPS[idx].g;
+  g.classList.remove("pulse"); void g.offsetWidth; g.classList.add("pulse");
+  setTimeout(()=>g.classList.remove("pulse"),1100);
+}
+function setStage(v,pulse){
+  stage=Math.max(0,Math.min(16,v));
+  renderStage();
+  if(pulse) pulseSkipFor(stage);
+}
+document.getElementById("play").addEventListener("click",function(){
+  if(timer){ clearInterval(timer); timer=null; this.innerHTML="&#9654;&nbsp; Play pass"; this.classList.add("primary"); return; }
+  if(stage>=16) setStage(0,false);
+  this.innerHTML="&#10073;&#10073;&nbsp; Pause"; this.classList.remove("primary");
+  const btn=this;
+  timer=setInterval(()=>{
+    if(stage>=16){ clearInterval(timer); timer=null;
+      btn.innerHTML="&#9654;&nbsp; Replay pass"; btn.classList.add("primary"); return; }
+    setStage(stage+1,true);
+  },780);
+});
+document.getElementById("reset").addEventListener("click",()=>{
+  if(timer){clearInterval(timer);timer=null;
+    const b=document.getElementById("play"); b.innerHTML="&#9654;&nbsp; Play pass"; b.classList.add("primary");}
+  setStage(0,false);
+});
+stageSlider.addEventListener("input",e=>{
+  if(timer){clearInterval(timer);timer=null;
+    const b=document.getElementById("play"); b.innerHTML="&#9654;&nbsp; Play pass"; b.classList.add("primary");}
+  setStage(+e.target.value,true);
+});
+
+/* ----- block-type mode ----- */
+function applyMode(){
+  const walking = stage>0;
+  ARROWS.forEach(i=>{
+    const a=arrowEls[i], att=ATTN.has(i);
+    const visible = mode==="all" || (mode==="att"? att : !att);
+    let op = (!walking || i+1<=stage) ? 1 : 0.14;
+    if(!visible) op=Math.min(op,0.17);
+    a.style.opacity=op;
+    a.setAttribute("stroke-width", (mode!=="all" && visible)?7.5:5);
+  });
+  ATTN.forEach(i=>{
+    SEQ[i+1].badge.style.opacity = (mode==="att")?1:0;
+  });
+  if(mode!=="all"){
+    SEQ.forEach(b=>{
+      if(b.img) return;
+      const isAttnOut = ATTN.has(b.i-1);
+      const wanted = (mode==="att")?isAttnOut:!isAttnOut;
+      if(b.i<=stage) b.g.classList.toggle("semi",!wanted);
+      else b.g.classList.remove("semi");
+    });
+  } else SEQ.forEach(b=>b.g.classList.remove("semi"));
+}
+document.getElementById("seg").addEventListener("click",e=>{
+  const btn=e.target.closest("button"); if(!btn) return;
+  [...e.currentTarget.children].forEach(b=>b.classList.toggle("on",b===btn));
+  mode=btn.dataset.mode;
+  document.getElementById("modeInfo").innerHTML =
+    mode==="all" ? "Every arrow is one residual block. Three of them also run self&#8209;attention."
+  : mode==="res" ? "Plain residual blocks: two conv layers + a skip, with &gamma;(t) added after the first conv. Used at every resolution."
+  : "Self-attention is added only at 16&times;16 and 8&times;8, where a full <b>N&sup2;&times;N&sup2;</b> attention matrix is affordable (256&sup2; and 64&sup2; entries). At 256&times;256 it would need 65536&sup2; entries.";
+  applyMode();
+});
+
+/* ----- timestep ----- */
+const tSlider=document.getElementById("tslider"), tVal=document.getElementById("tVal"),
+      tInfo=document.getElementById("tInfo");
+function embColor(v){                       // v in [-1,1] -> blue .. white .. orange
+  const a=Math.abs(v);
+  if(v>=0) return `rgb(${Math.round(255-30*a)},${Math.round(255-110*a)},${Math.round(255-190*a)})`;
+  return `rgb(${Math.round(255-200*a)},${Math.round(255-130*a)},${Math.round(255-40*a)})`;
+}
+function setT(t){
+  tVal.textContent="t = "+t;
+  const ab=ABAR[t], sa=Math.sqrt(ab), sb=Math.sqrt(1-ab);
+  tInfo.innerHTML=`&alpha;&#772;<sub>t</sub> = <b>${ab.toFixed(4)}</b> &nbsp;&middot;&nbsp; `+
+    `x<sub>t</sub> = <b>${sa.toFixed(3)}</b>&middot;x<sub>0</sub> + <b>${sb.toFixed(3)}</b>&middot;&epsilon;`+
+    `<br>signal ${(100*sa*sa).toFixed(1)}% / noise ${(100*(1-ab)).toFixed(1)}% of the variance`;
+  tValText.textContent="t = "+t;
+  imgIn.imgEl.setAttribute("href",paintNoisy(t));
+  /* sinusoidal embedding gamma(t), exactly as in the transformer/DDPM formula */
+  for(let i=0;i<EMB_D;i++){
+    const half=EMB_D/2, k=i%half;
+    const freq=Math.exp(-Math.log(10000)*k/half);
+    const v = i<half ? Math.sin(t*freq) : Math.cos(t*freq);
+    embCells[i].setAttribute("fill",embColor(v));
+  }
+  gTime.classList.remove("flash"); void gTime.offsetWidth; gTime.classList.add("flash");
+  setTimeout(()=>gTime.classList.remove("flash"),900);
+}
+tSlider.addEventListener("input",e=>setT(+e.target.value));
+
+/* ----- init ----- */
+imgOut.imgEl.setAttribute("href",paintEps());
+setT(+tSlider.value);
+setStage(0,false);
+</script>
+</body>
+</html>

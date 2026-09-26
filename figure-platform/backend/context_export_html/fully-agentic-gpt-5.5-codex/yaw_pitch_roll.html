@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yaw, Pitch, and Roll Euler Rotation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #14181f;
+      --muted: #637083;
+      --panel: #f7f9fb;
+      --line: #d9e0e7;
+      --red: #f20d0d;
+      --green: #24df00;
+      --cyan: #45d7ff;
+      --blue: #2d6cdf;
+      --violet: #8a5ce6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #ffffff;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 326px;
+      min-height: 100vh;
+    }
+
+    #stage {
+      min-width: 0;
+      min-height: 0;
+      position: relative;
+      background:
+        linear-gradient(180deg, rgba(248, 250, 252, 0.72), rgba(255, 255, 255, 1) 38%),
+        #ffffff;
+      overflow: hidden;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+    }
+
+    #controls {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.15;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .subline {
+      margin: -9px 0 0;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .control-group {
+      display: grid;
+      gap: 10px;
+      padding-top: 2px;
+    }
+
+    .slider-row {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) 48px;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+    }
+
+    .slider-row strong {
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .slider-row output {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: #293241;
+      font-size: 12px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #1f7a8c;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid #cbd5df;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .segmented button,
+    .button-row button,
+    #resetButton {
+      border: 0;
+      background: transparent;
+      color: #263241;
+      min-height: 36px;
+      padding: 7px 8px;
+      font: 700 12px/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+    }
+
+    .segmented button + button {
+      border-left: 1px solid #cbd5df;
+    }
+
+    .segmented button.active {
+      color: #071826;
+      background: #dff3f4;
+      box-shadow: inset 0 0 0 1px #6fb7c4;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .button-row button,
+    #resetButton {
+      border: 1px solid #cbd5df;
+      border-radius: 7px;
+      background: #ffffff;
+    }
+
+    .button-row button.active {
+      border-color: #f44b4b;
+      color: #b50909;
+      background: #fff0f0;
+    }
+
+    .checks {
+      display: grid;
+      gap: 7px;
+      color: #344153;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .checks label {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    #matrixText,
+    #stepText {
+      display: block;
+      color: #243140;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+      border-top: 1px solid #e2e7ec;
+      padding-top: 10px;
+    }
+
+    #resetButton {
+      width: 100%;
+      margin-top: 2px;
+    }
+
+    .axis {
+      stroke: #12161d;
+      stroke-width: 5.5;
+      stroke-linecap: round;
+    }
+
+    .active-axis {
+      stroke: var(--red);
+      stroke-width: 8;
+      stroke-linecap: round;
+      opacity: 0;
+      transition: opacity 0.18s ease;
+    }
+
+    .active-axis.on {
+      opacity: 0.28;
+    }
+
+    .ray {
+      stroke: #b7bcc2;
+      stroke-width: 4;
+      stroke-dasharray: 12 11;
+      stroke-linecap: round;
+    }
+
+    .support-line {
+      stroke: #9bb0b6;
+      stroke-width: 4;
+      fill: none;
+      opacity: 0.78;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .plane-fill {
+      fill: rgba(229, 240, 240, 0.84);
+      stroke: #151a20;
+      stroke-width: 4.3;
+      stroke-linejoin: round;
+    }
+
+    .ghost-plane {
+      fill: rgba(121, 178, 222, 0.07);
+      stroke-width: 2.2;
+      stroke-linejoin: round;
+      stroke-dasharray: 9 7;
+    }
+
+    .alt-plane {
+      fill: rgba(138, 92, 230, 0.07);
+      stroke: var(--violet);
+      stroke-width: 2.5;
+      stroke-linejoin: round;
+      stroke-dasharray: 12 8;
+    }
+
+    .local-axis {
+      stroke: var(--green);
+      stroke-width: 4.6;
+      stroke-linecap: round;
+    }
+
+    .point-fill {
+      fill: var(--cyan);
+      stroke: #11161c;
+      stroke-width: 5;
+    }
+
+    .origin-dot {
+      fill: #050505;
+      stroke: #050505;
+      stroke-width: 1;
+    }
+
+    .rot-arrow {
+      fill: none;
+      stroke: var(--red);
+      stroke-width: 6.5;
+      stroke-linecap: round;
+      opacity: 0.92;
+      transition: stroke-width 0.16s ease, opacity 0.16s ease;
+    }
+
+    .rot-arrow.dim {
+      opacity: 0.35;
+      stroke-width: 4.8;
+    }
+
+    .rot-arrow.hot {
+      opacity: 1;
+      stroke-width: 9;
+    }
+
+    .label,
+    .small-label,
+    .serif-label {
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 6px;
+      stroke-linejoin: round;
+      fill: #111111;
+      pointer-events: none;
+    }
+
+    .serif-label {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 70px;
+      font-weight: 700;
+    }
+
+    .math-label {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 56px;
+      font-weight: 500;
+    }
+
+    .label {
+      font-size: 22px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .small-label {
+      font-size: 15px;
+      font-weight: 760;
+      fill: #304054;
+      stroke-width: 4px;
+    }
+
+    .green-label {
+      fill: #174b0c;
+    }
+
+    .badge {
+      fill: #ffffff;
+      stroke: #cdd6df;
+      stroke-width: 1.5;
+    }
+
+    .legend-swatch {
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+
+    @media (max-width: 860px) {
+      body {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+
+      #controls {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        max-height: 42vh;
+        padding: 12px 13px 14px;
+        gap: 12px;
+      }
+
+      .control-group {
+        gap: 8px;
+      }
+
+      .panel-title {
+        font-size: 16px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .slider-row {
+        grid-template-columns: 52px minmax(0, 1fr) 43px;
+        gap: 7px;
+      }
+
+      .button-row {
+        grid-template-columns: 1fr;
+      }
+
+      .segmented {
+        grid-template-columns: 1fr;
+      }
+
+      .segmented button + button {
+        border-left: 0;
+        border-top: 1px solid #cbd5df;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main id="stage">
+    <svg id="scene" viewBox="0 0 1120 830" role="img" aria-labelledby="title desc">
+      <title id="title">Euler yaw, pitch, and roll camera rotation</title>
+      <desc id="desc">A right-handed camera coordinate frame with yaw, pitch, and roll controls rotates a tilted image plane. A dashed projection ray links the origin, image point p, and world point P.</desc>
+      <defs>
+        <marker id="arrowBlack" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#12161d"></path>
+        </marker>
+        <marker id="arrowRed" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#f20d0d"></path>
+        </marker>
+        <marker id="arrowGreen" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#24df00"></path>
+        </marker>
+      </defs>
+
+      <g id="worldLayer"></g>
+      <g id="stepLayer"></g>
+      <g id="rayLayer"></g>
+      <g id="planeLayer"></g>
+      <g id="pointLayer"></g>
+      <g id="rotationLayer"></g>
+      <g id="overlayLayer"></g>
+    </svg>
+  </main>
+
+  <aside id="controls" aria-label="Euler angle controls">
+    <h1 class="panel-title">Yaw, Pitch, Roll</h1>
+    <p class="subline" id="stepText">apply: yaw - pitch - roll</p>
+
+    <section class="control-group" aria-label="angle sliders">
+      <div class="slider-row">
+        <strong>Yaw</strong>
+        <input id="yawSlider" type="range" min="-35" max="35" value="18" step="1" />
+        <output id="yawValue">18 deg</output>
+      </div>
+      <div class="slider-row">
+        <strong>Pitch</strong>
+        <input id="pitchSlider" type="range" min="-35" max="35" value="-12" step="1" />
+        <output id="pitchValue">-12 deg</output>
+      </div>
+      <div class="slider-row">
+        <strong>Roll</strong>
+        <input id="rollSlider" type="range" min="-35" max="35" value="20" step="1" />
+        <output id="rollValue">20 deg</output>
+      </div>
+    </section>
+
+    <section class="control-group" aria-label="rotation order">
+      <div class="segmented">
+        <button id="orderYPR" type="button" class="active" data-order="YPR">Yaw-Pitch-Roll</button>
+        <button id="orderRPY" type="button" data-order="RPY">Roll-Pitch-Yaw</button>
+      </div>
+    </section>
+
+    <section class="control-group" aria-label="axis animation">
+      <div class="button-row">
+        <button id="animYaw" type="button" data-animate="yaw">Play yaw</button>
+        <button id="animPitch" type="button" data-animate="pitch">Play pitch</button>
+        <button id="animRoll" type="button" data-animate="roll">Play roll</button>
+      </div>
+    </section>
+
+    <section class="checks" aria-label="display options">
+      <label><input id="showSteps" type="checkbox" checked /> step outlines</label>
+      <label><input id="showOther" type="checkbox" checked /> other order outline</label>
+    </section>
+
+    <code id="matrixText">R = Rz(&theta;Z) Rx(&theta;X) Ry(&theta;Y)</code>
+    <button id="resetButton" type="button">Reset</button>
+  </aside>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var svg = document.getElementById("scene");
+      var worldLayer = document.getElementById("worldLayer");
+      var stepLayer = document.getElementById("stepLayer");
+      var rayLayer = document.getElementById("rayLayer");
+      var planeLayer = document.getElementById("planeLayer");
+      var pointLayer = document.getElementById("pointLayer");
+      var rotationLayer = document.getElementById("rotationLayer");
+      var overlayLayer = document.getElementById("overlayLayer");
+
+      var sliders = {
+        yaw: document.getElementById("yawSlider"),
+        pitch: document.getElementById("pitchSlider"),
+        roll: document.getElementById("rollSlider")
+      };
+
+      var outputs = {
+        yaw: document.getElementById("yawValue"),
+        pitch: document.getElementById("pitchValue"),
+        roll: document.getElementById("rollValue")
+      };
+
+      var orderButtons = {
+        YPR: document.getElementById("orderYPR"),
+        RPY: document.getElementById("orderRPY")
+      };
+
+      var showStepsInput = document.getElementById("showSteps");
+      var showOtherInput = document.getElementById("showOther");
+      var matrixText = document.getElementById("matrixText");
+      var stepText = document.getElementById("stepText");
+      var resetButton = document.getElementById("resetButton");
+      var animButtons = Array.prototype.slice.call(document.querySelectorAll("[data-animate]"));
+
+      var NS = "http://www.w3.org/2000/svg";
+      var ORIGIN = { x: 165, y: 545 };
+      var SCALE = 70;
+      var BASIS = {
+        x: { u: 0.63, v: -0.82 },
+        y: { u: 0.00, v: -1.00 },
+        z: { u: 1.00, v: 0.00 }
+      };
+      var PLANE_DEPTH = 3.25;
+      var PLANE_HALF_W = 2.85;
+      var PLANE_HALF_H = 2.18;
+      var WORLD_POINT = { x: 0.95, y: 1.85, z: 10.20 };
+      var AXIS_LENGTHS = { x: 3.90, y: 5.55, z: 11.20 };
+      var DEFAULTS = { yaw: 18, pitch: -12, roll: 20 };
+      var ORDER_MAP = {
+        YPR: ["yaw", "pitch", "roll"],
+        RPY: ["roll", "pitch", "yaw"]
+      };
+      var MATRIX_LABELS = {
+        YPR: "R = Rz(\u03b8Z) Rx(\u03b8X) Ry(\u03b8Y)",
+        RPY: "R = Ry(\u03b8Y) Rx(\u03b8X) Rz(\u03b8Z)"
+      };
+      var STEP_COLORS = ["#2d6cdf", "#12a390", "#111111"];
+
+      var state = {
+        order: "YPR",
+        active: null,
+        animating: null,
+        animationStart: 0,
+        animationFrame: 0
+      };
+
+      function el(name, attrs) {
+        var node = document.createElementNS(NS, name);
+        if (attrs) setAttrs(node, attrs);
+        return node;
+      }
+
+      function setAttrs(node, attrs) {
+        Object.keys(attrs).forEach(function (key) {
+          if (key === "text") {
+            node.textContent = attrs[key];
+          } else {
+            node.setAttribute(key, attrs[key]);
+          }
+        });
+      }
+
+      function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function line(parent, a, b, attrs) {
+        var node = el("line", Object.assign({
+          x1: a.x,
+          y1: a.y,
+          x2: b.x,
+          y2: b.y
+        }, attrs || {}));
+        parent.appendChild(node);
+        return node;
+      }
+
+      function path(parent, d, attrs) {
+        var node = el("path", Object.assign({ d: d }, attrs || {}));
+        parent.appendChild(node);
+        return node;
+      }
+
+      function text(parent, label, x, y, className, extra) {
+        var node = el("text", Object.assign({
+          x: x,
+          y: y,
+          class: className || "label",
+          text: label
+        }, extra || {}));
+        parent.appendChild(node);
+        return node;
+      }
+
+      function polygon(parent, pts, attrs) {
+        var node = el("polygon", Object.assign({
+          points: pts.map(function (p) { return p.x.toFixed(2) + "," + p.y.toFixed(2); }).join(" ")
+        }, attrs || {}));
+        parent.appendChild(node);
+        return node;
+      }
+
+      function project(p) {
+        return {
+          x: ORIGIN.x + SCALE * (BASIS.x.u * p.x + BASIS.y.u * p.y + BASIS.z.u * p.z),
+          y: ORIGIN.y + SCALE * (BASIS.x.v * p.x + BASIS.y.v * p.y + BASIS.z.v * p.z)
+        };
+      }
+
+      function add(a, b) {
+        return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+      }
+
+      function scaleVec(v, s) {
+        return { x: v.x * s, y: v.y * s, z: v.z * s };
+      }
+
+      function degToRad(deg) {
+        return deg * Math.PI / 180;
+      }
+
+      function identity() {
+        return [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1]
+        ];
+      }
+
+      function matMul(a, b) {
+        var out = identity();
+        for (var r = 0; r < 3; r += 1) {
+          for (var c = 0; c < 3; c += 1) {
+            out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c];
+          }
+        }
+        return out;
+      }
+
+      function transpose(m) {
+        return [
+          [m[0][0], m[1][0], m[2][0]],
+          [m[0][1], m[1][1], m[2][1]],
+          [m[0][2], m[1][2], m[2][2]]
+        ];
+      }
+
+      function mulVec(m, v) {
+        return {
+          x: m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
+          y: m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
+          z: m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z
+        };
+      }
+
+      function rotX(deg) {
+        var a = degToRad(deg);
+        var c = Math.cos(a);
+        var s = Math.sin(a);
+        return [
+          [1, 0, 0],
+          [0, c, -s],
+          [0, s, c]
+        ];
+      }
+
+      function rotY(deg) {
+        var a = degToRad(deg);
+        var c = Math.cos(a);
+        var s = Math.sin(a);
+        return [
+          [c, 0, s],
+          [0, 1, 0],
+          [-s, 0, c]
+        ];
+      }
+
+      function rotZ(deg) {
+        var a = degToRad(deg);
+        var c = Math.cos(a);
+        var s = Math.sin(a);
+        return [
+          [c, -s, 0],
+          [s, c, 0],
+          [0, 0, 1]
+        ];
+      }
+
+      function axisRotation(key, deg) {
+        if (key === "yaw") return rotY(deg);
+        if (key === "pitch") return rotX(deg);
+        return rotZ(deg);
+      }
+
+      function getBaseAngles() {
+        return {
+          yaw: Number(sliders.yaw.value),
+          pitch: Number(sliders.pitch.value),
+          roll: Number(sliders.roll.value)
+        };
+      }
+
+      function getEffectiveAngles(now) {
+        var angles = getBaseAngles();
+        if (!state.animating) return angles;
+        var t = ((now || performance.now()) - state.animationStart) / 1900;
+        var phase = 0.5 - 0.5 * Math.cos((t % 1) * Math.PI * 2);
+        angles[state.animating] = angles[state.animating] * phase;
+        return angles;
+      }
+
+      function computeSteps(orderKey, angles) {
+        var r = identity();
+        var steps = [];
+        ORDER_MAP[orderKey].forEach(function (key) {
+          r = matMul(axisRotation(key, angles[key]), r);
+          steps.push({ key: key, matrix: r });
+        });
+        return steps;
+      }
+
+      function planeCorners(r) {
+        var corners = [
+          { x: -PLANE_HALF_W, y: -PLANE_HALF_H, z: PLANE_DEPTH },
+          { x: PLANE_HALF_W, y: -PLANE_HALF_H, z: PLANE_DEPTH },
+          { x: PLANE_HALF_W, y: PLANE_HALF_H, z: PLANE_DEPTH },
+          { x: -PLANE_HALF_W, y: PLANE_HALF_H, z: PLANE_DEPTH }
+        ];
+        return corners.map(function (p) { return project(mulVec(r, p)); });
+      }
+
+      function imageProjection(r) {
+        var cameraPoint = mulVec(transpose(r), WORLD_POINT);
+        var z = Math.abs(cameraPoint.z) < 0.001 ? 0.001 : cameraPoint.z;
+        var factor = PLANE_DEPTH / z;
+        var local = {
+          x: cameraPoint.x * factor,
+          y: cameraPoint.y * factor,
+          z: PLANE_DEPTH
+        };
+        return {
+          local: local,
+          world: mulVec(r, local),
+          visible: cameraPoint.z > 0
+        };
+      }
+
+      function orderLabel(orderKey) {
+        return ORDER_MAP[orderKey].map(function (key) { return key; }).join(" - ");
+      }
+
+      function otherOrder(orderKey) {
+        return orderKey === "YPR" ? "RPY" : "YPR";
+      }
+
+      function drawStaticWorld() {
+        clear(worldLayer);
+        var origin = project({ x: 0, y: 0, z: 0 });
+        var axisEnds = {
+          x: project({ x: AXIS_LENGTHS.x, y: 0, z: 0 }),
+          y: project({ x: 0, y: AXIS_LENGTHS.y, z: 0 }),
+          z: project({ x: 0, y: 0, z: AXIS_LENGTHS.z })
+        };
+
+        line(worldLayer, origin, axisEnds.z, { class: "axis", "marker-end": "url(#arrowBlack)" });
+        line(worldLayer, origin, axisEnds.x, { class: "axis", "marker-end": "url(#arrowBlack)" });
+        line(worldLayer, origin, axisEnds.y, { class: "axis", "marker-end": "url(#arrowBlack)" });
+
+        line(worldLayer, origin, axisEnds.z, { id: "activeZ", class: "active-axis", "marker-end": "url(#arrowRed)" });
+        line(worldLayer, origin, axisEnds.x, { id: "activeX", class: "active-axis", "marker-end": "url(#arrowRed)" });
+        line(worldLayer, origin, axisEnds.y, { id: "activeY", class: "active-axis", "marker-end": "url(#arrowRed)" });
+
+        worldLayer.appendChild(el("circle", { cx: origin.x, cy: origin.y, r: 19, class: "origin-dot" }));
+        text(worldLayer, "(0,0,0)", origin.x - 172, origin.y + 78, "serif-label", { "font-size": "48" });
+        text(worldLayer, "Y", axisEnds.y.x - 18, axisEnds.y.y - 26, "serif-label");
+        text(worldLayer, "X", axisEnds.x.x + 12, axisEnds.x.y + 20, "serif-label");
+        text(worldLayer, "Z", axisEnds.z.x - 4, axisEnds.z.y + 70, "serif-label");
+      }
+
+      function drawRotationArrows() {
+        clear(rotationLayer);
+        path(rotationLayer, "M 118 248 C 126 190 240 174 290 217 C 319 243 303 286 245 300 C 182 315 112 290 98 245", {
+          id: "yawArrow",
+          class: "rot-arrow",
+          "marker-end": "url(#arrowRed)"
+        });
+        path(rotationLayer, "M 336 382 C 302 340 322 285 376 264 C 431 243 494 274 491 331 C 490 354 478 374 460 388", {
+          id: "pitchArrow",
+          class: "rot-arrow",
+          "marker-end": "url(#arrowRed)"
+        });
+        path(rotationLayer, "M 824 604 C 792 575 795 524 834 503 C 884 476 931 514 914 560", {
+          id: "rollArrow",
+          class: "rot-arrow",
+          "marker-end": "url(#arrowRed)"
+        });
+
+        text(rotationLayer, "Yaw", 14, 232, "serif-label", { "font-size": "58" });
+        text(rotationLayer, "\u03b8", 108, 327, "serif-label math-label", { "font-size": "55" });
+        text(rotationLayer, "Y", 150, 354, "serif-label math-label", { "font-size": "36" });
+        text(rotationLayer, "Pitch", 335, 327, "serif-label", { "font-size": "58" });
+        text(rotationLayer, "\u03b8", 276, 399, "serif-label math-label", { "font-size": "55" });
+        text(rotationLayer, "X", 319, 426, "serif-label math-label", { "font-size": "36" });
+        text(rotationLayer, "\u03b8", 796, 488, "serif-label math-label", { "font-size": "55" });
+        text(rotationLayer, "Z", 840, 515, "serif-label math-label", { "font-size": "36" });
+        text(rotationLayer, "Roll", 826, 638, "serif-label", { "font-size": "58" });
+      }
+
+      function drawStepLegend(orderKey) {
+        var labels = ORDER_MAP[orderKey];
+        var x = 24;
+        var y = 26;
+        var width = 246;
+        var height = 76;
+        overlayLayer.appendChild(el("rect", { x: x, y: y, width: width, height: height, rx: 8, class: "badge" }));
+        for (var i = 0; i < labels.length; i += 1) {
+          var yy = y + 20 + i * 19;
+          line(overlayLayer, { x: x + 13, y: yy }, { x: x + 42, y: yy }, {
+            class: "legend-swatch",
+            stroke: i === labels.length - 1 ? "#111111" : STEP_COLORS[i],
+            "stroke-dasharray": i === labels.length - 1 ? "none" : "7 5"
+          });
+          text(overlayLayer, String(i + 1) + " " + labels[i], x + 52, yy + 5, "small-label");
+        }
+      }
+
+      function drawGhostPlane(r, color, label, index) {
+        var pts = planeCorners(r);
+        polygon(stepLayer, pts, { class: "ghost-plane", stroke: color });
+        var center = project(mulVec(r, { x: 0, y: 0, z: PLANE_DEPTH }));
+        var offset = index === 0 ? -34 : -18;
+        text(stepLayer, label, center.x + 6, center.y + offset, "small-label", { fill: color });
+      }
+
+      function drawImagePlane(r) {
+        var corners = planeCorners(r);
+        polygon(planeLayer, corners, { class: "plane-fill" });
+
+        var centerWorld = mulVec(r, { x: 0, y: 0, z: PLANE_DEPTH });
+        var xDir = mulVec(r, { x: 1, y: 0, z: 0 });
+        var yDir = mulVec(r, { x: 0, y: 1, z: 0 });
+        var center = project(centerWorld);
+        var xEnd = project(add(centerWorld, scaleVec(xDir, 1.35)));
+        var yEnd = project(add(centerWorld, scaleVec(yDir, 1.20)));
+
+        line(planeLayer, center, xEnd, { class: "local-axis", "marker-end": "url(#arrowGreen)" });
+        line(planeLayer, center, yEnd, { class: "local-axis", "marker-end": "url(#arrowGreen)" });
+        text(planeLayer, "x", xEnd.x + 8, xEnd.y + 12, "serif-label green-label", { "font-size": "49" });
+        text(planeLayer, "y", yEnd.x - 35, yEnd.y + 8, "serif-label green-label", { "font-size": "49" });
+        text(planeLayer, "image plane", center.x - 64, center.y + 116, "small-label");
+      }
+
+      function drawProjectionGeometry(r) {
+        var origin = project({ x: 0, y: 0, z: 0 });
+        var pProjection = imageProjection(r);
+        var pScreen = project(pProjection.world);
+        var pWorld = project(WORLD_POINT);
+        var floorPoint3 = { x: WORLD_POINT.x, y: 0, z: WORLD_POINT.z };
+        var zFoot3 = { x: 0, y: 0, z: WORLD_POINT.z };
+        var floorPoint = project(floorPoint3);
+        var zFoot = project(zFoot3);
+
+        line(rayLayer, floorPoint, pWorld, { class: "support-line" });
+        line(rayLayer, zFoot, floorPoint, { class: "support-line" });
+        line(rayLayer, origin, pWorld, { class: "ray" });
+
+        pointLayer.appendChild(el("circle", { cx: pScreen.x, cy: pScreen.y, r: 14, class: "point-fill" }));
+        pointLayer.appendChild(el("circle", { cx: pWorld.x, cy: pWorld.y, r: 15, class: "point-fill" }));
+        text(pointLayer, "p", pScreen.x + 17, pScreen.y - 26, "serif-label", { "font-size": "58" });
+        text(pointLayer, "P", pWorld.x - 34, pWorld.y - 34, "serif-label", { "font-size": "68" });
+
+        if (!pProjection.visible) {
+          text(pointLayer, "behind camera", pScreen.x - 42, pScreen.y + 34, "small-label", { fill: "#b50909" });
+        }
+      }
+
+      function updateHighlights() {
+        var active = state.animating || state.active;
+        ["yaw", "pitch", "roll"].forEach(function (key) {
+          var arrow = document.getElementById(key + "Arrow");
+          if (!arrow) return;
+          arrow.classList.toggle("hot", active === key);
+          arrow.classList.toggle("dim", Boolean(active) && active !== key);
+        });
+
+        var axisMap = { yaw: "activeY", pitch: "activeX", roll: "activeZ" };
+        Object.keys(axisMap).forEach(function (key) {
+          var axis = document.getElementById(axisMap[key]);
+          if (axis) axis.classList.toggle("on", active === key);
+        });
+
+        animButtons.forEach(function (button) {
+          button.classList.toggle("active", state.animating === button.getAttribute("data-animate"));
+          button.textContent = state.animating === button.getAttribute("data-animate")
+            ? "Stop " + button.getAttribute("data-animate")
+            : "Play " + button.getAttribute("data-animate");
+        });
+      }
+
+      function render(now) {
+        clear(stepLayer);
+        clear(rayLayer);
+        clear(planeLayer);
+        clear(pointLayer);
+        clear(overlayLayer);
+
+        var angles = getEffectiveAngles(now);
+        var steps = computeSteps(state.order, angles);
+        var finalR = steps[steps.length - 1].matrix;
+        var order = ORDER_MAP[state.order];
+
+        if (showOtherInput.checked) {
+          var altSteps = computeSteps(otherOrder(state.order), angles);
+          polygon(stepLayer, planeCorners(altSteps[altSteps.length - 1].matrix), { class: "alt-plane" });
+          var altCenter = project(mulVec(altSteps[altSteps.length - 1].matrix, { x: 0, y: 0, z: PLANE_DEPTH }));
+          text(stepLayer, "other order", altCenter.x + 10, altCenter.y - 36, "small-label", { fill: "#6c43c6" });
+        }
+
+        if (showStepsInput.checked) {
+          drawGhostPlane(steps[0].matrix, STEP_COLORS[0], "1 " + order[0], 0);
+          drawGhostPlane(steps[1].matrix, STEP_COLORS[1], "2 " + order[1], 1);
+          drawStepLegend(state.order);
+        }
+
+        drawProjectionGeometry(finalR);
+        drawImagePlane(finalR);
+
+        outputs.yaw.textContent = Math.round(angles.yaw) + " deg";
+        outputs.pitch.textContent = Math.round(angles.pitch) + " deg";
+        outputs.roll.textContent = Math.round(angles.roll) + " deg";
+        stepText.textContent = "apply: " + orderLabel(state.order);
+        matrixText.textContent = MATRIX_LABELS[state.order];
+        Object.keys(orderButtons).forEach(function (key) {
+          orderButtons[key].classList.toggle("active", state.order === key);
+        });
+
+        updateHighlights();
+
+        if (state.animating) {
+          state.animationFrame = requestAnimationFrame(render);
+        }
+      }
+
+      function queueRender() {
+        if (!state.animating) render(performance.now());
+      }
+
+      function setActive(key) {
+        state.active = key;
+        window.clearTimeout(setActive.timer);
+        setActive.timer = window.setTimeout(function () {
+          if (!state.animating) {
+            state.active = null;
+            render(performance.now());
+          }
+        }, 1200);
+      }
+
+      function startAnimation(key) {
+        if (state.animating === key) {
+          state.animating = null;
+          cancelAnimationFrame(state.animationFrame);
+          state.animationFrame = 0;
+          render(performance.now());
+          return;
+        }
+        if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+        state.animating = key;
+        state.active = key;
+        state.animationStart = performance.now();
+        render(state.animationStart);
+      }
+
+      Object.keys(sliders).forEach(function (key) {
+        sliders[key].addEventListener("input", function () {
+          setActive(key);
+          queueRender();
+        });
+      });
+
+      Object.keys(orderButtons).forEach(function (key) {
+        orderButtons[key].addEventListener("click", function () {
+          state.order = key;
+          queueRender();
+        });
+      });
+
+      animButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          startAnimation(button.getAttribute("data-animate"));
+        });
+      });
+
+      showStepsInput.addEventListener("change", queueRender);
+      showOtherInput.addEventListener("change", queueRender);
+
+      resetButton.addEventListener("click", function () {
+        Object.keys(DEFAULTS).forEach(function (key) {
+          sliders[key].value = DEFAULTS[key];
+        });
+        state.order = "YPR";
+        state.active = null;
+        state.animating = null;
+        if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+        state.animationFrame = 0;
+        render(performance.now());
+      });
+
+      drawStaticWorld();
+      drawRotationArrows();
+      render(performance.now());
+    }());
+  </script>
+</body>
+</html>

@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2D Convolution</title>
+<style>
+  :root{
+    --ink:#111315;
+    --ink-soft:#6f7377;
+    --rule:#d9dcdf;
+    --paper:#ffffff;
+    --panel:#fbfbfa;
+    --terra:#c0705a;
+    --terra-soft:#dfa695;
+    --shade:#b6c2c2;
+    --teal:#a9c6bd;
+    --teal-ink:#1b4f44;
+    --faint:#dcdedf;
+    --faint-ink:#c2c5c7;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);
+    font-family:"Segoe UI",Inter,system-ui,-apple-system,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1500px;margin:0 auto;padding:22px 20px 60px;}
+  h1{font-size:21px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px;}
+  .sub{font-size:13.5px;color:var(--ink-soft);margin:0 0 18px;max-width:900px;line-height:1.5;}
+
+  /* ---- controls ---- */
+  .controls{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;
+    border:1px solid var(--rule);border-radius:10px;background:var(--panel);
+    padding:11px 15px;margin-bottom:16px;}
+  .ctl{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);}
+  .ctl label{color:var(--ink-soft);font-weight:600;letter-spacing:.02em;}
+  select{font:inherit;font-size:12.5px;padding:4px 6px;border:1px solid var(--rule);
+    border-radius:6px;background:#fff;color:var(--ink);}
+  input[type=range]{width:120px;accent-color:var(--terra);}
+  button{font:inherit;font-size:12.5px;font-weight:600;padding:5px 12px;border-radius:6px;
+    border:1px solid var(--rule);background:#fff;color:var(--ink);cursor:pointer;}
+  button:hover{border-color:var(--terra);color:var(--terra);}
+  button.on{background:var(--terra);border-color:var(--terra);color:#fff;}
+  .chk{display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;}
+  .chk input{accent-color:var(--terra);}
+  .pill{font-size:11.5px;color:var(--ink-soft);border-left:1px solid var(--rule);padding-left:18px;}
+  .pill b{color:var(--ink);font-variant-numeric:tabular-nums;}
+
+  /* ---- figure ---- */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;}
+  .cellwrap{border:1px solid transparent;border-radius:10px;padding:2px;transition:border-color .15s;}
+  .cellwrap.focus{border-color:#ecdcd6;background:#fefaf9;}
+  svg.fig{display:block;width:100%;height:auto;touch-action:none;cursor:grab;}
+  svg.fig.dragging{cursor:grabbing;}
+  .eq{font-size:12px;color:var(--ink-soft);padding:0 10px 8px;font-variant-numeric:tabular-nums;}
+  .eq b{color:var(--terra);font-weight:650;}
+
+  /* ---- readout ---- */
+  .readout{margin-top:22px;border:1px solid var(--rule);border-radius:10px;background:var(--panel);
+    padding:14px 16px;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:start;}
+  .rgrid{display:grid;grid-template-columns:repeat(3,minmax(96px,1fr));gap:5px;}
+  .rc{border:1px solid var(--rule);border-radius:6px;background:#fff;padding:5px 7px;text-align:center;}
+  .rc .top{font-size:11.5px;color:var(--ink-soft);white-space:nowrap;}
+  .rc .bot{font-size:13px;font-variant-numeric:tabular-nums;margin-top:1px;}
+  .rc.pad{background:#f6f4f2;}
+  .rc.pad .bot{color:var(--ink-soft);}
+  .rc.hot{border-color:var(--terra);box-shadow:0 0 0 2px #f3e0da inset;}
+  .rtitle{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-soft);margin:0 0 8px;}
+  .sumline{font-size:13px;line-height:1.7;margin-top:10px;font-variant-numeric:tabular-nums;
+    word-break:break-word;}
+  .sumline .res{font-weight:700;color:var(--terra);font-size:15px;}
+  .note{font-size:12px;color:var(--ink-soft);line-height:1.55;margin-top:10px;}
+  .mth{font-family:Georgia,"Times New Roman",serif;font-style:italic;}
+  sub{font-size:.7em;}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);margin-top:12px;}
+  .legend i{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-2px;
+    margin-right:5px;border:1px solid #111;}
+  @media (max-width:980px){ .grid{grid-template-columns:1fr;} .readout{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>2D convolution — a fixed kernel sliding over a 2D input</h1>
+  <p class="sub">Each panel shows the same three arrays: the input <span class="mth">X</span> (4&nbsp;&times;&nbsp;6 circles),
+     the 3&nbsp;&times;&nbsp;3 weight kernel <span class="mth">&Omega;</span> (squares), and the hidden layer
+     <span class="mth">H</span><sub>1</sub>. The shaded receptive field is multiplied element-wise with
+     <span class="mth">&Omega;</span> (&otimes;) and the nine products are summed (&oplus;) into one shaded output cell.
+     <b>Drag inside any input grid</b>, or <b>click an <span class="mth">h<sub>ij</sub></span> cell</b>, to move that panel's kernel.</p>
+
+  <div class="controls">
+    <div class="ctl"><label for="kern">Kernel &Omega;</label>
+      <select id="kern"></select></div>
+    <div class="ctl"><label for="stride">Stride</label>
+      <input id="stride" type="range" min="1" max="3" step="1" value="1">
+      <b id="strideV" style="font-variant-numeric:tabular-nums">1</b></div>
+    <div class="ctl"><label for="pad">Zero padding</label>
+      <input id="pad" type="range" min="0" max="1" step="1" value="1">
+      <b id="padV" style="font-variant-numeric:tabular-nums">1</b></div>
+    <label class="chk"><input type="checkbox" id="nums"> show numeric values</label>
+    <label class="chk"><input type="checkbox" id="shade"> shade H<sub>1</sub> by value</label>
+    <button id="anim">▶ Animate sweep</button>
+    <button id="reset">Reset to a)–d)</button>
+    <div class="pill">output <b id="dims">4 × 6</b> &nbsp;·&nbsp; receptive field <b>3 × 3</b></div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="readout">
+    <div>
+      <p class="rtitle">Element-wise products — panel <span id="rpanel">a</span></p>
+      <div class="rgrid" id="rgrid"></div>
+    </div>
+    <div>
+      <p class="rtitle">Accumulation</p>
+      <div class="sumline" id="sumline"></div>
+      <div class="note" id="note"></div>
+      <div class="legend">
+        <span><i style="background:var(--shade)"></i>active receptive field in <span class="mth">X</span></span>
+        <span><i style="background:var(--teal)"></i>output cell being computed</span>
+        <span><i style="background:#fff;border-color:#111"></i>inactive input</span>
+        <span><i style="background:#fff;border-color:var(--faint)"></i>not yet computed</span>
+        <span style="color:var(--terra)">&otimes; element-wise multiply &nbsp; &oplus; sum</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================
+   GEOMETRY  —  axonometric (sheared) projection of a 2D array
+   ============================================================
+   A grid cell at 0-indexed (row r, col c) maps to the screen by
+       p = origin + c*U + r*V
+   U is the column axis (right + slightly up), V is the row axis
+   (down + slightly right).  The map is a genuine invertible 2x2
+   linear map, so screen points can be inverted back to fractional
+   (row,col) — that is what makes dragging land on the right cell. */
+const U  = {x: 42, y: -16};   // column step, circle grids
+const V  = {x:  2, y:  66};   // row step,    circle grids
+const R  = 25;                // circle radius
+const CU = {x: 42, y: -15};   // column step, weight cells (parallelogram edge)
+const CV = {x:  2, y:  44};   // row step,    weight cells
+const DET = U.x*V.y - V.x*U.y;
+
+const IN0 = {x: 72, y:198};   // screen centre of x11
+const H0  = {x:566, y:330};   // screen centre of h11
+const W0  = {x:346, y:200};   // top-left corner of cell omega11
+const OTIMES = {x:352, y:116};
+const OPLUS  = {x:506, y:268};
+const VBW = 822, VBH = 622;
+
+function proj(o, r, c){ return {x:o.x + c*U.x + r*V.x, y:o.y + c*U.y + r*V.y}; }
+function unproj(o, p){
+  const dx = p.x - o.x, dy = p.y - o.y;
+  return { c: (dx*V.y - dy*V.x)/DET, r: (U.x*dy - U.y*dx)/DET };
+}
+function wcorner(r, c){ return {x: W0.x + c*CU.x + r*CV.x, y: W0.y + c*CU.y + r*CV.y}; }
+function wcentre(r, c){ const p = wcorner(r,c);
+  return {x: p.x + (CU.x+CV.x)/2, y: p.y + (CU.y+CV.y)/2}; }
+
+/* ============================================================
+   DATA
+   ============================================================ */
+const NR = 4, NC = 6, K = 3;          // input 4x6, kernel 3x3
+const X = [
+  [1,1,1,9,9,9],
+  [1,1,1,9,9,9],
+  [1,1,9,9,9,9],
+  [1,1,9,9,9,9]
+];
+const KERNELS = {
+  "Vertical edge (Sobel)": [[1,0,-1],[2,0,-2],[1,0,-1]],
+  "Horizontal edge (Sobel)": [[1,2,1],[0,0,0],[-1,-2,-1]],
+  "Blur (box, 1/9)": [[1/9,1/9,1/9],[1/9,1/9,1/9],[1/9,1/9,1/9]],
+  "Sharpen": [[0,-1,0],[-1,5,-1],[0,-1,0]],
+  "Identity": [[0,0,0],[0,1,0],[0,0,0]]
+};
+const DEFAULT_POS = [ {r:2,c:3}, {r:3,c:5}, {r:3,c:1}, {r:1,c:6} ];  // panels a,b,c,d (1-indexed h)
+
+const S = {
+  kern: "Vertical edge (Sobel)",
+  stride: 1,
+  pad: 1,
+  nums: false,
+  shadeH: false,
+  pos: DEFAULT_POS.map(p => ({r:p.r, c:p.c})),
+  focus: 0,
+  hover: null,          // {panel, m, n}  0-indexed kernel tap being hovered
+  anim: null
+};
+
+const outDims = () => ({
+  H: Math.floor((NR + 2*S.pad - K)/S.stride) + 1,
+  W: Math.floor((NC + 2*S.pad - K)/S.stride) + 1
+});
+/* top-left input index (0-indexed, may be negative = padding) for output cell (oi,oj) 1-indexed */
+const patchTL = (oi,oj) => ({ r:(oi-1)*S.stride - S.pad, c:(oj-1)*S.stride - S.pad });
+
+function xAt(r,c){ return (r>=0 && r<NR && c>=0 && c<NC) ? X[r][c] : 0; }
+function inRange(r,c){ return r>=0 && r<NR && c>=0 && c<NC; }
+function omega(){ return KERNELS[S.kern]; }
+
+function hValue(oi,oj){
+  const tl = patchTL(oi,oj), w = omega();
+  let s = 0;
+  for(let m=0;m<K;m++) for(let n=0;n<K;n++) s += xAt(tl.r+m, tl.c+n) * w[m][n];
+  return s;
+}
+function hMatrix(){
+  const d = outDims(), M = [];
+  for(let i=1;i<=d.H;i++){ const row=[]; for(let j=1;j<=d.W;j++) row.push(hValue(i,j)); M.push(row); }
+  return M;
+}
+function coverage(){
+  const d = outDims(), cov = Array.from({length:NR},()=>Array(NC).fill(false));
+  for(let i=1;i<=d.H;i++) for(let j=1;j<=d.W;j++){
+    const tl = patchTL(i,j);
+    for(let m=0;m<K;m++) for(let n=0;n<K;n++){
+      const r=tl.r+m, c=tl.c+n; if(inRange(r,c)) cov[r][c]=true;
+    }
+  }
+  return cov;
+}
+function clampPos(p){
+  const d = outDims();
+  return { r: Math.min(Math.max(1, p.r), d.H), c: Math.min(Math.max(1, p.c), d.W) };
+}
+function fmtM(v){ return fmt(v).replace('-','−'); }
+function fmt(v){
+  if(Math.abs(v - Math.round(v)) < 1e-9) return String(Math.round(v));
+  return (Math.round(v*100)/100).toFixed(2).replace(/0$/,'');
+}
+
+/* ============================================================
+   SVG helpers
+   ============================================================ */
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+/* italic math symbol with a subscript, centred on (x,y) */
+function mathTxt(x, y, sym, sub, fill, size, extra){
+  size = size || 17;
+  const sub2 = sub===null||sub===undefined ? '' :
+    `<tspan font-size="${(size*0.66).toFixed(1)}" dy="${(size*0.24).toFixed(1)}">${esc(sub)}</tspan>`;
+  const shift = sub2 ? -size*0.17 : 0;
+  return `<text x="${(x+shift).toFixed(1)}" y="${y.toFixed(1)}" font-family="Georgia,'Times New Roman',serif"
+      font-style="italic" font-size="${size}" fill="${fill}" text-anchor="middle"
+      dominant-baseline="central" ${extra||''}>${esc(sym)}${sub2}</text>`;
+}
+function numTxt(x, y, t, fill, size){
+  return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-family="Segoe UI,Helvetica,Arial,sans-serif"
+    font-size="${size}" font-weight="600" fill="${fill}" text-anchor="middle"
+    dominant-baseline="central" style="font-variant-numeric:tabular-nums">${esc(t)}</text>`;
+}
+function plainTxt(x,y,t,fill,size,anchor,weight){
+  return `<text x="${x}" y="${y}" font-family="Segoe UI,Helvetica,Arial,sans-serif"
+    font-size="${size||15}" fill="${fill}" text-anchor="${anchor||'middle'}"
+    font-weight="${weight||400}" dominant-baseline="central">${t}</text>`;
+}
+/* intersection of segment P->Q with the infinite line through A with direction D */
+function lineHit(P,Q,A,D){
+  const ex = Q.x-P.x, ey = Q.y-P.y;
+  const den = ex*D.y - ey*D.x;
+  if(Math.abs(den) < 1e-6) return Q;
+  const t = ((A.x-P.x)*D.y - (A.y-P.y)*D.x) / den;
+  const tt = Math.max(0, Math.min(1, t));
+  return {x: P.x + ex*tt, y: P.y + ey*tt};
+}
+function shrinkFrom(P, Q, d){  // move P toward Q by d
+  const dx=Q.x-P.x, dy=Q.y-P.y, L=Math.hypot(dx,dy)||1;
+  return {x:P.x+dx/L*d, y:P.y+dy/L*d};
+}
+
+/* diverging colour ramp for the H1 heat-shading */
+function heat(v, lo, hi){
+  if(hi - lo < 1e-9) return '#ffffff';
+  const t = Math.max(-1, Math.min(1, v >= 0 ? (hi>0 ? v/hi : 0) : (lo<0 ? -v/(-lo) : 0)));
+  const mix = (a,b,k)=>a.map((c,i)=>Math.round(c+(b[i]-c)*k));
+  const c = v>=0 ? mix([255,255,255],[192,112,90],t) : mix([255,255,255],[91,143,185],t);
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+/* ============================================================
+   PANEL RENDER
+   ============================================================ */
+const LETTERS = ['a','b','c','d'];
+
+function renderPanel(k){
+  const pos = S.pos[k], w = omega(), tl = patchTL(pos.r, pos.c);
+  const d = outDims(), Hm = hMatrix(), cov = coverage();
+  let lo = Infinity, hi = -Infinity;
+  Hm.forEach(row=>row.forEach(v=>{ lo=Math.min(lo,v); hi=Math.max(hi,v); }));
+  const g = [];
+
+  g.push(`<rect x="0" y="0" width="${VBW}" height="${VBH}" fill="#fff"/>`);
+  g.push(plainTxt(22, 26, LETTERS[k]+')', '#111', 24, 'start', 400));
+
+  /* ---------- connecting lines: each tap of the patch -> its omega cell ---------- */
+  const leftEdgeA = wcorner(0,0), leftEdgeD = {x:CV.x, y:CV.y};
+  for(let m=0;m<K;m++) for(let n=0;n<K;n++){
+    const r = tl.r+m, c = tl.c+n;
+    const P0 = proj(IN0, r, c);
+    const Q  = wcentre(m,n);
+    const start = inRange(r,c) ? shrinkFrom(P0, Q, R-1) : shrinkFrom(P0, Q, 12);
+    const end   = lineHit(start, Q, leftEdgeA, leftEdgeD);
+    const hot = S.hover && S.hover.panel===k && S.hover.m===m && S.hover.n===n;
+    g.push(`<line x1="${start.x.toFixed(1)}" y1="${start.y.toFixed(1)}" x2="${end.x.toFixed(1)}" y2="${end.y.toFixed(1)}"
+      stroke="${hot?'#c0705a':'#e0aa99'}" stroke-width="${hot?2.2:1.1}"/>`);
+  }
+
+  /* ---------- input X ---------- */
+  for(let r=0;r<NR;r++) for(let c=0;c<NC;c++){
+    const p = proj(IN0, r, c);
+    const act = (r>=tl.r && r<tl.r+K && c>=tl.c && c<tl.c+K);
+    const skipped = !cov[r][c];
+    const m = r-tl.r, n = c-tl.c;
+    const hot = act && S.hover && S.hover.panel===k && S.hover.m===m && S.hover.n===n;
+    g.push(`<circle cx="${p.x}" cy="${p.y}" r="${R}"
+      fill="${act ? (hot ? '#9fb0b0' : '#b6c2c2') : '#fff'}"
+      stroke="${act ? '#111' : (skipped ? '#bfc4c6' : '#222527')}"
+      stroke-width="${act ? 2.0 : 1.5}"
+      ${skipped && !act ? 'stroke-dasharray="3 3"' : ''}
+      data-role="xcell" data-panel="${k}" data-m="${m}" data-n="${n}" style="${act?'cursor:pointer':''}"/>`);
+    const txt = S.nums ? String(X[r][c]) : null;
+    g.push(txt !== null
+      ? numTxt(p.x, p.y, txt, act?'#111':(skipped?'#bfc4c6':'#83878a'), 16)
+      : mathTxt(p.x, p.y, 'x', `${r+1}${c+1}`, act?'#111':(skipped?'#bfc4c6':'#8a8e91'), 17));
+  }
+  /* ---------- explicit zeros for padded taps ---------- */
+  for(let m=0;m<K;m++) for(let n=0;n<K;n++){
+    const r = tl.r+m, c = tl.c+n;
+    if(inRange(r,c)) continue;
+    const p = proj(IN0, r, c);
+    const hot = S.hover && S.hover.panel===k && S.hover.m===m && S.hover.n===n;
+    g.push(mathTxt(p.x, p.y, '0', null, hot ? '#c0705a' : '#111', 19));
+  }
+  const inLabDrop = (tl.r + K > NR) ? 106 : 66;
+  g.push(plainTxt(IN0.x + 2.1*U.x + 3*V.x + 6, IN0.y + 2.1*U.y + 3*V.y + inLabDrop, 'Input, <tspan font-family="Georgia,serif" font-weight="700">X</tspan>', '#111', 19));
+
+  /* ---------- weights Omega ---------- */
+  for(let m=0;m<K;m++) for(let n=0;n<K;n++){
+    const a = wcorner(m,n), b = wcorner(m,n+1), c2 = wcorner(m+1,n+1), dd = wcorner(m+1,n);
+    const hot = S.hover && S.hover.panel===k && S.hover.m===m && S.hover.n===n;
+    g.push(`<polygon points="${a.x.toFixed(1)},${a.y.toFixed(1)} ${b.x.toFixed(1)},${b.y.toFixed(1)}
+      ${c2.x.toFixed(1)},${c2.y.toFixed(1)} ${dd.x.toFixed(1)},${dd.y.toFixed(1)}"
+      fill="${hot?'#f6e6e0':'#fff'}" stroke="#111" stroke-width="1.3"
+      data-role="wcell" data-panel="${k}" data-m="${m}" data-n="${n}" style="cursor:pointer"/>`);
+    const ce = wcentre(m,n);
+    g.push(S.nums
+      ? numTxt(ce.x, ce.y, fmtM(w[m][n]), hot?'#c0705a':'#111', 15)
+      : mathTxt(ce.x, ce.y, 'ω', `${m+1}${n+1}`, hot?'#c0705a':'#111', 17));
+  }
+  const wlab = wcorner(3, 1.5);
+  g.push(plainTxt(wlab.x, wlab.y + 34, 'Weights, <tspan font-family="Georgia,serif" font-weight="700">Ω</tspan>', '#111', 19));
+
+  /* ---------- otimes / oplus ---------- */
+  const otP = (tl.r < 0 && tl.c + K > NC) ? {x:396, y:92} : OTIMES;
+  g.push(symbol(otP, 'x'));
+  g.push(symbol(OPLUS, '+'));
+
+  /* ---------- dashed accumulation line: Omega -> oplus -> h ---------- */
+  const wBR = wcorner(2.05, 3);
+  const hp  = proj(H0, pos.r-1, pos.c-1);
+  const hEnd = shrinkFrom(hp, OPLUS, R+1);
+  g.push(`<polyline points="${wBR.x.toFixed(1)},${wBR.y.toFixed(1)} ${(OPLUS.x-15).toFixed(1)},${(OPLUS.y+4).toFixed(1)}"
+     fill="none" stroke="#e0aa99" stroke-width="1.4" stroke-dasharray="7 5"/>`);
+  g.push(`<polyline points="${(OPLUS.x+15).toFixed(1)},${(OPLUS.y-3).toFixed(1)} ${hEnd.x.toFixed(1)},${hEnd.y.toFixed(1)}"
+     fill="none" stroke="#e0aa99" stroke-width="1.4" stroke-dasharray="7 5"/>`);
+
+  /* ---------- hidden layer H1 ---------- */
+  for(let i=1;i<=d.H;i++) for(let j=1;j<=d.W;j++){
+    const p = proj(H0, i-1, j-1);
+    const act = (i===pos.r && j===pos.c);
+    const v = Hm[i-1][j-1];
+    let fill = '#fff';
+    if(act) fill = '#a9c6bd';
+    else if(S.shadeH) fill = heat(v, lo, hi);
+    g.push(`<circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${fill}"
+      stroke="${act ? '#111' : (S.shadeH ? '#b9bcbe' : '#dcdedf')}" stroke-width="${act?1.9:1.1}"
+      data-role="hcell" data-panel="${k}" data-i="${i}" data-j="${j}" style="cursor:pointer"/>`);
+    const col = act ? '#1b4f44' : (S.shadeH ? '#5c6163' : '#c2c5c7');
+    g.push(S.nums
+      ? numTxt(p.x, p.y, fmtM(v), col, 15)
+      : mathTxt(p.x, p.y, 'h', `${i}${j}`, col, 17));
+  }
+  const hlab = proj(H0, d.H-1, (d.W-1)/2);
+  g.push(plainTxt(hlab.x, hlab.y + 64, 'Hidden layer, <tspan font-family="Georgia,serif" font-weight="700">H</tspan><tspan font-size="13" dy="4">1</tspan>', '#111', 19));
+
+  return `<svg class="fig" viewBox="0 0 ${VBW} ${VBH}" data-panel="${k}"
+     role="img" aria-label="Panel ${LETTERS[k]}: kernel centred so that output h ${pos.r}${pos.c} is computed">${g.join('')}</svg>`;
+}
+
+function symbol(P, kind){
+  const r = 13, a = r*0.52;
+  const inner = kind==='x'
+    ? `<line x1="${P.x-a}" y1="${P.y-a}" x2="${P.x+a}" y2="${P.y+a}" stroke="#c0705a" stroke-width="1.6"/>
+       <line x1="${P.x-a}" y1="${P.y+a}" x2="${P.x+a}" y2="${P.y-a}" stroke="#c0705a" stroke-width="1.6"/>`
+    : `<line x1="${P.x-a*1.25}" y1="${P.y}" x2="${P.x+a*1.25}" y2="${P.y}" stroke="#c0705a" stroke-width="1.6"/>
+       <line x1="${P.x}" y1="${P.y-a*1.25}" x2="${P.x}" y2="${P.y+a*1.25}" stroke="#c0705a" stroke-width="1.6"/>`;
+  return `<g><circle cx="${P.x}" cy="${P.y}" r="${r}" fill="#fff" stroke="#c0705a" stroke-width="1.4"/>${inner}</g>`;
+}
+
+/* ============================================================
+   READOUT
+   ============================================================ */
+function renderReadout(){
+  const k = S.focus, pos = S.pos[k], w = omega(), tl = patchTL(pos.r, pos.c);
+  document.getElementById('rpanel').textContent = LETTERS[k];
+  const cells = [], terms = [];
+  for(let m=0;m<K;m++) for(let n=0;n<K;n++){
+    const r = tl.r+m, c = tl.c+n, ok = inRange(r,c);
+    const xv = xAt(r,c), wv = w[m][n], pv = xv*wv;
+    const hot = S.hover && S.hover.panel===k && S.hover.m===m && S.hover.n===n;
+    const xl = ok ? `x<sub>${r+1}${c+1}</sub>` : `0`;
+    cells.push(`<div class="rc ${ok?'':'pad'} ${hot?'hot':''}" data-role="rcell" data-m="${m}" data-n="${n}">
+        <div class="top"><span class="mth">${xl}</span> &times; <span class="mth">&omega;<sub>${m+1}${n+1}</sub></span></div>
+        <div class="bot">${fmtM(xv)} &times; ${fmtM(wv)} = <b>${fmtM(pv)}</b></div></div>`);
+    terms.push(fmt(pv));
+  }
+  document.getElementById('rgrid').innerHTML = cells.join('');
+  const tot = hValue(pos.r, pos.c);
+  document.getElementById('sumline').innerHTML =
+    `<span class="mth">h<sub>${pos.r}${pos.c}</sub></span> = ` +
+    terms.map((t,i)=> (i && t.charAt(0)!=='-') ? '+ '+t : (i? t.replace('-','&minus; ') : t)).join(' ') +
+    ` = <span class="res">${fmt(tot).replace('-','−')}</span>`;
+
+  const d = outDims();
+  const cov = coverage();
+  let skipped = 0; cov.forEach(row=>row.forEach(v=>{ if(!v) skipped++; }));
+  document.getElementById('dims').textContent = d.H + ' × ' + d.W;
+  const topLeft = `(${tl.r+1}, ${tl.c+1})`;
+  document.getElementById('note').innerHTML =
+    `Receptive field of <span class="mth">h<sub>${pos.r}${pos.c}</sub></span> starts at input index ${topLeft} ` +
+    `(indices outside 1…${NR} / 1…${NC} are the zero padding shown as <span class="mth">0</span>). ` +
+    `With stride ${S.stride} and padding ${S.pad}, the output is ` +
+    `⌊(${NR}+2·${S.pad}−3)/${S.stride}⌋+1 × ⌊(${NC}+2·${S.pad}−3)/${S.stride}⌋+1 = <b>${d.H} × ${d.W}</b>` +
+    (skipped ? `; <b>${skipped}</b> input cell${skipped>1?'s are':' is'} never covered by any kernel position (dashed outline).` : `; every input cell is covered by at least one kernel position.`);
+}
+
+/* ============================================================
+   RENDER + EVENTS
+   ============================================================ */
+const gridEl = document.getElementById('grid');
+
+function renderAll(){
+  S.pos = S.pos.map(clampPos);
+  let html = '';
+  for(let k=0;k<4;k++){
+    const pos = S.pos[k], v = hValue(pos.r,pos.c);
+    html += `<div class="cellwrap ${k===S.focus?'focus':''}" data-wrap="${k}">${renderPanel(k)}
+      <div class="eq"><span class="mth">h<sub>${pos.r}${pos.c}</sub></span> = &Sigma; <span class="mth">x</span>&middot;<span class="mth">&omega;</span> = <b>${fmtM(v)}</b></div></div>`;
+  }
+  gridEl.innerHTML = html;
+  renderReadout();
+}
+
+/* ---- convert a pointer event to fractional input (row,col) ---- */
+function localPoint(svg, ev){
+  const rect = svg.getBoundingClientRect();
+  return { x: (ev.clientX - rect.left) * VBW / rect.width,
+           y: (ev.clientY - rect.top ) * VBH / rect.height };
+}
+function moveKernelTo(k, pt){
+  const f = unproj(IN0, pt);                    // fractional centre in input coords (0-indexed)
+  const d = outDims();
+  // centre of output (oi,oj) sits at input index (oi-1)*s - pad + 1
+  let oi = Math.round((f.r + S.pad - 1)/S.stride) + 1;
+  let oj = Math.round((f.c + S.pad - 1)/S.stride) + 1;
+  oi = Math.min(Math.max(1,oi), d.H);
+  oj = Math.min(Math.max(1,oj), d.W);
+  if(S.pos[k].r!==oi || S.pos[k].c!==oj || S.focus!==k){
+    S.pos[k] = {r:oi, c:oj}; S.focus = k; renderAll();
+  }
+}
+
+let drag = null;
+gridEl.addEventListener('pointerdown', function(ev){
+  const svg = ev.target.closest('svg.fig'); if(!svg) return;
+  const k = +svg.dataset.panel;
+  stopAnim();
+  const t = ev.target, role = t.dataset && t.dataset.role;
+  if(role === 'hcell'){ S.pos[k] = {r:+t.dataset.i, c:+t.dataset.j}; S.focus = k; renderAll(); return; }
+  if(role === 'wcell'){ S.focus = k; S.hover = {panel:k, m:+t.dataset.m, n:+t.dataset.n}; renderAll(); return; }
+  const pt = localPoint(svg, ev);
+  if(pt.x > 320) { S.focus = k; renderAll(); return; }   // only the X region is draggable
+  drag = {k:k, svg:svg};
+  svg.classList.add('dragging');
+  try{ svg.setPointerCapture && svg.setPointerCapture(ev.pointerId); }catch(e){}
+  moveKernelTo(k, pt);
+});
+window.addEventListener('pointermove', function(ev){
+  if(!drag) return;
+  const svg = gridEl.querySelector('svg.fig[data-panel="'+drag.k+'"]'); if(!svg) return;
+  moveKernelTo(drag.k, localPoint(svg, ev));
+});
+window.addEventListener('pointerup', function(){
+  if(!drag) return;
+  const svg = gridEl.querySelector('svg.fig[data-panel="'+drag.k+'"]');
+  if(svg) svg.classList.remove('dragging');
+  drag = null;
+});
+
+/* hover a tap of the receptive field (or its omega cell) to light up the pair */
+let hoverRaf = null;
+gridEl.addEventListener('pointerover', function(ev){
+  const t = ev.target, role = t.dataset && t.dataset.role;
+  let nh = null;
+  if(role === 'xcell' || role === 'wcell'){
+    const m = +t.dataset.m, n = +t.dataset.n;
+    if(m>=0 && m<K && n>=0 && n<K) nh = {panel:+t.dataset.panel, m:m, n:n};
+  }
+  setHover(nh);
+});
+gridEl.addEventListener('pointerleave', function(){ setHover(null); });
+function setHover(nh){
+  const a = S.hover, same = (!a&&!nh) || (a&&nh&&a.panel===nh.panel&&a.m===nh.m&&a.n===nh.n);
+  if(same) return;
+  S.hover = nh;
+  if(hoverRaf) cancelAnimationFrame(hoverRaf);
+  hoverRaf = requestAnimationFrame(renderAll);
+}
+document.getElementById('rgrid').addEventListener('pointerover', function(ev){
+  const c = ev.target.closest('.rc'); if(!c) return;
+  setHover({panel:S.focus, m:+c.dataset.m, n:+c.dataset.n});
+});
+document.getElementById('rgrid').addEventListener('pointerleave', ()=>setHover(null));
+
+/* ---- controls ---- */
+const kSel = document.getElementById('kern');
+kSel.innerHTML = Object.keys(KERNELS).map(n=>`<option>${n}</option>`).join('');
+kSel.value = S.kern;
+kSel.addEventListener('change', e=>{ S.kern = e.target.value; renderAll(); });
+
+document.getElementById('stride').addEventListener('input', e=>{
+  S.stride = +e.target.value; document.getElementById('strideV').textContent = S.stride;
+  stopAnim(); renderAll();
+});
+document.getElementById('pad').addEventListener('input', e=>{
+  S.pad = +e.target.value; document.getElementById('padV').textContent = S.pad;
+  stopAnim(); renderAll();
+});
+document.getElementById('nums').addEventListener('change', e=>{ S.nums = e.target.checked; renderAll(); });
+document.getElementById('shade').addEventListener('change', e=>{ S.shadeH = e.target.checked; renderAll(); });
+document.getElementById('reset').addEventListener('click', ()=>{
+  stopAnim();
+  S.stride = 1; S.pad = 1;
+  document.getElementById('stride').value = 1; document.getElementById('strideV').textContent = '1';
+  document.getElementById('pad').value = 1;    document.getElementById('padV').textContent = '1';
+  S.pos = DEFAULT_POS.map(p=>({r:p.r,c:p.c})); S.focus = 0; renderAll();
+});
+
+const animBtn = document.getElementById('anim');
+function stopAnim(){ if(S.anim){ clearInterval(S.anim); S.anim = null; animBtn.classList.remove('on'); animBtn.textContent = '▶ Animate sweep'; } }
+animBtn.addEventListener('click', function(){
+  if(S.anim){ stopAnim(); return; }
+  animBtn.classList.add('on'); animBtn.textContent = '❚❚ Pause sweep';
+  S.anim = setInterval(function(){
+    const d = outDims(), k = S.focus, p = S.pos[k];
+    let j = p.c + 1, i = p.r;
+    if(j > d.W){ j = 1; i = i + 1; if(i > d.H) i = 1; }
+    S.pos[k] = {r:i, c:j};
+    renderAll();
+  }, 650);
+});
+
+window.addEventListener('keydown', function(ev){
+  const map = {ArrowLeft:[0,-1], ArrowRight:[0,1], ArrowUp:[-1,0], ArrowDown:[1,0]};
+  if(!map[ev.key]) return;
+  if(document.activeElement && /INPUT|SELECT/.test(document.activeElement.tagName)) return;
+  ev.preventDefault(); stopAnim();
+  const p = S.pos[S.focus];
+  S.pos[S.focus] = clampPos({r:p.r + map[ev.key][0], c:p.c + map[ev.key][1]});
+  renderAll();
+});
+
+renderAll();
+})();
+</script>
+</body>
+</html>

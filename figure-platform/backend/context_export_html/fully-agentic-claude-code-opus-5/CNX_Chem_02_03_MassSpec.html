@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mass Spectrometer</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --ink:#1b1f24;
+    --muted:#5b6670;
+    --line:#2b2f33;
+    --teal:#3fb3ad;
+    --teal-d:#1f8f8a;
+    --amber:#e8871e;
+    --amber-d:#b8650c;
+    --panel:#f7f8f9;
+    --border:#d8dde1;
+    --grid:#b9c0c6;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1360px;margin:0 auto;padding:18px 20px 40px;}
+  h1{font-size:20px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 14px;max-width:960px;line-height:1.45}
+
+  .controls{display:flex;flex-wrap:wrap;gap:16px 22px;align-items:flex-end;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:12px 16px;margin-bottom:14px}
+  .ctl{display:flex;flex-direction:column;gap:5px}
+  .ctl label{font-size:11.5px;font-weight:700;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--muted)}
+  .segmented{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;background:#fff}
+  .segmented button{border:0;background:#fff;padding:7px 13px;font-size:13px;cursor:pointer;
+    color:var(--ink);border-right:1px solid var(--border)}
+  .segmented button:last-child{border-right:0}
+  .segmented button[aria-pressed="true"]{background:var(--teal-d);color:#fff;font-weight:600}
+  input[type=range]{width:290px;accent-color:var(--teal-d)}
+  .readout{font-family:"Consolas","SF Mono",monospace;font-size:12.5px;background:#fff;
+    border:1px solid var(--border);border-radius:7px;padding:7px 11px;line-height:1.55;
+    width:340px;min-height:70px}
+  .readout b{color:var(--amber-d)}
+  .btn{border:1px solid var(--border);background:#fff;border-radius:7px;padding:7px 13px;
+    font-size:13px;cursor:pointer}
+  .btn:hover{background:#eef1f3}
+  select{padding:6px 8px;font-size:13px;border:1px solid var(--border);border-radius:7px;background:#fff}
+
+  .stage{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:18px;align-items:start}
+  .stage.only-left{grid-template-columns:minmax(0,1fr)}
+  .stage.only-right{grid-template-columns:minmax(0,1fr)}
+  .stage.only-left .card.right{display:none}
+  .stage.only-right .card.left{display:none}
+  .stage.only-right .card.right{max-width:620px;margin:0 auto}
+  .stage.only-left  .card.left {max-width:980px;margin:0 auto}
+  @media (max-width:900px){ .stage{grid-template-columns:minmax(0,1fr)} }
+  .card{border:1px solid var(--border);border-radius:10px;background:#fff;padding:8px 10px 10px}
+  .card h2{font-size:12px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);
+    margin:2px 2px 4px;font-weight:700}
+  svg{display:block;width:100%;height:auto}
+  .note{font-size:12.5px;color:var(--muted);margin:8px 2px 0;line-height:1.5;min-height:36px}
+  .warn{font-size:12.5px;color:var(--amber-d);margin:6px 2px 0;line-height:1.45}
+
+  text{font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .lbl{font-size:17px;fill:var(--ink)}
+  .lead{stroke:var(--line);stroke-width:2.2;fill:none}
+  .bar{cursor:pointer}
+  .barhit{cursor:pointer;fill:transparent}
+  footer{margin-top:16px;font-size:12.5px;color:var(--muted);line-height:1.55;max-width:1100px}
+  code{background:#eef1f3;padding:1px 4px;border-radius:3px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mass spectrometry of zirconium — how ion deflection becomes a spectrum</h1>
+  <p class="sub">Sample vapour is ionized, accelerated through a potential <i>V</i>, and bent by a magnetic field <i>B</i>.
+  The radius of each ion&rsquo;s circular path is <b>r = &radic;(2mV/q) / B</b>, so <b>lighter ions are deflected most</b>.
+  Only ions that land on the collector slit reach the detector, so sweeping <i>B</i> scans the mass spectrum.</p>
+
+  <div class="controls">
+    <div class="ctl">
+      <label for="view">View</label>
+      <div class="segmented" id="view">
+        <button data-view="both" aria-pressed="true">Side&#8209;by&#8209;side</button>
+        <button data-view="left" aria-pressed="false">Instrument</button>
+        <button data-view="right" aria-pressed="false">Spectrum</button>
+      </div>
+    </div>
+
+    <div class="ctl" style="flex:1 1 300px">
+      <label for="bfield">Magnetic field strength <span id="blab"></span></label>
+      <input id="bfield" type="range" min="0" max="1" step="0.0005" value="0.5">
+    </div>
+
+    <div class="ctl">
+      <label for="exag">Isotope separation</label>
+      <select id="exag">
+        <option value="6" selected>&times;6 &mdash; textbook view</option>
+        <option value="3">&times;3</option>
+        <option value="1">&times;1 &mdash; true scale</option>
+      </select>
+    </div>
+
+    <div class="ctl">
+      <label>&nbsp;</label>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="scan">Sweep B &amp; record spectrum</button>
+        <button class="btn" id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="ctl">
+      <label>Detector readout</label>
+      <div class="readout" id="readout"></div>
+    </div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="card left">
+      <h2>Mass spectrometer (cross&#8209;section)</h2>
+      <svg id="instr" viewBox="0 0 760 580" role="img" aria-label="Cross-section of a magnetic-sector mass spectrometer"></svg>
+      <p class="note" id="exagnote"></p>
+    </div>
+    <div class="card right">
+      <h2>Mass spectrum of zirconium</h2>
+      <svg id="chart" viewBox="0 0 470 580" role="img" aria-label="Bar chart of zirconium isotope abundances"></svg>
+      <p class="note">Click a bar to tune the magnet to that isotope. Peak height = natural abundance.</p>
+    </div>
+  </div>
+
+  <footer>
+    <b>How the geometry is computed.</b> Every ion path is a genuine circular arc: the ion enters the field region at one
+    point moving horizontally, follows a circle of radius <code>r = r&#8320;&radic;(m/m&#8320;)/B</code>, and the exit angle is found by
+    solving the arc against the (tilted) far boundary of the pole gap. The straight drift afterwards is intersected with
+    the detector plane, giving the landing offset <i>u</i> from the collector slit. Transmission is computed from <i>u</i>,
+    the beam width and the slit width &mdash; nothing is faked or hard&#8209;coded.
+    <br><br>
+    Because the Zr isotopes differ in mass by only 1&ndash;6 parts in 90, their real separation at the detector is a few
+    percent of the orbit radius. The <i>&times;6</i> setting magnifies the mass <i>differences</i> (not the physics) so the five
+    beams read clearly, matching the schematic style of the textbook figure; switch to <i>&times;1</i> to see the true,
+    tiny separation and why real instruments need a narrow slit and precise field control.
+    Abundances: Zr&#8209;90 51.45 %, Zr&#8209;91 11.22 %, Zr&#8209;92 17.15 %, Zr&#8209;94 17.38 %, Zr&#8209;96 2.80 %.
+  </footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+const DEG = Math.PI/180;
+
+/* ---------------- isotope data ---------------- */
+const ISO = [
+  {m:90, ab:51.45, name:"Zr-90"},
+  {m:91, ab:11.22, name:"Zr-91"},
+  {m:92, ab:17.15, name:"Zr-92"},
+  {m:94, ab:17.38, name:"Zr-94"},
+  {m:96, ab: 2.80, name:"Zr-96"}
+];
+const MREF = 93;                      // reference mass that flies the nominal axis
+
+/* ---------------- instrument geometry (SVG units) ---------------- */
+const A   = 20.42*DEG;                // tilt of the pole-gap boundary normal
+const NX  = Math.cos(A), NY = Math.sin(A);   // unit normal of the two field boundaries
+const O   = {x:415, y:228};           // where the beam crosses the entrance boundary
+const GAP = 126.4;                    // pole-gap width measured along the normal
+const RC  = 150;                      // orbit radius of the reference mass at B = B0
+const SRCX = 140;                     // ion source (start of the ion beam)
+const TUBE = 50*DEG;                  // fixed axis of the detector arm
+const UH = {x:Math.cos(TUBE), y:Math.sin(TUBE)};    // along the arm
+const TH = {x:-Math.sin(TUBE), y:Math.cos(TUBE)};   // across the detector face
+const DRIFT = 200;                    // field-free drift length to the detector plane
+const PLATE = 64;                     // half-length of the detector face
+const TUBEHW = 70;                    // half width of the detector arm
+const SLIT = 3.0;                     // collector slit half-width
+const BEAMW = 2.0;                    // beam half-width at the focal plane
+const B0 = 0.700;                     // tesla, field that focuses the reference mass
+
+// exit state of an arc of radius r entering at O along +x
+function arcExit(r){
+  const s = GAP/r - NY;
+  if(s > 1 || s < -1) return null;            // ion never crosses the far boundary
+  const th = A + Math.asin(s);                // deflection angle at the exit
+  return {r:r, th:th,
+          E:{x:O.x + r*Math.sin(th), y:O.y + r - r*Math.cos(th)}};
+}
+const REF  = arcExit(RC);
+const DREF = {x:REF.E.x + DRIFT*UH.x, y:REF.E.y + DRIFT*UH.y};  // slit position
+
+function trace(r){
+  const ex = arcExit(r);
+  if(!ex) return null;
+  const d = {x:Math.cos(ex.th), y:Math.sin(ex.th)};
+  const den = d.x*UH.x + d.y*UH.y;
+  const t = ((DREF.x-ex.E.x)*UH.x + (DREF.y-ex.E.y)*UH.y)/den;
+  const L = {x:ex.E.x + t*d.x, y:ex.E.y + t*d.y};
+  const u = (L.x-DREF.x)*TH.x + (L.y-DREF.y)*TH.y;   // signed offset on the detector face
+  return {r:r, th:ex.th, E:ex.E, d:d, land:L, u:u};
+}
+
+/* ---------------- state ---------------- */
+let F = 6;            // isotope-separation magnification
+let b = 1;            // B / B0
+let selected = -1;    // bar clicked
+let hovered  = -1;
+let scanning = false;
+let scanPts  = [];
+
+const meff = m => MREF + F*(m - MREF);
+const radius = (m, bb) => RC*Math.sqrt(meff(m)/MREF)/bb;
+const bFocus = m => Math.sqrt(meff(m)/MREF);          // field that puts m on the slit
+// the magnet is swept so that the focused (true) m/z runs from 89.5 to 96.5
+const MSCAN_LO = 89.5, MSCAN_HI = 96.5;
+const bMin = () => bFocus(MSCAN_LO);
+const bMax = () => bFocus(MSCAN_HI);
+
+/* transmission through the collector slit (trapezoidal slit x beam overlap) */
+function transmission(u){
+  const a = Math.abs(u);
+  if(a <= SLIT-BEAMW) return 1;
+  if(a >= SLIT+BEAMW) return 0;
+  return (SLIT+BEAMW-a)/(2*BEAMW);
+}
+
+/* ---------------- SVG helpers ---------------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent){
+  const n = document.createElementNS(SVGNS, tag);
+  for(const k in attrs){ if(attrs[k]!==null&&attrs[k]!==undefined) n.setAttribute(k, attrs[k]); }
+  if(parent) parent.appendChild(n);
+  return n;
+}
+function txt(parent, x, y, s, attrs){
+  const t = el("text", Object.assign({x:x, y:y, "font-size":17, fill:"#1b1f24"}, attrs||{}), parent);
+  t.textContent = s; return t;
+}
+const f2 = v => Math.round(v*100)/100;
+
+/* ================= instrument panel ================= */
+const svgI = document.getElementById("instr");
+
+function buildInstrument(){
+  svgI.innerHTML = "";
+  const defs = el("defs", {}, svgI);
+
+  let g = el("linearGradient", {id:"tubeG", x1:"0", y1:"0", x2:"0", y2:"1"}, defs);
+  el("stop",{offset:"0%","stop-color":"#ffffff"},g);
+  el("stop",{offset:"45%","stop-color":"#f0f1f2"},g);
+  el("stop",{offset:"100%","stop-color":"#d5d8da"},g);
+
+  g = el("linearGradient", {id:"magG", x1:"0", y1:"0", x2:"1", y2:"0"}, defs);
+  el("stop",{offset:"0%","stop-color":"#8f9498"},g);
+  el("stop",{offset:"22%","stop-color":"#e9ebec"},g);
+  el("stop",{offset:"55%","stop-color":"#c3c7ca"},g);
+  el("stop",{offset:"100%","stop-color":"#7e8386"},g);
+
+  g = el("linearGradient", {id:"armG", x1:"0", y1:"0", x2:"0", y2:"1"}, defs);
+  el("stop",{offset:"0%","stop-color":"#fbfbfb"},g);
+  el("stop",{offset:"100%","stop-color":"#dadddf"},g);
+
+  const bg  = el("g", {}, svgI);          // static chassis behind beams
+  const bmG = el("g", {}, svgI);          // beams
+  const fg  = el("g", {}, svgI);          // labels + foreground
+
+  /* ---- main flight tube (open on the right: it disappears behind the magnet) ---- */
+  el("path",{d:"M 62 173 L 500 173 L 500 297 L 62 297 A 28 62 0 0 1 62 173 Z",
+             fill:"url(#tubeG)"}, bg);
+  el("ellipse",{cx:62, cy:235, rx:28, ry:62, fill:"#e9eaeb"}, bg);
+  el("path",{d:"M 62 173 L 500 173 M 62 297 L 500 297 M 62 297 A 28 62 0 0 1 62 173",
+             fill:"none", stroke:"#2b2f33","stroke-width":2.4}, bg);
+  el("ellipse",{cx:62, cy:235, rx:28, ry:62, fill:"none", stroke:"#2b2f33","stroke-width":2.2}, bg);
+
+  /* ---- detector arm (also open at the magnet end) ---- */
+  const arm = el("g", {transform:`translate(${REF.E.x.toFixed(2)},${REF.E.y.toFixed(2)}) rotate(${50})`}, bg);
+  el("path",{d:`M -62 ${-TUBEHW} L ${DRIFT} ${-TUBEHW} L ${DRIFT} ${TUBEHW} L -62 ${TUBEHW} Z`,
+             fill:"url(#armG)"}, arm);
+  el("path",{d:`M -62 ${-TUBEHW} L ${DRIFT} ${-TUBEHW} M -62 ${TUBEHW} L ${DRIFT} ${TUBEHW}`,
+             fill:"none", stroke:"#2b2f33","stroke-width":2.2}, arm);
+  el("ellipse",{cx:DRIFT, cy:0, rx:19, ry:TUBEHW, fill:"#e6e8ea", stroke:"#2b2f33","stroke-width":2.2}, arm);
+  el("ellipse",{cx:DRIFT-2, cy:0, rx:12, ry:PLATE, fill:"#dde0ad", stroke:"#8e9464","stroke-width":1.6}, arm);
+
+  /* ---- sample inlet ---- */
+  el("rect",{x:8, y:214, width:46, height:28, rx:3, fill:"#b9bdc0", stroke:"#2b2f33","stroke-width":2}, bg);
+  el("ellipse",{cx:8, cy:228, rx:6, ry:14, fill:"#d2d5d7", stroke:"#2b2f33","stroke-width":2}, bg);
+
+  /* ---- heater coil ---- */
+  const coil = el("g", {}, bg);
+  for(let i=0;i<9;i++){
+    el("ellipse",{cx:88+i*6.6, cy:196, rx:5.2, ry:13.5, fill:"none",
+                  stroke:"#a8442c","stroke-width":3.1}, coil);
+  }
+  el("line",{x1:82,y1:196,x2:82,y2:178, stroke:"#a8442c","stroke-width":3.1}, coil);
+  el("line",{x1:147,y1:196,x2:147,y2:178, stroke:"#a8442c","stroke-width":3.1}, coil);
+
+  /* ---- vaporized sample ---- */
+  const dots = el("g", {}, bg);
+  let seed = 7;
+  const rnd = () => (seed = (seed*1103515245+12345) & 0x7fffffff)/0x7fffffff;
+  for(let i=0;i<22;i++){
+    el("circle",{cx:80+rnd()*62, cy:230+rnd()*26, r:3.4+rnd()*1.8,
+                 fill:"#6fb0b0", stroke:"#3d8b8b","stroke-width":1}, dots);
+  }
+
+  /* ---- electron beam source ---- */
+  el("rect",{x:103, y:298, width:24, height:56, rx:2, fill:"#4a4f54", stroke:"#23272b","stroke-width":2}, bg);
+  const fan = el("g", {}, bg);
+  el("path",{d:"M 115 300 L 100 252 L 130 252 Z", fill:"#f6b93b", opacity:.45}, fan);
+  for(let i=0;i<5;i++){
+    const x2 = 101 + i*7;
+    el("line",{x1:115,y1:301,x2:x2,y2:252, stroke:"#f0a323","stroke-width":2.6,"stroke-linecap":"round"}, fan);
+  }
+
+  /* ---- accelerating lenses ---- */
+  [205, 282].forEach(cx=>{
+    el("ellipse",{cx:cx, cy:228, rx:13, ry:46, fill:"#b7bcda", stroke:"#5f659a","stroke-width":2}, bg);
+    el("path",{d:`M ${cx-9} 210 L ${cx+2} 228 L ${cx-9} 228 Z`, fill:"#8d7f86"}, bg);
+    el("ellipse",{cx:cx, cy:228, rx:3.5, ry:7, fill:"#eef0f8", stroke:"#5f659a","stroke-width":1}, bg);
+  });
+
+  /* ---- magnet: local frame X = boundary normal, Y = along the pole gap ---- */
+  const mg = el("g", {transform:`translate(${O.x},${O.y}) rotate(${20.42})`}, bg);
+  // upper pole piece
+  el("rect",{x:0, y:-200, width:GAP, height:70, fill:"url(#magG)", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  el("ellipse",{cx:GAP/2, cy:-200, rx:GAP/2, ry:20, fill:"#e3e5e7", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  el("ellipse",{cx:GAP/2, cy:-130, rx:GAP/2, ry:20, fill:"#6d5f78", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  // lower pole piece
+  el("rect",{x:0, y:170, width:GAP, height:70, fill:"url(#magG)", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  el("ellipse",{cx:GAP/2, cy:240, rx:GAP/2, ry:20, fill:"#d6d9db", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  el("ellipse",{cx:GAP/2, cy:170, rx:GAP/2, ry:20, fill:"#6d5f78", stroke:"#2b2f33","stroke-width":2.2}, mg);
+  // the field region itself
+  el("rect",{x:0, y:-130, width:GAP, height:300, fill:"#a893bd", opacity:.45}, mg);
+  el("line",{x1:0,y1:-130,x2:0,y2:170, stroke:"#7a6690","stroke-width":1.4,"stroke-dasharray":"6 5"}, mg);
+  el("line",{x1:GAP,y1:-130,x2:GAP,y2:170, stroke:"#7a6690","stroke-width":1.4,"stroke-dasharray":"6 5"}, mg);
+  // field-into-page markers
+  for(let i=-3;i<=3;i++){
+    for(let j=0;j<2;j++){
+      const cx = GAP*(0.3+0.4*j), cy = i*42;
+      el("circle",{cx:cx, cy:cy, r:5.5, fill:"none", stroke:"#6a5580","stroke-width":1.4, opacity:.75}, mg);
+      el("line",{x1:cx-3.4,y1:cy-3.4,x2:cx+3.4,y2:cy+3.4, stroke:"#6a5580","stroke-width":1.4, opacity:.75}, mg);
+      el("line",{x1:cx-3.4,y1:cy+3.4,x2:cx+3.4,y2:cy-3.4, stroke:"#6a5580","stroke-width":1.4, opacity:.75}, mg);
+    }
+  }
+
+  /* ---- collector slit (drawn above beams later) ---- */
+
+  /* ---- labels ---- */
+  txt(fg, 6, 26, "Sample");
+  txt(fg, 6, 46, "enters");
+  txt(fg, 6, 66, "here");
+  el("path",{d:"M 26 74 L 26 212", class:"lead"}, fg);
+
+  txt(fg, 96, 26, "Heater vaporizes");
+  txt(fg, 96, 46, "sample");
+  el("path",{d:"M 140 56 L 140 176", class:"lead"}, fg);
+
+  txt(fg, 494, 24, "Magnet");
+  el("path",{d:"M 528 32 L 542 52", class:"lead"}, fg);
+
+  txt(fg, 146, 404, "Ions accelerated");
+  el("path",{d:"M 244 390 L 244 274", class:"lead"}, fg);
+
+  txt(fg, 22, 452, "Electron beam");
+  txt(fg, 22, 472, "source");
+  el("path",{d:"M 112 438 L 112 358", class:"lead"}, fg);
+
+  txt(fg, 398, 512, "Magnetic field");
+  txt(fg, 398, 532, "deflects lightest");
+  txt(fg, 398, 552, "ions most");
+  el("path",{d:"M 462 498 L 478 404", class:"lead"}, fg);
+
+  txt(fg, 624, 556, "Detector");
+  el("path",{d:"M 668 542 L 660 476", class:"lead"}, fg);
+
+  txt(fg, 580, 452, "Collector slit", {"text-anchor":"end","font-size":15,fill:"#3c4147"});
+  el("path",{d:`M 585 448 L ${(DREF.x-7).toFixed(1)} ${(DREF.y+2).toFixed(1)}`,
+             fill:"none", stroke:"#3c4147","stroke-width":1.5}, fg);
+
+  return {beams:bmG, fg:fg};
+}
+
+const layers = buildInstrument();
+
+/* pre-magnet bundle (identical for every ion: same charge, same accelerating voltage) */
+el("line",{x1:SRCX, y1:O.y, x2:O.x, y2:O.y, stroke:"#1d9e9a","stroke-width":6.5,
+           "stroke-linecap":"round", opacity:.95}, layers.beams);
+el("line",{x1:SRCX, y1:O.y-2.2, x2:O.x, y2:O.y-2.2, stroke:"#79cfcb","stroke-width":1.1}, layers.beams);
+el("line",{x1:SRCX, y1:O.y+2.2, x2:O.x, y2:O.y+2.2, stroke:"#79cfcb","stroke-width":1.1}, layers.beams);
+
+const dynI = el("g", {}, layers.beams);        // per-isotope arcs, refreshed each update
+/* slit + annotation layer sits above the beams */
+const slitG = el("g", {transform:`translate(${REF.E.x.toFixed(2)},${REF.E.y.toFixed(2)}) rotate(${50})`}, svgI);
+el("rect",{x:DRIFT-6, y:-PLATE, width:12, height:PLATE-SLIT, fill:"#3c4147", opacity:.62}, slitG);
+el("rect",{x:DRIFT-6, y:SLIT,  width:12, height:PLATE-SLIT, fill:"#3c4147", opacity:.62}, slitG);
+el("rect",{x:DRIFT-6, y:-SLIT, width:12, height:2*SLIT, fill:"#fff7c8", stroke:"#3c4147","stroke-width":0.9}, slitG);
+const annG = el("g", {}, svgI);
+
+/* ================= chart panel ================= */
+const svgC = document.getElementById("chart");
+const PX0=104, PX1=432, PY0=86, PY1=480;
+const MLO=88.85, MHI=97.15;
+const yv = v => PY1 - v*(PY1-PY0)/100;
+const xm = m => PX0 + (m-MLO)*(PX1-PX0)/(MHI-MLO);
+let barNodes = [], traceNode = null;
+
+function buildChart(){
+  svgC.innerHTML = "";
+  const cd = el("defs", {}, svgC);
+  const cp = el("clipPath", {id:"plotClip"}, cd);
+  el("rect",{x:PX0, y:PY0-14, width:PX1-PX0, height:PY1-PY0+14}, cp);
+  const g = el("g", {}, svgC);
+  for(let v=0; v<=100; v+=12.5){
+    el("line",{x1:PX0-4, y1:yv(v), x2:PX1, y2:yv(v),
+               stroke: v===0?"#2b2f33":"#b9c0c6", "stroke-width": v===0?2.2:1.2}, g);
+  }
+  el("line",{x1:PX0, y1:yv(0)+6, x2:PX0, y2:yv(108), stroke:"#2b2f33","stroke-width":2.4}, g);
+  [0,50,100].forEach(v=>{
+    el("line",{x1:PX0-9, y1:yv(v), x2:PX0, y2:yv(v), stroke:"#2b2f33","stroke-width":2.4}, g);
+    txt(g, PX0-14, yv(v)+6, String(v), {"text-anchor":"end","font-size":18});
+  });
+  const yt = txt(g, 30, (PY0+PY1)/2, "Relative abundance (%)",
+                 {"text-anchor":"middle","font-size":18,"font-weight":"700"});
+  yt.setAttribute("transform", `rotate(-90 30 ${(PY0+PY1)/2})`);
+  txt(g, (PX0+PX1)/2+8, 552, "Mass-to-charge ratio",
+      {"text-anchor":"middle","font-size":18,"font-weight":"700"});
+
+  barNodes = [];
+  ISO.forEach((iso,i)=>{
+    txt(g, xm(iso.m), 512, String(iso.m), {"text-anchor":"middle","font-size":18});
+    el("line",{x1:xm(iso.m), y1:yv(0), x2:xm(iso.m), y2:yv(0)+8, stroke:"#2b2f33","stroke-width":2}, g);
+    const w = 17;
+    const r = el("rect",{class:"bar", x:xm(iso.m)-w/2, y:yv(iso.ab), width:w,
+                         height:yv(0)-yv(iso.ab), fill:"#3fb3ad"}, g);
+    const lab = txt(g, xm(iso.m), yv(iso.ab)-11, iso.name,
+                    {"text-anchor":"middle","font-size":18});
+    const hit = el("rect",{class:"barhit", x:xm(iso.m)-17, y:yv(iso.ab)-28,
+                           width:34, height:yv(0)-yv(iso.ab)+28}, g);
+    hit.addEventListener("click", ()=>pick(i));
+    hit.addEventListener("mouseenter", ()=>{hovered=i; update();});
+    hit.addEventListener("mouseleave", ()=>{hovered=-1; update();});
+    barNodes.push({rect:r, lab:lab});
+  });
+  traceNode = el("polyline",{fill:"none", stroke:"#c0392b","stroke-width":2.2,
+                             "stroke-linejoin":"round", opacity:.9,
+                             "clip-path":"url(#plotClip)"}, g);
+  txt(g, PX1, PY0-26, "— recorded scan", {"text-anchor":"end","font-size":14,fill:"#c0392b"});
+}
+buildChart();
+
+/* ================= update ================= */
+const slider   = document.getElementById("bfield");
+const blab     = document.getElementById("blab");
+const readout  = document.getElementById("readout");
+const exagNote = document.getElementById("exagnote");
+
+function sliderToB(){ return bMin() + (+slider.value)*(bMax()-bMin()); }
+function bToSlider(v){ return (v-bMin())/(bMax()-bMin()); }
+
+function pick(i){
+  selected = (selected===i) ? -1 : i;
+  if(selected>=0){ b = bFocus(ISO[i].m); slider.value = bToSlider(b); }
+  update();
+}
+
+function update(){
+  b = sliderToB();
+
+  // ---- compute every trajectory ----
+  const paths = ISO.map(iso => trace(radius(iso.m, b)));
+  const tr    = paths.map(p => p ? transmission(p.u) : 0);
+  let best = -1, bestT = 0.02;
+  tr.forEach((t,i)=>{ if(t>bestT){ bestT=t; best=i; } });
+  const focus = (best>=0) ? best : -1;
+  const hi = (selected>=0) ? selected : (hovered>=0 ? hovered : focus);
+
+  // ---- draw arcs ----
+  dynI.innerHTML = "";
+  annG.innerHTML = "";
+  paths.forEach((p,i)=>{
+    if(!p) return;
+    const d = `M ${O.x} ${O.y} A ${p.r.toFixed(2)} ${p.r.toFixed(2)} 0 0 1 `+
+              `${p.E.x.toFixed(2)} ${p.E.y.toFixed(2)} L ${p.land.x.toFixed(2)} ${p.land.y.toFixed(2)}`;
+    const on = (i===hi);
+    el("path",{d:d, fill:"none",
+               stroke: on ? "#e8871e" : "#1d9e9a",
+               "stroke-width": on ? 4.2 : 2.3,
+               "stroke-linecap":"round",
+               opacity: on ? 1 : (hi>=0 ? .5 : .92)}, dynI);
+    el("circle",{cx:p.land.x, cy:p.land.y, r: on?5:3.2,
+                 fill: on ? "#e8871e" : "#1d9e9a"}, dynI);
+    if(F>1 || on){
+      // landing positions are only ~12 units apart, so the numerals are drawn on a
+      // fanned-out guide line (1.6x the real offset) with a leader back to the beam
+      const lx = DREF.x + p.u*1.9*TH.x + 32*UH.x;
+      const ly = DREF.y + p.u*1.9*TH.y + 32*UH.y;
+      el("line",{x1:p.land.x, y1:p.land.y, x2:lx-5, y2:ly-2,
+                 stroke: on?"#e8871e":"#9ed0ce", "stroke-width":1}, dynI);
+      txt(dynI, lx, ly+5, String(ISO[i].m),
+          {"text-anchor":"middle","font-size":13,"font-weight": on?"700":"400",
+           fill: on?"#b8650c":"#177d7a"});
+    }
+  });
+
+  // ---- annotation for the highlighted ion ----
+  if(hi>=0 && paths[hi]){
+    const p  = paths[hi];
+    const bx = 612, by = 52, bw = 142, bh = 34;
+    el("line",{x1:p.land.x, y1:p.land.y, x2:bx+18, y2:by+bh,
+               stroke:"#b8650c","stroke-width":1.6,"stroke-dasharray":"5 4"}, annG);
+    el("rect",{x:bx, y:by, width:bw, height:bh, rx:6,
+               fill:"#fff4e4", stroke:"#e8871e","stroke-width":1.6}, annG);
+    txt(annG, bx+bw/2, by+23, `${ISO[hi].name}  m/z = ${ISO[hi].m}`,
+        {"font-size":15,"font-weight":"700",fill:"#8a4a06","text-anchor":"middle"});
+  }
+
+  // ---- chart highlight ----
+  ISO.forEach((iso,i)=>{
+    const on = (i===hi);
+    const lit = tr[i] > 0.02;
+    barNodes[i].rect.setAttribute("fill", on ? "#e8871e" : (lit ? "#7ecec9" : "#3fb3ad"));
+    barNodes[i].rect.setAttribute("stroke", on ? "#b8650c" : (lit ? "#1d9e9a" : "none"));
+    barNodes[i].rect.setAttribute("stroke-width", on||lit ? 2 : 0);
+    barNodes[i].lab.setAttribute("font-weight", on ? "700" : "400");
+    barNodes[i].lab.setAttribute("fill", on ? "#b8650c" : "#1b1f24");
+  });
+
+  // ---- readouts ----
+  const mFocusEff = MREF*b*b;
+  const mFocus = MREF + (mFocusEff - MREF)/F;
+  const signal = ISO.reduce((s,iso,i)=> s + tr[i]*iso.ab, 0);
+  blab.textContent = `B = ${(b*B0).toFixed(4)} T`;
+  slider.setAttribute("aria-valuetext", `${(b*B0).toFixed(4)} tesla`);
+
+  const inSlit = ISO.map((iso,i)=>({iso,t:tr[i],u:paths[i]?paths[i].u:NaN}))
+                    .filter(o=>o.t>0.02)
+                    .sort((x,y)=>y.t-x.t);
+  let line1, line2;
+  if(inSlit.length===0){
+    line1 = "on slit: &mdash; (no ion transmitted)";
+    line2 = `nearest m/z = ${f2(mFocus)}`;
+  } else {
+    const shown = inSlit.slice(0,3).map(o=>`${o.iso.name} (${Math.round(o.t*100)}%)`).join(", ");
+    line1 = "on slit: <b>" + shown + (inSlit.length>3 ? ", …" : "") + "</b>";
+    line2 = `tuned m/z = ${f2(mFocus)}`;
+  }
+  readout.innerHTML = line1 + "<br>" + line2 +
+    `<br>signal = ${signal.toFixed(1)} %`;
+
+  // separation note
+  const us = paths.filter(Boolean).map(p=>p.u);
+  const spread = Math.max.apply(null,us) - Math.min.apply(null,us);
+  exagNote.innerHTML = (F===1)
+    ? `True scale: the Zr&#8209;90 &rarr; Zr&#8209;96 beams are spread over only <b>${spread.toFixed(1)}</b> drawing units at the focal plane (&asymp;${(100*spread/RC).toFixed(1)}&nbsp;% of the orbit radius). Real separation of isotopes is a small effect.`
+    : `Mass <i>differences</i> magnified &times;${F} for visibility (the physics is unchanged). Beam spread at the focal plane: <b>${spread.toFixed(1)}</b> units.`;
+
+  // live scan point
+  if(scanning) scanPts.push([mFocus, signal]);
+  drawTrace();
+}
+
+function drawTrace(){
+  if(scanPts.length<2){ traceNode.setAttribute("points",""); return; }
+  traceNode.setAttribute("points",
+    scanPts.map(p=>`${xm(p[0]).toFixed(1)},${yv(p[1]).toFixed(1)}`).join(" "));
+}
+
+/* ================= controls ================= */
+slider.addEventListener("input", ()=>{ selected=-1; update(); });
+
+document.getElementById("exag").addEventListener("change", e=>{
+  const keep = (selected>=0) ? ISO[selected].m : null;
+  F = +e.target.value;
+  scanPts = [];
+  b = bFocus(keep || 90);
+  slider.value = bToSlider(b);
+  update();
+});
+
+document.querySelectorAll("#view button").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    document.querySelectorAll("#view button").forEach(x=>x.setAttribute("aria-pressed","false"));
+    btn.setAttribute("aria-pressed","true");
+    const st = document.getElementById("stage");
+    st.classList.remove("only-left","only-right");
+    if(btn.dataset.view==="left")  st.classList.add("only-left");
+    if(btn.dataset.view==="right") st.classList.add("only-right");
+  });
+});
+
+document.getElementById("reset").addEventListener("click", ()=>{
+  scanning=false; scanPts=[]; selected=-1; hovered=-1;
+  b=bFocus(90); slider.value = bToSlider(b); update();
+});
+
+const scanBtn = document.getElementById("scan");
+scanBtn.addEventListener("click", ()=>{
+  if(scanning) return;
+  scanning = true; scanPts = []; selected = -1;
+  scanBtn.disabled = true; scanBtn.textContent = "Sweeping…";
+  const STEPS = 360;
+  let k = 0;
+  function step(){
+    k = Math.min(1, k + 1/STEPS);
+    slider.value = k;
+    update();
+    if(k<1){ setTimeout(step, 18); }
+    else { scanning=false; scanBtn.disabled=false;
+           scanBtn.textContent="Sweep B & record spectrum"; }
+  }
+  slider.value = 0; update();
+  setTimeout(step, 18);
+});
+
+/* go */
+b = bFocus(90);
+slider.value = bToSlider(b);
+update();
+})();
+</script>
+</body>
+</html>

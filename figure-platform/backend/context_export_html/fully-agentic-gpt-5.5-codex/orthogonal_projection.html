@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orthographic Projection</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #15171a;
+      --muted: #5b6572;
+      --panel: #ffffff;
+      --edge: #d9e0e8;
+      --plane: rgba(230, 238, 240, 0.72);
+      --red: #ff321d;
+      --green: #35ff00;
+      --cyan: #4ecbe6;
+      --axis-green: #1ee525;
+      --orange: #f0a22e;
+      --blue: #2e78dc;
+      --violet: #8c61d8;
+      --shadow: 0 18px 42px rgba(26, 37, 53, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #edf1f5;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .figure-shell {
+      width: min(1280px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .stage,
+    .controls {
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .stage {
+      min-width: 0;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 850px;
+      height: min(78vh, 740px);
+      min-height: 540px;
+      background: #ffffff;
+      border-radius: 6px;
+      user-select: none;
+    }
+
+    .controls {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .controls h1 {
+      margin: 0;
+      font-size: 1.08rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+    }
+
+    .control-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    output {
+      flex: 0 0 auto;
+      min-width: 54px;
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-weight: 650;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #16181c;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+
+    .toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: #16181c;
+    }
+
+    .readout {
+      margin: 0;
+      padding: 12px;
+      border: 1px solid #e2e7ee;
+      border-radius: 6px;
+      background: #f7f9fb;
+      color: #26313d;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .legend {
+      display: grid;
+      gap: 7px;
+      margin-top: auto;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+
+    .key {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .swatch {
+      width: 18px;
+      height: 12px;
+      border: 1.5px solid #181a1e;
+      border-radius: 2px;
+    }
+
+    .swatch.red { background: var(--red); }
+    .swatch.green { background: var(--green); }
+    .swatch.cyan { background: var(--cyan); }
+    .swatch.dash {
+      background: repeating-linear-gradient(90deg, #15171a 0 7px, transparent 7px 12px);
+      border-color: transparent;
+    }
+
+    .plane-fill {
+      fill: var(--plane);
+      stroke: #1c1f24;
+      stroke-width: 2.1;
+      stroke-linejoin: round;
+    }
+
+    .axis {
+      stroke: #111418;
+      stroke-width: 4.5;
+      stroke-linecap: round;
+    }
+
+    .axis-soft {
+      stroke: rgba(17, 20, 24, 0.5);
+      stroke-width: 2.2;
+      stroke-linecap: round;
+    }
+
+    .plane-axis {
+      stroke: var(--axis-green);
+      stroke-width: 3;
+      stroke-linecap: round;
+    }
+
+    .projection-ray {
+      fill: none;
+      stroke: #16181c;
+      stroke-width: 2.3;
+      stroke-dasharray: 7 8;
+      stroke-linecap: round;
+    }
+
+    .projection-ray.near {
+      stroke: rgba(22, 24, 28, 0.42);
+      stroke-width: 1.8;
+    }
+
+    .face {
+      stroke: #13161a;
+      stroke-width: 2.2;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+
+    .face.red { fill: var(--red); }
+    .face.green { fill: var(--green); }
+    .face.cyan { fill: var(--cyan); }
+
+    .footprint {
+      stroke: #13161a;
+      stroke-width: 2;
+      stroke-linejoin: round;
+    }
+
+    .ghost-outline {
+      fill: none;
+      stroke: rgba(46, 120, 220, 0.64);
+      stroke-width: 2;
+      stroke-dasharray: 5 6;
+      stroke-linejoin: round;
+    }
+
+    .measure {
+      fill: none;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .measure.near { stroke: var(--orange); }
+    .measure.deep { stroke: var(--blue); }
+    .measure.proj-near {
+      stroke: rgba(240, 162, 46, 0.9);
+      stroke-width: 3.5;
+    }
+    .measure.proj-deep {
+      stroke: rgba(46, 120, 220, 0.86);
+      stroke-width: 3.5;
+    }
+
+    .label {
+      fill: #111418;
+      font-size: 18px;
+      font-weight: 650;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+
+    .label.small {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .label.muted {
+      fill: #4e5965;
+    }
+
+    .label.green {
+      fill: #11b817;
+      stroke-width: 5px;
+    }
+
+    .axis-label {
+      fill: #111418;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 62px;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+
+    .axis-label.lower {
+      font-style: italic;
+      font-size: 50px;
+    }
+
+    .callout {
+      fill: rgba(255, 255, 255, 0.92);
+      stroke: #d6dde6;
+      stroke-width: 1.4;
+    }
+
+    @media (max-width: 980px) {
+      body {
+        padding: 10px;
+      }
+
+      .figure-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        order: -1;
+      }
+
+      svg {
+        min-width: 760px;
+        height: 600px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="figure-shell" aria-label="Interactive orthographic projection figure">
+    <section class="stage">
+      <svg id="figure" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+        <title id="title">Orthographic projection of a two-step solid onto a projection plane</title>
+        <desc id="desc">A labeled world coordinate frame, projection plane, stepped 3D object, dashed projection rays, and interactive comparison between orthographic and perspective projection.</desc>
+        <defs>
+          <marker id="arrowBlack" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#111418"></path>
+          </marker>
+          <marker id="arrowGreen" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#1ee525"></path>
+          </marker>
+          <marker id="arrowOrange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0a22e"></path>
+          </marker>
+          <marker id="arrowBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#2e78dc"></path>
+          </marker>
+          <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+            <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#1a2430" flood-opacity="0.18"></feDropShadow>
+          </filter>
+        </defs>
+        <g id="scene"></g>
+      </svg>
+    </section>
+
+    <aside class="controls" aria-label="Projection controls">
+      <h1>Orthographic Projection</h1>
+      <label class="control" for="depth">
+        <span class="control-head">
+          <span>Object depth along Z</span>
+          <output id="depthOut">3.00</output>
+        </span>
+        <input id="depth" type="range" min="1.25" max="4.55" step="0.01" value="3.00">
+      </label>
+
+      <label class="control" for="blend">
+        <span class="control-head">
+          <span>Projection blend</span>
+          <output id="blendOut">0%</output>
+        </span>
+        <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
+      </label>
+
+      <label class="toggle" for="guides">
+        <input id="guides" type="checkbox" checked>
+        <span>Depth guides</span>
+      </label>
+
+      <p class="readout" id="readout">Orthographic mode: parallel rays meet the plane perpendicularly, so the plane coordinates are x = X and y = Y.</p>
+
+      <div class="legend" aria-hidden="true">
+        <div class="key"><span class="swatch red"></span><span>Vertical faces</span></div>
+        <div class="key"><span class="swatch green"></span><span>Top faces</span></div>
+        <div class="key"><span class="swatch cyan"></span><span>End face</span></div>
+        <div class="key"><span class="swatch dash"></span><span>Projection rays</span></div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const svgNS = "http://www.w3.org/2000/svg";
+      const scene = document.getElementById("scene");
+      const depthInput = document.getElementById("depth");
+      const blendInput = document.getElementById("blend");
+      const guidesInput = document.getElementById("guides");
+      const depthOut = document.getElementById("depthOut");
+      const blendOut = document.getElementById("blendOut");
+      const readout = document.getElementById("readout");
+
+      const O = { x: 330, y: 486 };
+      const UX = { x: 58, y: -68 };
+      const UY = { x: 0, y: -96 };
+      const UZ = { x: 112, y: 0 };
+      const focal = 6.1;
+      const zLength = 1.92;
+
+      const outline = [
+        { X: -1.62, Y: 0 },
+        { X: 1.76, Y: 0 },
+        { X: 1.76, Y: 1.95 },
+        { X: 0.22, Y: 1.95 },
+        { X: 0.22, Y: 0.95 },
+        { X: -1.62, Y: 0.95 }
+      ];
+
+      const footprintPieces = [
+        { cls: "red", points: [[-1.62, 0], [1.76, 0], [1.76, 1.95], [0.22, 1.95], [0.22, 0.95], [-1.62, 0.95]] },
+        { cls: "green", points: [[-1.62, 0.77], [0.22, 0.77], [0.22, 0.95], [-1.62, 0.95]] },
+        { cls: "green", points: [[0.22, 1.77], [1.46, 1.77], [1.46, 1.95], [0.22, 1.95]] },
+        { cls: "cyan", points: [[1.46, 0], [1.76, 0], [1.76, 1.95], [1.46, 1.95]] }
+      ];
+
+      const colors = {
+        red: "var(--red)",
+        green: "var(--green)",
+        cyan: "var(--cyan)"
+      };
+
+      function el(tag, attrs = {}, parent = scene) {
+        const node = document.createElementNS(svgNS, tag);
+        Object.entries(attrs).forEach(([key, value]) => {
+          if (key === "text") {
+            node.textContent = value;
+          } else {
+            node.setAttribute(key, value);
+          }
+        });
+        parent.appendChild(node);
+        return node;
+      }
+
+      function screenPoint(p) {
+        return {
+          x: O.x + p.X * UX.x + p.Y * UY.x + p.Z * UZ.x,
+          y: O.y + p.X * UX.y + p.Y * UY.y + p.Z * UZ.y
+        };
+      }
+
+      function pointString(points) {
+        return points.map((p) => {
+          const s = screenPoint(p);
+          return `${s.x.toFixed(2)},${s.y.toFixed(2)}`;
+        }).join(" ");
+      }
+
+      function pathFrom(points) {
+        return points.map((p, i) => {
+          const s = screenPoint(p);
+          return `${i ? "L" : "M"} ${s.x.toFixed(2)} ${s.y.toFixed(2)}`;
+        }).join(" ") + " Z";
+      }
+
+      function line3(a, b, attrs) {
+        const pa = screenPoint(a);
+        const pb = screenPoint(b);
+        return el("line", { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y, ...attrs });
+      }
+
+      function text3(p, text, attrs = {}) {
+        const s = screenPoint(p);
+        return el("text", { x: s.x, y: s.y, text, ...attrs });
+      }
+
+      function imageXY(X, Y, Z, blend) {
+        const perspectiveScale = focal / (focal + Math.max(0.01, Z));
+        const scale = 1 + blend * (perspectiveScale - 1);
+        return { X: X * scale, Y: Y * scale, Z: 0, scale };
+      }
+
+      function projectedPoint(point, blend) {
+        return imageXY(point.X, point.Y, point.Z, blend);
+      }
+
+      function drawPlane() {
+        const plane = [
+          { X: -2.45, Y: -1.32, Z: 0 },
+          { X: 2.62, Y: -1.32, Z: 0 },
+          { X: 2.62, Y: 3.58, Z: 0 },
+          { X: -2.45, Y: 3.58, Z: 0 }
+        ];
+        el("polygon", { points: pointString(plane), class: "plane-fill" });
+
+        line3({ X: -2.45, Y: 0, Z: 0 }, { X: 7.45, Y: 0, Z: 0 }, {
+          class: "axis",
+          "marker-end": "url(#arrowBlack)"
+        });
+        line3({ X: 0, Y: -1.28, Z: 0 }, { X: 0, Y: 3.35, Z: 0 }, {
+          class: "axis",
+          "marker-end": "url(#arrowBlack)"
+        });
+        line3({ X: -2.25, Y: 0, Z: 0 }, { X: 3.0, Y: 0, Z: 0 }, {
+          class: "axis-soft"
+        });
+        line3({ X: 0, Y: 0, Z: 0 }, { X: 0, Y: 0, Z: 8.2 }, {
+          class: "axis",
+          "marker-end": "url(#arrowBlack)"
+        });
+
+        line3({ X: -2.18, Y: 0, Z: 0 }, { X: 2.08, Y: 0, Z: 0 }, {
+          class: "axis-soft"
+        });
+        line3({ X: 0, Y: -0.95, Z: 0 }, { X: 0, Y: 3.28, Z: 0 }, {
+          class: "axis-soft"
+        });
+
+        line3({ X: 0, Y: 0, Z: 0 }, { X: 1.7, Y: 0, Z: 0 }, {
+          class: "plane-axis",
+          "marker-end": "url(#arrowGreen)"
+        });
+        line3({ X: 0, Y: 0, Z: 0 }, { X: 0, Y: 2.25, Z: 0 }, {
+          class: "plane-axis",
+          "marker-end": "url(#arrowGreen)"
+        });
+
+        text3({ X: 2.72, Y: 0.15, Z: 0 }, "X", { class: "axis-label" });
+        text3({ X: -0.36, Y: 3.56, Z: 0 }, "Y", { class: "axis-label" });
+        text3({ X: 0.23, Y: -0.13, Z: 8.38 }, "Z", { class: "axis-label" });
+        text3({ X: 1.84, Y: 0.07, Z: 0 }, "x", { class: "axis-label lower" });
+        text3({ X: -0.36, Y: 2.52, Z: 0 }, "y", { class: "axis-label lower" });
+        text3({ X: -1.15, Y: -1.02, Z: 0 }, "Projection plane", { class: "label", "font-size": 24 });
+      }
+
+      function drawFootprint(depth, blend) {
+        const zRef = depth + zLength * 0.5;
+        const footprintGroup = el("g", { "filter": "url(#softShadow)" });
+
+        footprintPieces.forEach((piece) => {
+          const points = piece.points.map(([X, Y]) => imageXY(X, Y, zRef, blend));
+          el("polygon", {
+            points: pointString(points),
+            class: "footprint",
+            fill: colors[piece.cls]
+          }, footprintGroup);
+        });
+
+        const orthoOutline = outline.map((p) => ({ X: p.X, Y: p.Y, Z: 0 }));
+        el("path", { d: pathFrom(orthoOutline), class: "ghost-outline" });
+
+        el("text", {
+          x: 92,
+          y: 382,
+          class: "label small",
+          text: blend < 0.02 ? "projected footprint: same size" : "blended projected footprint"
+        });
+      }
+
+      function drawRays(depth, blend) {
+        const zNear = depth;
+        const zFar = depth + zLength;
+        const rayPoints = outline;
+
+        rayPoints.forEach((pt) => {
+          const objFar = { X: pt.X, Y: pt.Y, Z: zFar };
+          const image = projectedPoint(objFar, blend);
+          const a = screenPoint(objFar);
+          const b = screenPoint(image);
+          el("line", {
+            x1: b.x,
+            y1: b.y,
+            x2: a.x,
+            y2: a.y,
+            class: "projection-ray"
+          });
+        });
+
+        [outline[0], outline[2], outline[4]].forEach((pt) => {
+          const objNear = { X: pt.X, Y: pt.Y, Z: zNear };
+          const image = projectedPoint(objNear, blend);
+          const a = screenPoint(objNear);
+          const b = screenPoint(image);
+          el("line", {
+            x1: b.x,
+            y1: b.y,
+            x2: a.x,
+            y2: a.y,
+            class: "projection-ray near"
+          });
+        });
+
+      }
+
+      function drawObject(depth) {
+        const z0 = depth;
+        const z1 = depth + zLength;
+        const lowerSide = [
+          { X: -1.62, Y: 0, Z: z0 },
+          { X: 1.76, Y: 0, Z: z0 },
+          { X: 1.76, Y: 0, Z: z1 },
+          { X: -1.62, Y: 0, Z: z1 }
+        ];
+        const upperSide = [
+          { X: 0.22, Y: 0.95, Z: z0 },
+          { X: 1.76, Y: 0.95, Z: z0 },
+          { X: 1.76, Y: 0.95, Z: z1 },
+          { X: 0.22, Y: 0.95, Z: z1 }
+        ];
+        const riser = [
+          { X: 0.22, Y: 0.95, Z: z0 },
+          { X: 0.22, Y: 1.95, Z: z0 },
+          { X: 0.22, Y: 1.95, Z: z1 },
+          { X: 0.22, Y: 0.95, Z: z1 }
+        ];
+        const lowerTop = [
+          { X: -1.62, Y: 0.95, Z: z0 },
+          { X: 0.22, Y: 0.95, Z: z0 },
+          { X: 0.22, Y: 0.95, Z: z1 },
+          { X: -1.62, Y: 0.95, Z: z1 }
+        ];
+        const upperTop = [
+          { X: 0.22, Y: 1.95, Z: z0 },
+          { X: 1.76, Y: 1.95, Z: z0 },
+          { X: 1.76, Y: 1.95, Z: z1 },
+          { X: 0.22, Y: 1.95, Z: z1 }
+        ];
+        const farCap = outline.map((p) => ({ X: p.X, Y: p.Y, Z: z1 }));
+
+        const group = el("g", { "filter": "url(#softShadow)" });
+        const redFaces = [
+          { points: lowerSide, cls: "red" },
+          { points: upperSide, cls: "red" },
+          { points: riser, cls: "red" },
+          { points: lowerTop, cls: "green" },
+          { points: upperTop, cls: "green" },
+          { points: farCap, cls: "cyan" }
+        ];
+
+        redFaces.forEach((f) => {
+          el("polygon", {
+            points: pointString(f.points),
+            class: `face ${f.cls}`
+          }, group);
+        });
+
+        const labelPos = screenPoint({ X: 1.42, Y: 2.22, Z: depth + zLength + 0.12 });
+        el("text", { x: labelPos.x, y: labelPos.y, class: "label small", text: "two-step solid" });
+      }
+
+      function drawGuides(depth, blend) {
+        if (!guidesInput.checked) {
+          return;
+        }
+
+        const zNear = depth;
+        const zDeep = depth + zLength;
+        const guideY = 2.72;
+        const aX = -1.22;
+        const bX = 1.18;
+        const pairs = [
+          { z: zNear, cls: "near", marker: "url(#arrowOrange)", label: "near equal X span" },
+          { z: zDeep, cls: "deep", marker: "url(#arrowBlue)", label: "deep equal X span" }
+        ];
+
+        pairs.forEach((item, index) => {
+          line3({ X: aX, Y: guideY + index * 0.18, Z: item.z }, { X: bX, Y: guideY + index * 0.18, Z: item.z }, {
+            class: `measure ${item.cls}`,
+            "marker-start": item.marker,
+            "marker-end": item.marker
+          });
+          const label = screenPoint({ X: bX + 0.08, Y: guideY + index * 0.18, Z: item.z });
+          el("text", { x: label.x + 6, y: label.y - 8, class: "label small muted", text: item.label });
+        });
+
+        const nearA = imageXY(aX, -0.54, zNear, blend);
+        const nearB = imageXY(bX, -0.54, zNear, blend);
+        const deepA = imageXY(aX, -0.75, zDeep, blend);
+        const deepB = imageXY(bX, -0.75, zDeep, blend);
+
+        line3(nearA, nearB, {
+          class: "measure proj-near",
+          "marker-start": "url(#arrowOrange)",
+          "marker-end": "url(#arrowOrange)"
+        });
+        line3(deepA, deepB, {
+          class: "measure proj-deep",
+          "marker-start": "url(#arrowBlue)",
+          "marker-end": "url(#arrowBlue)"
+        });
+
+        const guideLabel = screenPoint(imageXY(-1.72, -0.96, zDeep, blend));
+        el("text", {
+          x: guideLabel.x,
+          y: guideLabel.y + 16,
+          class: "label small muted",
+          text: blend < 0.02 ? "on the plane the equal spans remain equal" : "perspective blend shrinks the deeper span"
+        });
+      }
+
+      function drawCallouts(depth, blend) {
+        const boxX = 58;
+        const boxY = 58;
+        el("rect", { x: boxX, y: boxY, width: 314, height: 88, rx: 8, class: "callout" });
+        el("text", { x: boxX + 16, y: boxY + 30, class: "label small", text: "Orthographic rule" });
+        el("text", { x: boxX + 16, y: boxY + 58, class: "label small muted", text: "projection rays are parallel to Z" });
+        el("text", {
+          x: boxX + 16,
+          y: boxY + 80,
+          class: "label small muted",
+          text: blend < 0.02 ? "x = X and y = Y for every depth" : "perspective uses depth-scaled image coordinates"
+        });
+
+        if (blend > 0.04) {
+          const center = screenPoint({ X: 0, Y: 0, Z: -focal });
+          el("circle", { cx: center.x, cy: center.y, r: 6, fill: "var(--violet)", stroke: "#111418", "stroke-width": 1.5 });
+          el("text", { x: center.x - 82, y: center.y - 14, class: "label small muted", text: "perspective center" });
+          line3({ X: 0, Y: 0, Z: -focal }, { X: 0, Y: 0, Z: 0 }, {
+            class: "measure",
+            stroke: "rgba(140, 97, 216, 0.46)",
+            "stroke-dasharray": "5 7"
+          });
+        }
+      }
+
+      function render() {
+        const depth = Number(depthInput.value);
+        const blend = Number(blendInput.value);
+        scene.replaceChildren();
+
+        drawPlane();
+        drawFootprint(depth, blend);
+        drawRays(depth, blend);
+        drawGuides(depth, blend);
+        drawObject(depth);
+        drawCallouts(depth, blend);
+
+        depthOut.textContent = depth.toFixed(2);
+        blendOut.textContent = `${Math.round(blend * 100)}%`;
+        if (blend < 0.02) {
+          readout.textContent = "Orthographic mode: moving the object along Z changes ray length only. The footprint on the plane keeps the same scale because x = X and y = Y.";
+        } else if (blend > 0.98) {
+          readout.textContent = "Perspective mode: image coordinates are scaled by depth, so the same lateral X and Y dimensions project smaller as Z increases.";
+        } else {
+          readout.textContent = "Blended mode: the dashed rays transition from parallel orthographic rays to depth-dependent perspective rays, revealing where foreshortening enters.";
+        }
+      }
+
+      [depthInput, blendInput, guidesInput].forEach((control) => {
+        control.addEventListener("input", render);
+        control.addEventListener("change", render);
+      });
+
+      render();
+    })();
+  </script>
+</body>
+</html>

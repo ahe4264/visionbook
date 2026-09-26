@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bidirectional Reflectance Distribution Function</title>
+<style>
+  :root{
+    --ink:#14181d;
+    --muted:#5c6773;
+    --line:#d8dee6;
+    --panel:#f6f8fa;
+    --accent:#2d7a1f;
+    --bg:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1420px;margin:0 auto;padding:22px 20px 40px;}
+  header h1{font-size:22px;margin:0 0 4px;letter-spacing:-0.01em}
+  header p.sub{margin:0 0 16px;color:var(--muted);font-size:14px;max-width:900px;line-height:1.5}
+  .layout{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+  .figcol{flex:1 1 640px;min-width:420px}
+  .panel{flex:0 0 330px;min-width:300px;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px 18px}
+  canvas{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:10px;
+    background:#fff;touch-action:none;cursor:crosshair}
+  .hint{font-size:12.5px;color:var(--muted);margin:8px 2px 0;line-height:1.5}
+  .hint b{color:var(--ink)}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    margin:16px 0 8px;font-weight:700}
+  h2:first-child{margin-top:2px}
+  .row{margin:9px 0}
+  .row label{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;margin-bottom:3px;gap:8px}
+  .row label>span:first-child{flex:1}
+  .row label .val{color:var(--accent);font-variant-numeric:tabular-nums;font-weight:600}
+  input[type=range]{width:100%;margin:0;accent-color:#2d7a1f;height:18px}
+  .checks{display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+  .checks label{display:flex;align-items:baseline;gap:7px;cursor:pointer}
+  .checks label span{flex:1}
+  input[type=checkbox]{accent-color:#2d7a1f;width:14px;height:14px;margin:0}
+  .presets{display:flex;flex-wrap:wrap;gap:6px}
+  .presets button{font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--line);
+    background:#fff;border-radius:6px;cursor:pointer;color:var(--ink)}
+  .presets button:hover{border-color:#2d7a1f;color:#2d7a1f}
+  .readout{font-size:12.5px;line-height:1.8;border-top:1px solid var(--line);margin-top:14px;padding-top:10px}
+  .readout .k{color:var(--muted)}
+  .readout .v{float:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .eqbox{border-top:1px solid var(--line);margin-top:12px;padding-top:10px;font-size:12.5px;
+    color:var(--muted);line-height:1.6}
+  .eqbox .big{color:var(--ink);font-family:Georgia,"Times New Roman",serif;font-size:15px;
+    display:block;margin:4px 0 6px}
+  .swatch{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid rgba(0,0,0,.25);
+    vertical-align:-2px;margin-right:5px}
+  @media (max-width:900px){ .panel{flex:1 1 100%} .figcol{min-width:0} }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>The BRDF: how a surface turns incoming light into outgoing radiance</h1>
+  <p class="sub">A ray of incident light <i>&#8467;</i><sub>in</sub>(&lambda;) strikes a point on a surface whose normal is <b>n</b> and whose local
+  tangent frame is (<b>p</b>, <b>q</b>). Instead of bouncing into one mirror direction, the energy is scattered over the whole
+  hemisphere of outgoing directions. The length of each green arrow is the radiance actually reflected into that direction,
+  computed live from an anisotropic microfacet BRDF.</p>
+</header>
+
+<div class="layout">
+  <div class="figcol">
+    <canvas id="cv" width="1120" height="620" aria-label="Interactive BRDF figure"></canvas>
+    <p class="hint"><b>Drag anywhere</b> on the figure to swing the incoming ray <i>&#8467;</i><sub>in</sub> around the hemisphere &nbsp;&middot;&nbsp;
+      <b>Shift + drag</b> (or right-drag) to orbit the viewpoint &nbsp;&middot;&nbsp; every arrow is recomputed from the BRDF each frame.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Incoming ray &#8467;<sub>in</sub></h2>
+    <div class="row"><label><span>Incidence angle &theta;<sub>i</sub> (from <b>n</b>)</span><span class="val" id="vTi"></span></label>
+      <input type="range" id="sTi" min="0" max="85" step="0.5"></div>
+    <div class="row"><label><span>Azimuth &phi;<sub>i</sub> (around <b>n</b>)</span><span class="val" id="vPi"></span></label>
+      <input type="range" id="sPi" min="0" max="360" step="1"></div>
+    <div class="row"><label><span>Wavelength &lambda;</span><span class="val" id="vLam"></span></label>
+      <input type="range" id="sLam" min="400" max="700" step="1"></div>
+
+    <h2>Surface material <i>F</i></h2>
+    <div class="row"><label><span>Roughness along <b>p</b> &nbsp;&alpha;<sub>p</sub></span><span class="val" id="vAp"></span></label>
+      <input type="range" id="sAp" min="0.015" max="0.75" step="0.005"></div>
+    <div class="row"><label><span>Roughness along <b>q</b> &nbsp;&alpha;<sub>q</sub></span><span class="val" id="vAq"></span></label>
+      <input type="range" id="sAq" min="0.015" max="0.75" step="0.005"></div>
+    <div class="row"><label><span>Specular vs. diffuse</span><span class="val" id="vKs"></span></label>
+      <input type="range" id="sKs" min="0" max="1" step="0.01"></div>
+    <div class="presets" style="margin-top:10px">
+      <button data-p="diffuse">Matte</button>
+      <button data-p="glossy">Glossy</button>
+      <button data-p="mirror">Mirror-like</button>
+      <button data-p="brushed">Brushed (anisotropic)</button>
+    </div>
+
+    <h2>View &amp; display</h2>
+    <div class="row"><label><span>View azimuth</span><span class="val" id="vAz"></span></label>
+      <input type="range" id="sAz" min="0" max="360" step="1"></div>
+    <div class="row"><label><span>View elevation</span><span class="val" id="vEl"></span></label>
+      <input type="range" id="sEl" min="8" max="70" step="0.5"></div>
+    <div class="checks" style="margin-top:10px">
+      <label><input type="checkbox" id="cLobe" checked><span>Radiance lobe surface</span></label>
+      <label><input type="checkbox" id="cArr" checked><span>Hemisphere of outgoing arrows</span></label>
+      <label><input type="checkbox" id="cFrame" checked><span>Local frame <b>n</b>, <b>p</b>, <b>q</b></span></label>
+      <label><input type="checkbox" id="cMirror"><span>Ideal mirror direction</span></label>
+    </div>
+
+    <div class="readout">
+      <div><span class="k">Brightest direction (&theta;&le;75&deg;)</span><span class="v" id="rPeak"></span></div>
+      <div><span class="k">Mirror direction</span><span class="v" id="rMir"></span></div>
+      <div><span class="k">Peak radiance &#8467;<sub>out</sub></span><span class="v" id="rLo"></span></div>
+      <div><span class="k">Albedo &rho;(&lambda;)</span><span class="v" id="rRho"></span></div>
+      <div><span class="k">Light colour</span><span class="v" id="rCol"></span></div>
+    </div>
+
+    <div class="eqbox">
+      <span class="big">&#8467;<sub>out</sub>(&omega;<sub>o</sub>) = <i>F</i>(&#8467;<sub>in</sub>, <b>n</b>, &lambda;, <b>p</b>, <b>q</b>) = <i>f</i><sub>r</sub>(&omega;<sub>i</sub>&rarr;&omega;<sub>o</sub>, &lambda;) &middot; &#8467;<sub>in</sub> &middot; cos&thinsp;&theta;<sub>i</sub></span>
+      <i>f</i><sub>r</sub> is an anisotropic GGX microfacet BRDF: a Lambertian term &rho;(&lambda;)/&pi; plus a specular term
+      <i>D&thinsp;G&thinsp;F</i> / (4 cos&theta;<sub>i</sub> cos&theta;<sub>o</sub>), whose micro-facet distribution <i>D</i> is stretched
+      by &alpha;<sub>p</sub> and &alpha;<sub>q</sub> along the tangent directions <b>p</b> and <b>q</b>. Arrow lengths are normalised to the peak of the
+      current lobe.
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ *  small 3-vector helpers  (world: z is the surface normal direction) *
+ * ------------------------------------------------------------------ */
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const len=a=>Math.sqrt(dot(a,a));
+const nrm=a=>{const l=len(a)||1;return [a[0]/l,a[1]/l,a[2]/l];};
+const D2R=Math.PI/180, R2D=180/Math.PI;
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const dirOf=(th,ph)=>[Math.sin(th)*Math.cos(ph),Math.sin(th)*Math.sin(ph),Math.cos(th)];
+
+/* ------------------------------------------------------------------ *
+ *  state                                                              *
+ * ------------------------------------------------------------------ */
+const S={
+  thI:45*D2R, phI:290*D2R,      // incoming direction (pointing from surface TO the light)
+  lam:550,                       // wavelength, nm
+  ap:0.18, aq:0.18,              // GGX roughness along p and along q
+  ks:0.45,                       // specular weight (kd = 1-ks)
+  az:12*D2R, el:28*D2R,          // camera azimuth / elevation
+  lobe:true, arrows:true, frame:true, mirror:false
+};
+const F0=0.06;                   // normal-incidence Fresnel reflectance
+const Li=1.0;                    // incoming radiance
+
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d');
+const W=cv.width, H=cv.height;
+const OX=W*0.545, OY=H*0.630;    // screen position of the surface point
+const SC=128;                    // pixels per world unit
+const PLANE=3.00;                // half-size of the green quad
+const RLOBE=1.72;                // world length of the longest outgoing arrow
+
+/* tangent frame: p and q are orthogonal unit vectors in the surface,
+   chosen so that (as in the textbook figure) p points up-left and q up-right. */
+let P_T=[1,0,0], Q_T=[0,1,0];
+function updateFrame(){
+  const tq=S.az+135*D2R, tp=S.az+225*D2R;
+  Q_T=[Math.cos(tq),Math.sin(tq),0];
+  P_T=[Math.cos(tp),Math.sin(tp),0];
+}
+
+/* ------------------------------------------------------------------ *
+ *  orthographic camera                                                *
+ * ------------------------------------------------------------------ */
+let CF=[1,0,0],CR=[0,1,0],CU=[0,0,1];
+function camera(){
+  const A=S.az,E=S.el;
+  CF=[Math.cos(E)*Math.cos(A),Math.cos(E)*Math.sin(A),Math.sin(E)];  // surface -> camera
+  CR=[-Math.sin(A),Math.cos(A),0];
+  CU=[-Math.sin(E)*Math.cos(A),-Math.sin(E)*Math.sin(A),Math.cos(E)];
+}
+const px=P=>OX+SC*dot(P,CR);
+const py=P=>OY-SC*dot(P,CU);
+const prj=P=>[px(P),py(P)];
+const dep=P=>dot(P,CF);          // bigger = nearer to the eye
+
+/* mouse -> unit direction on the upper hemisphere (sphere of radius 1) */
+function pickDir(sx,sy){
+  const a=(sx-OX)/SC, b=(OY-sy)/SC;
+  const w=add(mul(CR,a),mul(CU,b));
+  const l2=a*a+b*b;
+  let Pw = l2<1 ? add(w,mul(CF,Math.sqrt(1-l2))) : mul(w,1/Math.sqrt(l2));
+  let d=nrm(Pw);
+  if(d[2]<0.035){ d=nrm([d[0],d[1],0.035]); }
+  return d;
+}
+
+/* ------------------------------------------------------------------ *
+ *  spectral helpers                                                   *
+ * ------------------------------------------------------------------ */
+function wavelengthRGB(nm){
+  let r=0,g=0,b=0;
+  if(nm>=380&&nm<440){r=-(nm-440)/60;b=1;}
+  else if(nm<490){g=(nm-440)/50;b=1;}
+  else if(nm<510){g=1;b=-(nm-510)/20;}
+  else if(nm<580){r=(nm-510)/70;g=1;}
+  else if(nm<645){r=1;g=-(nm-645)/65;}
+  else if(nm<=780){r=1;}
+  let f=1;
+  if(nm>700)f=0.3+0.7*(780-nm)/80; else if(nm<420)f=0.3+0.7*(nm-380)/40;
+  const g2=v=>Math.round(255*Math.pow(Math.max(0,Math.min(1,v*f)),0.8));
+  return [g2(r),g2(g),g2(b)];
+}
+const rgbs=(c,a)=>'rgba('+c[0]+','+c[1]+','+c[2]+','+a+')';
+/* the surface is green: its diffuse albedo peaks in the green part of the spectrum */
+const rho=nm=>0.07+0.80*Math.exp(-Math.pow((nm-545)/58,2));
+
+/* ------------------------------------------------------------------ *
+ *  the BRDF itself  (anisotropic GGX / Cook-Torrance + Lambert)       *
+ * ------------------------------------------------------------------ */
+function brdf(wi,wo){
+  const ni=wi[2], no=wo[2];
+  if(ni<=0||no<=0) return 0;
+  const kd=1-S.ks, ks=S.ks;
+  const diff=rho(S.lam)/Math.PI;
+  const h=nrm(add(wi,wo));
+  const ax=S.ap, ay=S.aq;
+  const hp=dot(h,P_T), hq=dot(h,Q_T), hn=h[2];
+  const t=(hp*hp)/(ax*ax)+(hq*hq)/(ay*ay)+hn*hn;
+  const Dg=1/(Math.PI*ax*ay*t*t);
+  const G1=w=>{
+    const wn=w[2], wp=dot(w,P_T), wq=dot(w,Q_T);
+    const s=Math.sqrt(ax*ax*wp*wp+ay*ay*wq*wq+wn*wn);
+    return 2*wn/(wn+s);
+  };
+  const Fr=F0+(1-F0)*Math.pow(1-clamp(dot(wo,h),0,1),5);
+  const spec=Dg*G1(wi)*G1(wo)*Fr/(4*ni*no);
+  return kd*diff+ks*spec;
+}
+let WI=[0,0,1];
+const radiance=wo=>brdf(WI,wo)*Li*WI[2];
+let PEAKALL=1;                   // global max over the hemisphere (arrow-length normaliser)
+
+/* peak of the current lobe, by dense sampling of the hemisphere */
+let PEAK=1, PEAKDIR=[0,0,1], UNIFORM=false;
+function findPeak(){
+  let best=0,bd=[0,0,1],lo=Infinity,bestR=0,bdR=[0,0,1];
+  for(let ti=0;ti<=44;ti++){
+    const th=(ti*2)*D2R;
+    const np=ti===0?1:72;
+    for(let pi=0;pi<np;pi++){
+      const ph=(pi*360/np)*D2R;
+      const wo=dirOf(th,ph);
+      const v=radiance(wo);
+      if(v>best){best=v;bd=wo;}
+      if(v<lo)lo=v;
+      if(th<=75*D2R && v>bestR){bestR=v;bdR=wo;}
+    }
+  }
+  UNIFORM = (best-lo)/Math.max(best,1e-9) < 0.14;   // lobe is essentially a Lambertian dome
+  PEAKALL=Math.max(best,1e-9);
+  bd=bdR; best=bestR;
+  // local refinement around the best sample
+  let step=2*D2R;
+  let th=Math.acos(clamp(bd[2],-1,1)), ph=Math.atan2(bd[1],bd[0]);
+  for(let it=0;it<18;it++){
+    step*=0.7;
+    let improved=false;
+    for(const d of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]){
+      const t2=clamp(th+d[0]*step,0,75*D2R), p2=ph+d[1]*step;
+      const v=radiance(dirOf(t2,p2));
+      if(v>best){best=v;th=t2;ph=p2;improved=true;}
+    }
+    if(!improved && step<1e-4) break;
+  }
+  PEAK=Math.max(best,1e-9);
+  PEAKDIR = UNIFORM ? [-WI[0],-WI[1],WI[2]] : dirOf(th,ph);   // uniform dome -> show the mirror direction
+}
+
+/* ------------------------------------------------------------------ *
+ *  drawing primitives                                                 *
+ * ------------------------------------------------------------------ */
+function arrow2(a,b,color,wd,head,alpha,edge){
+  const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy);
+  if(L<2) return;
+  const ux=dx/L,uy=dy/L, nx=-uy, ny=ux;
+  const hl=Math.min(head,L*0.62), hw=hl*0.60, sw=wd/2;
+  const bx=b[0]-ux*hl, by=b[1]-uy*hl;
+  ctx.save();
+  ctx.globalAlpha=alpha===undefined?1:alpha;
+  ctx.beginPath();
+  ctx.moveTo(a[0]+nx*sw,a[1]+ny*sw);
+  ctx.lineTo(bx+nx*sw,by+ny*sw);
+  ctx.lineTo(bx+nx*hw,by+ny*hw);
+  ctx.lineTo(b[0],b[1]);
+  ctx.lineTo(bx-nx*hw,by-ny*hw);
+  ctx.lineTo(bx-nx*sw,by-ny*sw);
+  ctx.lineTo(a[0]-nx*sw,a[1]-ny*sw);
+  ctx.closePath();
+  ctx.fillStyle=color; ctx.fill();
+  if(edge){ ctx.strokeStyle=edge; ctx.lineWidth=1.3; ctx.lineJoin='round'; ctx.stroke(); }
+  ctx.restore();
+}
+const arrow3=(A,B,c,w,h,a,e)=>arrow2(prj(A),prj(B),c,w,h,a,e);
+
+/* rich text: array of {t,f,dy,c} runs, drawn with a white halo */
+function runsWidth(runs){
+  let w=0;
+  for(const r of runs){ ctx.font=r.f; w+=ctx.measureText(r.t).width; }
+  return w;
+}
+function drawRuns(runs,x,y,align){
+  const w=runsWidth(runs);
+  let cx = align==='right' ? x-w : (align==='center' ? x-w/2 : x);
+  cx=clamp(cx,8,W-w-8);
+  ctx.save();
+  ctx.textBaseline='alphabetic';
+  ctx.lineJoin='round'; ctx.miterLimit=2;
+  for(const pass of [0,1]){
+    let px0=cx;
+    for(const r of runs){
+      ctx.font=r.f;
+      if(pass===0){ ctx.strokeStyle='rgba(255,255,255,0.95)'; ctx.lineWidth=6; ctx.strokeText(r.t,px0,y+(r.dy||0)); }
+      else { ctx.fillStyle=r.c||'#000'; ctx.fillText(r.t,px0,y+(r.dy||0)); }
+      px0+=ctx.measureText(r.t).width;
+    }
+  }
+  ctx.restore();
+  return w;
+}
+const SER='Georgia,"Times New Roman",serif';
+const IT=s=>'italic '+s+'px '+SER;
+const BD=s=>'bold '+s+'px '+SER;
+const RM=s=>s+'px '+SER;
+
+/* ------------------------------------------------------------------ *
+ *  scene                                                              *
+ * ------------------------------------------------------------------ */
+function drawPlane(){
+  const c=[[-PLANE,-PLANE,0],[PLANE,-PLANE,0],[PLANE,PLANE,0],[-PLANE,PLANE,0]].map(prj);
+  ctx.beginPath(); ctx.moveTo(c[0][0],c[0][1]);
+  for(let i=1;i<4;i++) ctx.lineTo(c[i][0],c[i][1]);
+  ctx.closePath();
+  ctx.fillStyle='#69dd0a'; ctx.fill();
+  ctx.lineWidth=7; ctx.lineJoin='round'; ctx.strokeStyle='#111'; ctx.stroke();
+}
+
+function drawLobeSurface(col){
+  const NT=14,NP=48,V=[];
+  for(let i=0;i<=NT;i++){
+    const th=(i/NT)*(89*D2R), row=[];
+    for(let j=0;j<=NP;j++){
+      const ph=(j/NP)*2*Math.PI;
+      const w=dirOf(th,ph);
+      row.push(mul(w,RLOBE*radiance(w)/PEAKALL));
+    }
+    V.push(row);
+  }
+  const dk=[Math.round(col[0]*0.40),Math.round(col[1]*0.46),Math.round(col[2]*0.40)];
+  ctx.save();
+  ctx.lineWidth=1.4; ctx.strokeStyle=rgbs(dk,0.50);
+  for(let i=3;i<=NT;i+=4){                       // latitude rings
+    ctx.beginPath();
+    for(let j=0;j<=NP;j++){ const q=prj(V[i][j]); j?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+    ctx.stroke();
+  }
+  for(let j=0;j<NP;j+=6){                        // meridians
+    ctx.beginPath();
+    for(let i=0;i<=NT;i++){ const q=prj(V[i][j]); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawBaseEllipse(){
+  ctx.save();
+  ctx.beginPath();
+  for(let k=0;k<=48;k++){
+    const a=k/48*2*Math.PI, p=prj([0.16*Math.cos(a),0.16*Math.sin(a),0]);
+    k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);
+  }
+  ctx.closePath(); ctx.lineWidth=3.5; ctx.strokeStyle='#111'; ctx.stroke();
+  ctx.restore();
+}
+
+function drawBeam(){
+  const src=mul(WI,4.6);
+  const a=prj(src), b=prj(mul(WI,0.02));
+  const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy)||1;
+  const ux=dx/L, uy=dy/L, nx=-uy, ny=ux;
+  const hl=46, hw=20;
+  const tipx=b[0], tipy=b[1];
+  const bx=tipx-ux*hl, by=tipy-uy*hl;
+  const w0=15, w1=9;           // half-widths: wide at the source, narrow at the tip
+  const g=ctx.createLinearGradient(a[0],a[1],tipx,tipy);
+  g.addColorStop(0,'#fff44d'); g.addColorStop(0.42,'#ffa41c'); g.addColorStop(1,'#f4241c');
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(a[0]+nx*w0,a[1]+ny*w0);
+  ctx.lineTo(bx+nx*w1,by+ny*w1);
+  ctx.lineTo(bx-nx*w1,by-ny*w1);
+  ctx.lineTo(a[0]-nx*w0,a[1]-ny*w0);
+  ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(tipx,tipy);
+  ctx.lineTo(bx+nx*hw,by+ny*hw);
+  ctx.lineTo(bx-nx*hw,by-ny*hw);
+  ctx.closePath(); ctx.fillStyle='#f4241c'; ctx.fill();
+  ctx.restore();
+
+  // label l_in(lambda) beside the beam
+  const anchor=prj(mul(WI,3.55));
+  let perp=[-uy,ux];
+  if(perp[0]<0) perp=[uy,-ux];
+  const lx=anchor[0]+perp[0]*34+8, ly=anchor[1]+perp[1]*34;
+  const col=wavelengthRGB(S.lam);
+  const runs=[{t:'ℓ',f:IT(40)},{t:'in',f:IT(23),dy:9},{t:'(λ)',f:IT(34)}];
+  const wpx=drawRuns(runs,lx,ly,'left');
+  // wavelength swatch under the label
+  const sx=clamp(lx,8,W-wpx-8);
+  ctx.save();
+  ctx.font='600 13px -apple-system,Segoe UI,sans-serif';
+  const tw=ctx.measureText(S.lam+' nm').width;
+  ctx.fillStyle='rgba(255,255,255,0.88)';
+  ctx.fillRect(sx-3,ly+9,tw+30,19);
+  ctx.fillStyle=rgbs(col,1); ctx.strokeStyle='rgba(0,0,0,.45)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.rect(sx,ly+13,18,11); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#333';
+  ctx.fillText(S.lam+' nm',sx+23,ly+23);
+  ctx.restore();
+}
+
+function drawFrame(){
+  const O=[0,0,0];
+  const nL=0.95, tL=0.80;
+  // right-angle marker between n and q, in the plane they span
+  const s=0.20;
+  const m1=mul(Q_T,s), m2=add(mul(Q_T,s),[0,0,s]), m3=[0,0,s];
+  ctx.save(); ctx.strokeStyle='#111'; ctx.lineWidth=3.2; ctx.lineJoin='miter';
+  ctx.beginPath();
+  let p1=prj(m1),p2=prj(m2),p3=prj(m3);
+  ctx.moveTo(p1[0],p1[1]); ctx.lineTo(p2[0],p2[1]); ctx.lineTo(p3[0],p3[1]);
+  ctx.stroke(); ctx.restore();
+
+  arrow3(O,[0,0,nL],'#111',7,30);
+  arrow3(O,mul(P_T,tL),'#111',7,30);
+  arrow3(O,mul(Q_T,tL),'#111',7,30);
+
+  const lab=(v,t,ox,oy)=>{
+    const p=prj(v);
+    drawRuns([{t:t,f:BD(34)}],p[0]+ox,p[1]+oy,'center');
+  };
+  lab([0,0,nL],'n',-2,-16);
+  lab(mul(P_T,tL),'p',-26,4);
+  lab(mul(Q_T,tL),'q',26,6);
+}
+
+function drawLobeArrows(col){
+  const items=[];
+  const rings=[[14,6],[36,10],[58,10],[78,10]];
+  for(const ring of rings){
+    const tdeg=ring[0], th=tdeg*D2R, n=ring[1];
+    for(let k=0;k<n;k++){
+      const ph=(k*360/n+(tdeg*0.8))*D2R;
+      const w=dirOf(th,ph);
+      const r=RLOBE*radiance(w)/PEAKALL;
+      if(r*SC<6) continue;
+      items.push({w:w,r:r,z:dep(mul(w,r))});
+    }
+  }
+  items.sort((a,b)=>a.z-b.z);
+  const edge=[Math.round(col[0]*0.42),Math.round(col[1]*0.48),Math.round(col[2]*0.42)];
+  for(const it of items){
+    const far=clamp((it.z/(it.r||1)+1)/2,0,1);       // 0 = pointing away, 1 = toward the eye
+    const alpha=0.60+0.4*far;
+    const f=it.r/RLOBE;
+    const wd=3.2+2.6*f;
+    arrow3(mul(it.w,0.055),mul(it.w,it.r),rgbs(col,1),wd,13+11*f,alpha,rgbs(edge,0.85));
+  }
+}
+
+function drawPeakArrow(col){
+  const dark=[Math.round(col[0]*0.55),Math.round(col[1]*0.62),Math.round(col[2]*0.55)];
+  const tip=mul(PEAKDIR,Math.max(RLOBE*radiance(PEAKDIR)/PEAKALL,RLOBE*0.62));
+  arrow3([0,0,0],tip,rgbs(dark,1),8,32,1,'rgba(10,50,10,0.9)');
+  const a=prj([0,0,0]), b=prj(tip);
+  let ux=b[0]-a[0], uy=b[1]-a[1]; const L=Math.hypot(ux,uy)||1; ux/=L; uy/=L;
+  const lx=b[0]+ux*20+(ux>=0?10:-10), ly=b[1]+uy*20-6;
+  const runs=[
+    {t:'ℓ',f:IT(36)},{t:'out',f:IT(21),dy:8},{t:'=',f:RM(30)},
+    {t:'F',f:IT(34)},{t:'(',f:RM(34)},
+    {t:'ℓ',f:IT(30)},{t:'in',f:IT(18),dy:7},{t:',',f:RM(28)},
+    {t:' n',f:BD(28)},{t:',',f:RM(28)},
+    {t:' λ',f:IT(28)},{t:',',f:RM(28)},
+    {t:' p',f:BD(28)},{t:',',f:RM(28)},
+    {t:' q',f:BD(28)},{t:')',f:RM(34)}
+  ];
+  drawRuns(runs,lx,clamp(ly,42,H-14),ux>=0?'left':'right');
+}
+
+function drawMirror(){
+  const m=[-WI[0],-WI[1],WI[2]];
+  const p0=prj([0,0,0]), p1=prj(mul(m,RLOBE*1.12));
+  ctx.save();
+  ctx.setLineDash([9,7]); ctx.lineWidth=2.6; ctx.strokeStyle='rgba(20,20,20,.62)';
+  ctx.beginPath(); ctx.moveTo(p0[0],p0[1]); ctx.lineTo(p1[0],p1[1]); ctx.stroke();
+  ctx.setLineDash([]);
+  drawRuns([{t:'mirror',f:'italic 17px '+SER}],p1[0]+6,p1[1]-8,'left');
+  ctx.restore();
+}
+
+function render(){
+  camera(); updateFrame();
+  WI=dirOf(S.thI,S.phI);
+  findPeak();
+  const col=wavelengthRGB(S.lam);
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+
+  drawPlane();
+  drawBaseEllipse();
+  if(S.lobe) drawLobeSurface(col);
+  if(S.mirror) drawMirror();
+  if(S.arrows) drawLobeArrows(col);
+  drawBeam();
+  if(S.frame) drawFrame();
+  drawPeakArrow(col);
+
+  updateReadout();
+}
+
+function updateReadout(){
+  const th=Math.acos(clamp(PEAKDIR[2],-1,1))*R2D;
+  let ph=Math.atan2(PEAKDIR[1],PEAKDIR[0])*R2D; if(ph<0)ph+=360;
+  let mph=(S.phI*R2D+180)%360;
+  document.getElementById('rPeak').textContent=(UNIFORM?'uniform dome':'θ='+th.toFixed(1)+'°, φ='+ph.toFixed(0)+'°');
+  document.getElementById('rMir').textContent='θ='+(S.thI*R2D).toFixed(1)+'°, φ='+mph.toFixed(0)+'°';
+  document.getElementById('rLo').textContent=PEAKALL.toFixed(3)+' sr⁻¹';
+  document.getElementById('rRho').textContent=rho(S.lam).toFixed(2);
+  const c=wavelengthRGB(S.lam);
+  document.getElementById('rCol').innerHTML='<span class="swatch" style="background:rgb('+c.join(',')+')"></span>'+S.lam+' nm';
+}
+
+/* ------------------------------------------------------------------ *
+ *  controls                                                           *
+ * ------------------------------------------------------------------ */
+const el=id=>document.getElementById(id);
+function syncLabels(){
+  el('vTi').textContent=(S.thI*R2D).toFixed(0)+'°';
+  el('vPi').textContent=(S.phI*R2D).toFixed(0)+'°';
+  el('vLam').textContent=S.lam+' nm';
+  el('vAp').textContent=S.ap.toFixed(3);
+  el('vAq').textContent=S.aq.toFixed(3);
+  el('vKs').textContent=Math.round(S.ks*100)+'% spec';
+  el('vAz').textContent=(S.az*R2D).toFixed(0)+'°';
+  el('vEl').textContent=(S.el*R2D).toFixed(0)+'°';
+}
+function syncSliders(){
+  el('sTi').value=S.thI*R2D; el('sPi').value=S.phI*R2D; el('sLam').value=S.lam;
+  el('sAp').value=S.ap; el('sAq').value=S.aq; el('sKs').value=S.ks;
+  el('sAz').value=S.az*R2D; el('sEl').value=S.el*R2D;
+}
+function refresh(){ syncLabels(); render(); }
+
+el('sTi').oninput=e=>{S.thI=+e.target.value*D2R; refresh();};
+el('sPi').oninput=e=>{S.phI=+e.target.value*D2R; refresh();};
+el('sLam').oninput=e=>{S.lam=+e.target.value; refresh();};
+el('sAp').oninput=e=>{S.ap=+e.target.value; refresh();};
+el('sAq').oninput=e=>{S.aq=+e.target.value; refresh();};
+el('sKs').oninput=e=>{S.ks=+e.target.value; refresh();};
+el('sAz').oninput=e=>{S.az=+e.target.value*D2R; refresh();};
+el('sEl').oninput=e=>{S.el=+e.target.value*D2R; refresh();};
+el('cLobe').onchange=e=>{S.lobe=e.target.checked; render();};
+el('cArr').onchange=e=>{S.arrows=e.target.checked; render();};
+el('cFrame').onchange=e=>{S.frame=e.target.checked; render();};
+el('cMirror').onchange=e=>{S.mirror=e.target.checked; render();};
+
+const PRESETS={
+  diffuse:{ap:0.72,aq:0.72,ks:0.03},
+  glossy:{ap:0.13,aq:0.13,ks:0.55},
+  mirror:{ap:0.025,aq:0.025,ks:0.95},
+  brushed:{ap:0.05,aq:0.40,ks:0.65}
+};
+for(const b of document.querySelectorAll('.presets button')){
+  b.onclick=()=>{ Object.assign(S,PRESETS[b.dataset.p]); syncSliders(); refresh(); };
+}
+
+/* pointer: drag = move the incoming ray, shift/right drag = orbit */
+let mode=null, last=null;
+function localPt(ev){
+  const r=cv.getBoundingClientRect();
+  return [ (ev.clientX-r.left)*W/r.width, (ev.clientY-r.top)*H/r.height ];
+}
+cv.addEventListener('pointerdown',ev=>{
+  cv.setPointerCapture(ev.pointerId);
+  const p=localPt(ev);
+  if(ev.shiftKey||ev.button===2){ mode='orbit'; last=p; }
+  else{ mode='light'; setLight(p); }
+  ev.preventDefault();
+});
+cv.addEventListener('pointermove',ev=>{
+  if(!mode) return;
+  const p=localPt(ev);
+  if(mode==='light') setLight(p);
+  else{
+    S.az-=(p[0]-last[0])*0.006;
+    S.el=clamp(S.el-(p[1]-last[1])*0.005,8*D2R,70*D2R);
+    S.az=(S.az%(2*Math.PI)+2*Math.PI)%(2*Math.PI);
+    last=p; syncSliders(); refresh();
+  }
+});
+const stop=()=>{mode=null;};
+cv.addEventListener('pointerup',stop);
+cv.addEventListener('pointercancel',stop);
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+function setLight(p){
+  const d=pickDir(p[0],p[1]);
+  S.thI=clamp(Math.acos(clamp(d[2],-1,1)),0,85*D2R);
+  S.phI=(Math.atan2(d[1],d[0])+2*Math.PI)%(2*Math.PI);
+  syncSliders(); refresh();
+}
+
+syncSliders(); refresh();
+})();
+</script>
+</body>
+</html>

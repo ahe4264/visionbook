@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts; no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>&theta;: <output id="thetaVal">54</output><input id="thetaInput" type="range" min="20" max="75" step="1" value="54" oninput="document.getElementById('thetaVal').value=this.value;update_theta(+this.value)"></label>
+    <label>r: <output id="rVal">3.2</output><input id="rInput" type="range" min="2.2" max="4.0" step="0.1" value="3.2" oninput="document.getElementById('rVal').value=(+this.value).toFixed(1);update_r(+this.value)"></label>
+    <label><span><input id="polarInput" type="checkbox" onchange="toggle_polar(this.checked)"> Polar labels</span></label>
+    <span id="coordReadout" style="font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#333">x=1.88, y=2.59</span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(function () {
+        var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+        var mode = 'right';
+        var start = hasEditor ? 400 : 300;
+        _applyUiLayout(mode, start);
+        _growDockToFit(mode, start);
+      }, 0);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+    window.addEventListener('resize', _autoUiLayout);
+
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) throw new Error('Expression parser is unavailable');
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var names = expr.variables();
+      vars = vars || ['x'];
+      for (var i = 0; i < names.length; i++) {
+        if (vars.indexOf(names[i]) === -1) throw new Error('Unknown variable ' + names[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 100);
+      if (n % 2) n += 1;
+      var h = (b - a) / n;
+      var sum = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) sum += fn(a + i * h) * (i % 2 ? 4 : 2);
+      return sum * h / 3;
+    }
+
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-6;
+      var fa = fn(a);
+      var fb = fn(b);
+      if (fa === 0) return a;
+      if (fb === 0) return b;
+      if (fa * fb > 0) return null;
+      for (var i = 0; i < 80; i++) {
+        var m = (a + b) / 2;
+        var fm = fn(m);
+        if (Math.abs(fm) < tol || Math.abs(b - a) < tol) return m;
+        if (fa * fm <= 0) {
+          b = m;
+          fb = fm;
+        } else {
+          a = m;
+          fa = fm;
+        }
+      }
+      return (a + b) / 2;
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      throw new Error('No equation inputs are used in this figure');
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    (function () {
+      var container = document.getElementById('container');
+      var draw = SVG().addTo(container).size('100%', '100%');
+      var W = 600;
+      var H = 420;
+      draw.viewbox(0, 0, W, H);
+      draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+      var state = {
+        theta: 54,
+        r: 3.2,
+        polar: false
+      };
+
+      var origin = { x: 150, y: 300 };
+      var unit = 58;
+      var axisColor = '#111111';
+      var paleAxis = '#9a9a9a';
+      var blue = '#1f4c7a';
+      var darkBlue = '#173d63';
+      var labelFont = {
+        family: 'Georgia, Times New Roman, serif',
+        size: 20,
+        fill: '#111111'
+      };
+
+      var staticLayer = draw.group();
+      var dynamicLayer = draw.group();
+      var labelLayer = draw.group();
+
+      function toRad(deg) {
+        return deg * Math.PI / 180;
+      }
+
+      function polarPoint(radius, angleDeg) {
+        var a = toRad(angleDeg);
+        return {
+          x: origin.x + radius * Math.cos(a),
+          y: origin.y - radius * Math.sin(a)
+        };
+      }
+
+      function arrowHead(group, x, y, angle, size, color) {
+        var half = size * 0.55;
+        var back = size * 1.2;
+        var p1 = [x, y];
+        var p2 = [x - back * Math.cos(angle) + half * Math.cos(angle + Math.PI / 2),
+          y - back * Math.sin(angle) + half * Math.sin(angle + Math.PI / 2)];
+        var p3 = [x - back * Math.cos(angle) + half * Math.cos(angle - Math.PI / 2),
+          y - back * Math.sin(angle) + half * Math.sin(angle - Math.PI / 2)];
+        return group.polygon([p1, p2, p3]).fill(color).stroke('none');
+      }
+
+      function makeLabel(group, text, x, y, opts) {
+        opts = opts || {};
+        var label = group.text(text)
+          .font({
+            family: opts.family || labelFont.family,
+            size: opts.size || labelFont.size,
+            style: opts.style || 'italic',
+            weight: opts.weight || 'normal'
+          })
+          .fill(opts.fill || labelFont.fill)
+          .attr({
+            'paint-order': 'stroke',
+            stroke: '#ffffff',
+            'stroke-width': opts.halo || 4,
+            'stroke-linejoin': 'round'
+          });
+        label.move(x, y);
+        return label;
+      }
+
+      function curvedPath(radius, startDeg, endDeg, steps) {
+        var path = '';
+        for (var i = 0; i <= steps; i++) {
+          var t = i / steps;
+          var deg = startDeg + (endDeg - startDeg) * t;
+          var p = polarPoint(radius, deg);
+          path += (i === 0 ? 'M' : 'L') + p.x.toFixed(2) + ' ' + p.y.toFixed(2) + ' ';
+        }
+        return path;
+      }
+
+      function attachInfo(el, tip, title, body) {
+        el.css('cursor', 'pointer');
+        el.on('mousemove', function (e) { showTooltip(tip, e); });
+        el.on('mouseleave', function () { hideTooltip(); });
+        el.on('click', function () { showPopup(title, body); });
+      }
+
+      function drawStatic() {
+        staticLayer.clear();
+
+        staticLayer.line(72, origin.y, 474, origin.y)
+          .stroke({ color: paleAxis, width: 1.4 });
+        arrowHead(staticLayer, 72, origin.y, Math.PI, 7, axisColor);
+        arrowHead(staticLayer, 474, origin.y, 0, 7, axisColor);
+
+        staticLayer.line(origin.x, 353, origin.x, 42)
+          .stroke({ color: axisColor, width: 1.4 });
+        arrowHead(staticLayer, origin.x, 42, -Math.PI / 2, 7, axisColor);
+        arrowHead(staticLayer, origin.x, 353, Math.PI / 2, 7, axisColor);
+
+        makeLabel(staticLayer, 'Imaginary', 95, 12, { size: 21, weight: '700' });
+        makeLabel(staticLayer, 'Real', 476, 283, { size: 21, weight: '700' });
+      }
+
+      function redraw() {
+        dynamicLayer.clear();
+        labelLayer.clear();
+
+        var radius = state.r * unit;
+        var theta = state.theta;
+        var point = polarPoint(radius, theta);
+        var foot = { x: point.x, y: origin.y };
+        var xVal = state.r * Math.cos(toRad(theta));
+        var yVal = state.r * Math.sin(toRad(theta));
+
+        var circlePath = dynamicLayer.path(curvedPath(radius, 142, -16, 80))
+          .fill('none')
+          .stroke({ color: blue, width: 4, linecap: 'round', linejoin: 'round' });
+        attachInfo(circlePath, 'Points with the same modulus r lie on this circle.', 'Modulus circle',
+          'Changing r changes the radius of the circle. Changing theta moves the same point around the circle.');
+
+        var leftEnd = polarPoint(radius, 142);
+        var lowEnd = polarPoint(radius, -16);
+        arrowHead(dynamicLayer, leftEnd.x, leftEnd.y, Math.PI, 12, blue);
+        arrowHead(dynamicLayer, lowEnd.x, lowEnd.y, Math.PI / 2, 12, blue);
+
+        var base = dynamicLayer.line(origin.x, origin.y, foot.x, foot.y)
+          .stroke({ color: darkBlue, width: 3.2, linecap: 'round' });
+        var vertical = dynamicLayer.line(foot.x, foot.y, point.x, point.y)
+          .stroke({ color: darkBlue, width: 3.2, linecap: 'round' });
+        var radiusLine = dynamicLayer.line(origin.x, origin.y, point.x, point.y)
+          .stroke({ color: darkBlue, width: 3.2, linecap: 'round' });
+
+        attachInfo(base, 'The horizontal leg is the real part x.', 'Real part',
+          'The value x is the horizontal coordinate of the complex number. As theta changes, x is r cos(theta).');
+        attachInfo(vertical, 'The vertical leg is the imaginary part y.', 'Imaginary part',
+          'The value y is the vertical coordinate of the complex number. As theta changes, y is r sin(theta).');
+        attachInfo(radiusLine, 'The segment r is the modulus, or distance from the origin.', 'Modulus',
+          'The modulus r fixes the distance from the origin to x + yi. The direction angle theta fixes where that distance points.');
+
+        dynamicLayer.path('M' + (foot.x - 17) + ' ' + foot.y + ' L' + (foot.x - 17) + ' ' + (foot.y - 17) + ' L' + foot.x + ' ' + (foot.y - 17))
+          .fill('none')
+          .stroke({ color: '#222222', width: 1.7 });
+
+        dynamicLayer.path(curvedPath(42, 0, theta, 24))
+          .fill('none')
+          .stroke({ color: '#222222', width: 1.7, linecap: 'round' });
+
+        var dot = dynamicLayer.circle(11).center(point.x, point.y).fill('#050505');
+        attachInfo(dot, 'This point is the complex number x + yi.', 'Complex point',
+          'The same point can be read with rectangular coordinates x and y, or with polar values r and theta.');
+
+        makeLabel(labelLayer, 'x + yi', point.x + 12, point.y - 27, { size: 20, fill: darkBlue });
+
+        var showRect = !state.polar;
+        var xLabel = makeLabel(labelLayer, 'x', (origin.x + foot.x) / 2 - 8, origin.y + 16, {
+          size: 20,
+          fill: showRect ? '#111111' : '#777777',
+          halo: 5
+        });
+        var yLabel = makeLabel(labelLayer, 'y', foot.x + 12, (origin.y + point.y) / 2 - 10, {
+          size: 20,
+          fill: showRect ? '#111111' : '#777777',
+          halo: 5
+        });
+
+        var rLabel = makeLabel(labelLayer, 'r', (origin.x + point.x) / 2 - 22, (origin.y + point.y) / 2 - 6, {
+          size: 20,
+          fill: state.polar ? '#111111' : '#222222',
+          halo: 5
+        });
+        var thetaPoint = polarPoint(50, Math.max(14, theta * 0.43));
+        var thetaLabel = makeLabel(labelLayer, '\u03b8', thetaPoint.x + 2, thetaPoint.y - 10, {
+          size: 20,
+          fill: state.polar ? '#111111' : '#222222',
+          halo: 5
+        });
+
+        if (state.polar) {
+          xLabel.opacity(0.25);
+          yLabel.opacity(0.25);
+          rLabel.font({ weight: '700' });
+          thetaLabel.font({ weight: '700' });
+          radiusLine.stroke({ color: '#0e3559', width: 4 });
+        }
+
+        var readout = document.getElementById('coordReadout');
+        if (readout) {
+          readout.textContent = 'x=' + xVal.toFixed(2) + ', y=' + yVal.toFixed(2);
+        }
+      }
+
+      window.update_theta = function (v) {
+        state.theta = v;
+        redraw();
+      };
+
+      window.update_r = function (v) {
+        state.r = v;
+        redraw();
+      };
+
+      window.toggle_polar = function (on) {
+        state.polar = on;
+        redraw();
+      };
+
+      document.addEventListener('fig-resize', function () {
+        draw.size('100%', '100%');
+      });
+
+      drawStatic();
+      redraw();
+      window.__markRendered();
+    }());
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

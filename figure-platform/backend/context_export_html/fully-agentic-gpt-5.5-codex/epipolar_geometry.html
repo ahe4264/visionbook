@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Epipolar Geometry</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16181b;
+      --muted: #5b6470;
+      --panel: rgba(255, 255, 255, 0.92);
+      --edge: #d4d9df;
+      --red: #f20d16;
+      --plane: #f3ec11;
+      --cyan: #6de8e8;
+      --green: #34d323;
+      --blue: #2878ef;
+      --bg: #f7f8f5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at 50% 10%, #ffffff 0, var(--bg) 58%, #edf1f4 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 0;
+    }
+
+    .figure-shell {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: clamp(8px, 2vw, 22px);
+    }
+
+    svg {
+      width: min(100%, 1380px);
+      height: min(78vh, 760px);
+      min-height: 430px;
+      touch-action: none;
+      overflow: visible;
+      filter: drop-shadow(0 18px 34px rgba(36, 48, 62, 0.12));
+    }
+
+    .plane-fill {
+      fill: rgba(243, 236, 17, 0.78);
+      stroke: var(--red);
+      stroke-width: 5.2;
+      stroke-linejoin: round;
+    }
+
+    .image-plane {
+      fill: rgba(255, 255, 255, 0.77);
+      stroke: #373c40;
+      stroke-width: 3.1;
+      stroke-linejoin: round;
+    }
+
+    .frustum {
+      stroke: rgba(50, 55, 59, 0.72);
+      stroke-width: 2.8;
+      fill: none;
+      stroke-linecap: round;
+    }
+
+    .baseline {
+      stroke: #111;
+      stroke-width: 3.1;
+      stroke-dasharray: 13 12;
+      stroke-linecap: round;
+    }
+
+    .ray,
+    .epi-line {
+      stroke: var(--red);
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .ray {
+      stroke-width: 5.4;
+    }
+
+    .epi-line {
+      stroke-width: 3.7;
+    }
+
+    .axis-left,
+    .axis-right {
+      stroke-width: 2.9;
+      fill: none;
+      stroke-linecap: round;
+    }
+
+    .axis-left {
+      stroke: var(--green);
+    }
+
+    .axis-right {
+      stroke: var(--blue);
+    }
+
+    .point {
+      stroke: #0e1114;
+      stroke-width: 3.2;
+      cursor: grab;
+    }
+
+    .point:active {
+      cursor: grabbing;
+    }
+
+    .center {
+      fill: #06080a;
+      stroke: rgba(255, 255, 255, 0.38);
+      stroke-width: 2.8;
+    }
+
+    .projection {
+      fill: var(--red);
+    }
+
+    .epipole {
+      fill: #050608;
+    }
+
+    .point-p {
+      fill: var(--cyan);
+    }
+
+    .hit-target {
+      fill: transparent;
+      stroke: transparent;
+      stroke-width: 22;
+      cursor: grab;
+      pointer-events: stroke;
+    }
+
+    .draggable-center {
+      cursor: ew-resize;
+    }
+
+    .label {
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 700;
+      fill: #08090a;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.82);
+      stroke-width: 6px;
+      stroke-linejoin: round;
+    }
+
+    .label.small {
+      font-size: 29px;
+      stroke-width: 5px;
+    }
+
+    .label.medium {
+      font-size: 39px;
+    }
+
+    .label.large {
+      font-size: 52px;
+    }
+
+    .plane-label {
+      font-size: 34px;
+      font-weight: 700;
+      fill: #202000;
+      stroke: rgba(255, 255, 255, 0.38);
+      stroke-width: 4px;
+    }
+
+    .line-label {
+      font-size: 26px;
+      font-style: italic;
+      font-weight: 700;
+      fill: #121416;
+      stroke: rgba(255, 255, 255, 0.82);
+      stroke-width: 5px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(230px, 1fr));
+      gap: 14px;
+      width: min(980px, calc(100% - 24px));
+      margin: 0 auto clamp(12px, 2vh, 22px);
+      padding: 13px 15px 14px;
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 12px 28px rgba(21, 31, 41, 0.12);
+      backdrop-filter: blur(10px);
+    }
+
+    .control {
+      display: grid;
+      grid-template-columns: auto minmax(130px, 1fr) 56px;
+      gap: 12px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .control label {
+      color: #222931;
+      font-weight: 700;
+      font-size: 0.88rem;
+      white-space: nowrap;
+    }
+
+    .control output {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      font-weight: 700;
+      font-size: 0.84rem;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #22384d;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+
+      .figure-shell {
+        padding: 6px 4px 0;
+      }
+
+      svg {
+        height: 68vh;
+        min-height: 390px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+        gap: 10px;
+        width: calc(100% - 16px);
+        margin-bottom: 8px;
+      }
+
+      .control {
+        grid-template-columns: 92px minmax(96px, 1fr) 50px;
+      }
+
+      .control label,
+      .control output {
+        font-size: 0.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="figure-shell" aria-label="Interactive epipolar geometry model">
+      <svg id="figure" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+        <title id="title">Epipolar geometry in a stereo camera pair</title>
+        <desc id="desc">A live stereo rig showing two camera centers, their image planes, a three-dimensional point, the epipolar plane, epipoles, and epipolar lines.</desc>
+        <defs>
+          <marker id="arrowGreen" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 12 6 L 0 12 z" fill="#34d323"></path>
+          </marker>
+          <marker id="arrowBlue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 12 6 L 0 12 z" fill="#2878ef"></path>
+          </marker>
+          <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2.3" result="blur"></feGaussianBlur>
+            <feMerge>
+              <feMergeNode in="blur"></feMergeNode>
+              <feMergeNode in="SourceGraphic"></feMergeNode>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <g id="frustums"></g>
+        <polygon id="epiPlane" class="plane-fill"></polygon>
+        <line id="baseline" class="baseline"></line>
+        <g id="imagePlanes"></g>
+        <g id="axes"></g>
+        <g id="rays"></g>
+        <g id="epilines"></g>
+        <g id="points"></g>
+        <g id="labels"></g>
+      </svg>
+    </section>
+
+    <section class="controls" aria-label="Stereo camera controls">
+      <div class="control">
+        <label for="baselineControl">Baseline</label>
+        <input id="baselineControl" type="range" min="5.8" max="8.6" value="7.4" step="0.05" />
+        <output id="baselineValue" for="baselineControl">7.40</output>
+      </div>
+      <div class="control">
+        <label for="rotationControl">Camera 2 yaw</label>
+        <input id="rotationControl" type="range" min="-26" max="26" value="-8" step="1" />
+        <output id="rotationValue" for="rotationControl">-8 deg</output>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const NS = "http://www.w3.org/2000/svg";
+      const svg = document.getElementById("figure");
+      const groups = {
+        frustums: document.getElementById("frustums"),
+        imagePlanes: document.getElementById("imagePlanes"),
+        axes: document.getElementById("axes"),
+        rays: document.getElementById("rays"),
+        epilines: document.getElementById("epilines"),
+        points: document.getElementById("points"),
+        labels: document.getElementById("labels")
+      };
+      const epiPlaneEl = document.getElementById("epiPlane");
+      const baselineEl = document.getElementById("baseline");
+      const baselineControl = document.getElementById("baselineControl");
+      const rotationControl = document.getElementById("rotationControl");
+      const baselineValue = document.getElementById("baselineValue");
+      const rotationValue = document.getElementById("rotationValue");
+
+      const W = 1200;
+      const H = 720;
+      const view = {
+        cx: 600,
+        cy: 530,
+        scale: 118,
+        skewX: 0.52,
+        skewZ: 0.34
+      };
+      const f = 0.92;
+      const halfPlaneWidth = 0.86;
+      const halfPlaneHeight = 1.78;
+      const vertical = vec(0, 0, 1);
+      const state = {
+        baseline: Number(baselineControl.value),
+        yaw: degToRad(Number(rotationControl.value)),
+        p: vec(0.05, 0.58, 3.05),
+        dragging: null,
+        lastPointer: null
+      };
+
+      const staticEls = {};
+      buildDom();
+      update();
+
+      baselineControl.addEventListener("input", () => {
+        state.baseline = Number(baselineControl.value);
+        clampPoint();
+        update();
+      });
+
+      rotationControl.addEventListener("input", () => {
+        state.yaw = degToRad(Number(rotationControl.value));
+        update();
+      });
+
+      svg.addEventListener("pointermove", onPointerMove);
+      svg.addEventListener("pointerup", endDrag);
+      svg.addEventListener("pointercancel", endDrag);
+      svg.addEventListener("pointerleave", endDrag);
+
+      function buildDom() {
+        staticEls.plane1 = svgEl("polygon", { class: "image-plane" }, groups.imagePlanes);
+        staticEls.plane2 = svgEl("polygon", { class: "image-plane" }, groups.imagePlanes);
+        staticEls.frustum1a = svgEl("line", { class: "frustum" }, groups.frustums);
+        staticEls.frustum1b = svgEl("line", { class: "frustum" }, groups.frustums);
+        staticEls.frustum2a = svgEl("line", { class: "frustum" }, groups.frustums);
+        staticEls.frustum2b = svgEl("line", { class: "frustum" }, groups.frustums);
+
+        staticEls.axis1u = svgEl("line", { class: "axis-left", "marker-end": "url(#arrowGreen)" }, groups.axes);
+        staticEls.axis1v = svgEl("line", { class: "axis-left", "marker-end": "url(#arrowGreen)" }, groups.axes);
+        staticEls.axis2u = svgEl("line", { class: "axis-right", "marker-end": "url(#arrowBlue)" }, groups.axes);
+        staticEls.axis2v = svgEl("line", { class: "axis-right", "marker-end": "url(#arrowBlue)" }, groups.axes);
+
+        staticEls.ray1 = svgEl("line", { class: "ray" }, groups.rays);
+        staticEls.ray2 = svgEl("line", { class: "ray" }, groups.rays);
+        staticEls.epi1 = svgEl("line", { class: "epi-line" }, groups.epilines);
+        staticEls.epi2 = svgEl("line", { class: "epi-line" }, groups.epilines);
+
+        staticEls.o1 = pointEl("center", 17, groups.points);
+        staticEls.o2 = pointEl("center draggable-center", 17, groups.points);
+        staticEls.e1 = pointEl("epipole", 10, groups.points);
+        staticEls.e2 = pointEl("epipole", 10, groups.points);
+        staticEls.p1 = pointEl("projection", 10, groups.points);
+        staticEls.p2 = pointEl("projection", 10, groups.points);
+        staticEls.P = pointEl("point-p", 10.5, groups.points);
+        staticEls.hitP = svgEl("circle", { class: "hit-target", r: 24 }, groups.points);
+        staticEls.hitO2 = svgEl("circle", { class: "hit-target", r: 27 }, groups.points);
+
+        staticEls.P.addEventListener("pointerdown", (event) => startDrag(event, "point"));
+        staticEls.hitP.addEventListener("pointerdown", (event) => startDrag(event, "point"));
+        staticEls.o2.addEventListener("pointerdown", (event) => startDrag(event, "camera2"));
+        staticEls.hitO2.addEventListener("pointerdown", (event) => startDrag(event, "camera2"));
+
+        staticEls.labelPlane = textEl("Epipolar plane", "label plane-label", groups.labels);
+        staticEls.labelLine1 = textEl("Epipolar line", "label line-label", groups.labels);
+        staticEls.labelLine2 = textEl("Epipolar line", "label line-label", groups.labels);
+        staticEls.labelCam1 = textEl("Camera 1", "label medium", groups.labels);
+        staticEls.labelCam2 = textEl("Camera 2", "label medium", groups.labels);
+        staticEls.labelP = textEl("P", "label large", groups.labels);
+        staticEls.labelO1 = subLabel("O", "1", "label medium", groups.labels);
+        staticEls.labelO2 = subLabel("O", "2", "label medium", groups.labels);
+        staticEls.labelp1 = subLabel("p", "1", "label medium", groups.labels);
+        staticEls.labelp2 = subLabel("p", "2", "label medium", groups.labels);
+        staticEls.labele1 = subLabel("e", "1", "label small", groups.labels);
+        staticEls.labele2 = subLabel("e", "2", "label small", groups.labels);
+      }
+
+      function update() {
+        const geometry = computeGeometry();
+        drawGeometry(geometry);
+        baselineValue.value = state.baseline.toFixed(2);
+        rotationValue.value = `${Math.round(radToDeg(state.yaw))} deg`;
+      }
+
+      function computeGeometry() {
+        const b = state.baseline;
+        const O1 = vec(-b / 2, 0, 0);
+        const O2 = vec(b / 2, 0, 0);
+        const yaw = state.yaw;
+        const n1 = normalize(vec(1, 0, 0));
+        const n2 = normalize(vec(-Math.cos(yaw), Math.sin(yaw), 0));
+        const plane1 = cameraPlane(O1, n1);
+        const plane2 = cameraPlane(O2, n2);
+        const p1 = projectPointToPlane(O1, state.p, plane1);
+        const p2 = projectPointToPlane(O2, state.p, plane2);
+        const e1 = projectPointToPlane(O1, O2, plane1);
+        const e2 = projectPointToPlane(O2, O1, plane2);
+        const line1 = clippedLineThrough(plane1, e1, p1);
+        const line2 = clippedLineThrough(plane2, e2, p2);
+        return { O1, O2, P: state.p, plane1, plane2, p1, p2, e1, e2, line1, line2 };
+      }
+
+      function cameraPlane(origin, normal) {
+        const center = add(origin, mul(normal, f));
+        const u = normalize(cross(vertical, normal));
+        const v = vertical;
+        return {
+          origin,
+          normal,
+          center,
+          u,
+          v,
+          corners: [
+            planePoint(center, u, v, -halfPlaneWidth, -halfPlaneHeight),
+            planePoint(center, u, v, -halfPlaneWidth, halfPlaneHeight),
+            planePoint(center, u, v, halfPlaneWidth, halfPlaneHeight),
+            planePoint(center, u, v, halfPlaneWidth, -halfPlaneHeight)
+          ]
+        };
+      }
+
+      function projectPointToPlane(origin, point, plane) {
+        const ray = sub(point, origin);
+        let t = dot(sub(plane.center, origin), plane.normal) / dot(ray, plane.normal);
+        if (!Number.isFinite(t)) t = 1;
+        return add(origin, mul(ray, t));
+      }
+
+      function clippedLineThrough(plane, a, b) {
+        const la = toLocal(plane, a);
+        const lb = toLocal(plane, b);
+        const du = lb.u - la.u;
+        const dv = lb.v - la.v;
+        const hits = [];
+        const eps = 1e-7;
+        if (Math.abs(du) > eps) {
+          [-halfPlaneWidth, halfPlaneWidth].forEach((u) => {
+            const t = (u - la.u) / du;
+            const v = la.v + t * dv;
+            if (v >= -halfPlaneHeight - eps && v <= halfPlaneHeight + eps) hits.push({ u, v });
+          });
+        }
+        if (Math.abs(dv) > eps) {
+          [-halfPlaneHeight, halfPlaneHeight].forEach((v) => {
+            const t = (v - la.v) / dv;
+            const u = la.u + t * du;
+            if (u >= -halfPlaneWidth - eps && u <= halfPlaneWidth + eps) hits.push({ u, v });
+          });
+        }
+        const unique = [];
+        hits.forEach((candidate) => {
+          if (!unique.some((item) => Math.hypot(item.u - candidate.u, item.v - candidate.v) < 0.01)) {
+            unique.push(candidate);
+          }
+        });
+        if (unique.length < 2) {
+          unique.push({ u: -halfPlaneWidth, v: la.v });
+          unique.push({ u: halfPlaneWidth, v: la.v });
+        }
+        let best = [unique[0], unique[1]];
+        let bestDist = -1;
+        for (let i = 0; i < unique.length; i += 1) {
+          for (let j = i + 1; j < unique.length; j += 1) {
+            const dist = Math.hypot(unique[i].u - unique[j].u, unique[i].v - unique[j].v);
+            if (dist > bestDist) {
+              bestDist = dist;
+              best = [unique[i], unique[j]];
+            }
+          }
+        }
+        return best.map((item) => planePoint(plane.center, plane.u, plane.v, item.u, item.v));
+      }
+
+      function drawGeometry(g) {
+        setPolygon(staticEls.plane1, g.plane1.corners);
+        setPolygon(staticEls.plane2, g.plane2.corners);
+        setPolygon(epiPlaneEl, [g.O1, g.P, g.O2]);
+        setLine(baselineEl, g.O1, g.O2);
+
+        setLine(staticEls.frustum1a, g.O1, g.plane1.corners[1]);
+        setLine(staticEls.frustum1b, g.O1, g.plane1.corners[2]);
+        setLine(staticEls.frustum2a, g.O2, g.plane2.corners[1]);
+        setLine(staticEls.frustum2b, g.O2, g.plane2.corners[2]);
+
+        setLine(staticEls.ray1, g.O1, g.P);
+        setLine(staticEls.ray2, g.O2, g.P);
+        setLine(staticEls.epi1, g.line1[0], g.line1[1]);
+        setLine(staticEls.epi2, g.line2[0], g.line2[1]);
+
+        const axis1Base = add(g.p1, add(mul(g.plane1.u, -0.34), mul(g.plane1.v, -0.58)));
+        const axis2Base = add(g.p2, add(mul(g.plane2.u, -0.34), mul(g.plane2.v, -0.58)));
+        setLine(staticEls.axis1u, axis1Base, add(axis1Base, mul(g.plane1.u, 0.76)));
+        setLine(staticEls.axis1v, axis1Base, add(axis1Base, mul(g.plane1.v, 0.92)));
+        setLine(staticEls.axis2u, axis2Base, add(axis2Base, mul(g.plane2.u, 0.76)));
+        setLine(staticEls.axis2v, axis2Base, add(axis2Base, mul(g.plane2.v, 0.92)));
+
+        setCircle(staticEls.o1, g.O1);
+        setCircle(staticEls.o2, g.O2);
+        setCircle(staticEls.e1, g.e1);
+        setCircle(staticEls.e2, g.e2);
+        setCircle(staticEls.p1, g.p1);
+        setCircle(staticEls.p2, g.p2);
+        setCircle(staticEls.P, g.P);
+        setCircle(staticEls.hitP, g.P);
+        setCircle(staticEls.hitO2, g.O2);
+
+        positionLabels(g);
+      }
+
+      function positionLabels(g) {
+        const O1 = toSvg(g.O1);
+        const O2 = toSvg(g.O2);
+        const P = toSvg(g.P);
+        const p1 = toSvg(g.p1);
+        const p2 = toSvg(g.p2);
+        const e1 = toSvg(g.e1);
+        const e2 = toSvg(g.e2);
+        const planeCentroid = toSvg(div(add(add(g.O1, g.O2), g.P), 3));
+        setTextPos(staticEls.labelPlane, planeCentroid.x - 92, planeCentroid.y + 6);
+        setTextPos(staticEls.labelP, clamp(P.x - 10, 38, W - 70), clamp(P.y - 22, 54, H - 40));
+        setTextPos(staticEls.labelCam1, clamp(O1.x - 180, 8, W - 190), clamp(O1.y - 4, 50, H - 12));
+        setTextPos(staticEls.labelCam2, clamp(O2.x + 28, 8, W - 192), clamp(O2.y - 4, 50, H - 12));
+        setTextPos(staticEls.labelO1, clamp(O1.x - 16, 12, W - 64), clamp(O1.y + 55, 74, H - 14));
+        setTextPos(staticEls.labelO2, clamp(O2.x - 2, 12, W - 64), clamp(O2.y + 55, 74, H - 14));
+        setTextPos(staticEls.labelp1, clamp(p1.x - 17, 12, W - 72), clamp(p1.y + 54, 60, H - 26));
+        setTextPos(staticEls.labelp2, clamp(p2.x - 6, 12, W - 72), clamp(p2.y + 51, 60, H - 26));
+        setTextPos(staticEls.labele1, clamp(e1.x - 8, 12, W - 55), clamp(e1.y + 39, 54, H - 14));
+        setTextPos(staticEls.labele2, clamp(e2.x - 8, 12, W - 55), clamp(e2.y + 39, 54, H - 14));
+        placeLineLabel(staticEls.labelLine1, g.line1[0], g.line1[1], -9);
+        placeLineLabel(staticEls.labelLine2, g.line2[0], g.line2[1], -9);
+      }
+
+      function placeLineLabel(label, a, b, lift) {
+        const A = toSvg(a);
+        const B = toSvg(b);
+        const mx = (A.x + B.x) / 2;
+        const my = (A.y + B.y) / 2 + lift;
+        let angle = Math.atan2(B.y - A.y, B.x - A.x) * 180 / Math.PI;
+        if (angle > 90) angle -= 180;
+        if (angle < -90) angle += 180;
+        label.setAttribute("x", clamp(mx - 66, 22, W - 170));
+        label.setAttribute("y", clamp(my, 42, H - 28));
+        label.setAttribute("transform", `rotate(${angle.toFixed(2)} ${clamp(mx - 66, 22, W - 170).toFixed(2)} ${clamp(my, 42, H - 28).toFixed(2)})`);
+      }
+
+      function startDrag(event, kind) {
+        event.preventDefault();
+        state.dragging = kind;
+        state.lastPointer = pointerInSvg(event);
+        svg.setPointerCapture(event.pointerId);
+      }
+
+      function onPointerMove(event) {
+        if (!state.dragging) return;
+        const current = pointerInSvg(event);
+        if (state.dragging === "point") {
+          const world = svgToWorldAtDepth(current, state.p.y);
+          state.p.x = clamp(world.x, -state.baseline / 2 + 1.03, state.baseline / 2 - 1.03);
+          state.p.z = clamp(world.z, 1.52, 3.62);
+        } else if (state.dragging === "camera2") {
+          const worldX = svgToWorldAtDepth(current, 0).x;
+          state.baseline = clamp(worldX * 2, 5.8, 8.6);
+          baselineControl.value = state.baseline.toFixed(2);
+          clampPoint();
+        }
+        state.lastPointer = current;
+        update();
+      }
+
+      function endDrag(event) {
+        if (!state.dragging) return;
+        if (event.pointerId !== undefined && svg.hasPointerCapture(event.pointerId)) {
+          svg.releasePointerCapture(event.pointerId);
+        }
+        state.dragging = null;
+      }
+
+      function pointerInSvg(event) {
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        const transformed = pt.matrixTransform(svg.getScreenCTM().inverse());
+        return { x: transformed.x, y: transformed.y };
+      }
+
+      function svgToWorldAtDepth(point, yDepth) {
+        return vec(
+          (point.x - view.cx) / view.scale - view.skewX * yDepth,
+          yDepth,
+          (view.cy - point.y) / view.scale + view.skewZ * yDepth
+        );
+      }
+
+      function clampPoint() {
+        state.p.x = clamp(state.p.x, -state.baseline / 2 + 1.03, state.baseline / 2 - 1.03);
+        state.p.z = clamp(state.p.z, 1.52, 3.62);
+      }
+
+      function setPolygon(el, points) {
+        el.setAttribute("points", points.map((point) => {
+          const s = toSvg(point);
+          return `${s.x.toFixed(2)},${s.y.toFixed(2)}`;
+        }).join(" "));
+      }
+
+      function setLine(el, a, b) {
+        const A = toSvg(a);
+        const B = toSvg(b);
+        el.setAttribute("x1", A.x.toFixed(2));
+        el.setAttribute("y1", A.y.toFixed(2));
+        el.setAttribute("x2", B.x.toFixed(2));
+        el.setAttribute("y2", B.y.toFixed(2));
+      }
+
+      function setCircle(el, point) {
+        const s = toSvg(point);
+        el.setAttribute("cx", s.x.toFixed(2));
+        el.setAttribute("cy", s.y.toFixed(2));
+      }
+
+      function setTextPos(el, x, y) {
+        el.setAttribute("x", x.toFixed(2));
+        el.setAttribute("y", y.toFixed(2));
+        el.removeAttribute("transform");
+      }
+
+      function toSvg(point) {
+        return {
+          x: view.cx + view.scale * (point.x + view.skewX * point.y),
+          y: view.cy - view.scale * (point.z - view.skewZ * point.y)
+        };
+      }
+
+      function toLocal(plane, point) {
+        const d = sub(point, plane.center);
+        return {
+          u: dot(d, plane.u),
+          v: dot(d, plane.v)
+        };
+      }
+
+      function planePoint(center, u, v, au, av) {
+        return add(center, add(mul(u, au), mul(v, av)));
+      }
+
+      function pointEl(className, r, parent) {
+        return svgEl("circle", { class: `point ${className}`, r }, parent);
+      }
+
+      function textEl(text, className, parent) {
+        const el = svgEl("text", { class: className }, parent);
+        el.textContent = text;
+        return el;
+      }
+
+      function subLabel(base, sub, className, parent) {
+        const el = svgEl("text", { class: className }, parent);
+        const main = document.createElementNS(NS, "tspan");
+        main.textContent = base;
+        const suffix = document.createElementNS(NS, "tspan");
+        suffix.textContent = sub;
+        suffix.setAttribute("baseline-shift", "sub");
+        suffix.setAttribute("font-size", "62%");
+        el.append(main, suffix);
+        return el;
+      }
+
+      function svgEl(tag, attrs, parent) {
+        const el = document.createElementNS(NS, tag);
+        Object.entries(attrs || {}).forEach(([key, value]) => el.setAttribute(key, value));
+        parent.appendChild(el);
+        return el;
+      }
+
+      function vec(x, y, z) {
+        return { x, y, z };
+      }
+
+      function add(a, b) {
+        return vec(a.x + b.x, a.y + b.y, a.z + b.z);
+      }
+
+      function sub(a, b) {
+        return vec(a.x - b.x, a.y - b.y, a.z - b.z);
+      }
+
+      function mul(a, s) {
+        return vec(a.x * s, a.y * s, a.z * s);
+      }
+
+      function div(a, s) {
+        return vec(a.x / s, a.y / s, a.z / s);
+      }
+
+      function dot(a, b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+      }
+
+      function cross(a, b) {
+        return vec(
+          a.y * b.z - a.z * b.y,
+          a.z * b.x - a.x * b.z,
+          a.x * b.y - a.y * b.x
+        );
+      }
+
+      function norm(a) {
+        return Math.hypot(a.x, a.y, a.z);
+      }
+
+      function normalize(a) {
+        const n = norm(a) || 1;
+        return div(a, n);
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function degToRad(deg) {
+        return deg * Math.PI / 180;
+      }
+
+      function radToDeg(rad) {
+        return rad * 180 / Math.PI;
+      }
+    })();
+  </script>
+</body>
+</html>

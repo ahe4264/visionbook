@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>n0 threshold: <output id="n0Val">33</output><input id="n0Input" type="range" min="10" max="70" step="1" value="33" oninput="document.getElementById('n0Val').value=this.value;update_n0(+this.value)"></label>
+    <label>constant c: <output id="constantVal">1.35</output><input id="constantInput" type="range" min="0.85" max="1.75" step="0.05" value="1.35" oninput="update_constant(+this.value)"></label>
+    <span>view: <button id="thetaModeBtn" onclick="trigger_theta()">Theta</button> <button id="oModeBtn" onclick="trigger_o()">O</button> <button id="omegaModeBtn" onclick="trigger_omega()">Omega</button> <button id="allModeBtn" onclick="trigger_all()">all</button></span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      window.clearTimeout(_autoUiTimer);
+      _autoUiTimer = window.setTimeout(function () {
+        _applyUiLayout('right', 320);
+      }, 0);
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    (function () {
+      if (typeof SVG !== 'function') {
+        throw new Error('SVG.js failed to load');
+      }
+
+      var container = document.getElementById('container');
+      var W = 1042;
+      var H = 370;
+      var state = {
+        n0: 0.33,
+        c: 1.35,
+        mode: null
+      };
+      var draw = SVG().addTo(container).size('100%', '100%').viewbox(0, 0, W, H);
+      draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+      var root = draw.group();
+      var staticInk = '#111';
+      var violationInk = '#c8352e';
+      var guideInk = '#444';
+      var highlightFill = '#dcefff';
+      var labelFont = {
+        family: 'Times New Roman, Times, serif',
+        size: 24,
+        anchor: 'start'
+      };
+
+      var panels = [
+        { key: 'theta', letter: '(a)', x: 13, top: 12, bottom: 279, w: 267, caption: 'f(n) = \u0398(g(n))' },
+        { key: 'o', letter: '(b)', x: 380, top: 12, bottom: 279, w: 270, caption: 'f(n) = O(g(n))' },
+        { key: 'omega', letter: '(c)', x: 749, top: 12, bottom: 279, w: 269, caption: 'f(n) = \u03A9(g(n))' }
+      ];
+
+      function clamp(v, lo, hi) {
+        return Math.max(lo, Math.min(hi, v));
+      }
+
+      function bell(t, center, width) {
+        var z = (t - center) / width;
+        return Math.exp(-z * z);
+      }
+
+      function smooth(t, gain, center) {
+        return 1 / (1 + Math.exp(-gain * (t - center)));
+      }
+
+      function sx(panel, t) {
+        return panel.x + t * panel.w;
+      }
+
+      function sy(panel, y) {
+        return panel.bottom - clamp(y, 0, 1.05) * (panel.bottom - panel.top);
+      }
+
+      function gTheta(t) {
+        return 0.02 + 0.50 * t + 0.08 * t * t + 0.08 * smooth(t, 18, 0.50) +
+          0.05 * bell(t, 0.38, 0.16);
+      }
+
+      function fTheta(t) {
+        var wiggle = 0.045 * Math.sin(8 * Math.PI * t) * Math.exp(-3 * t);
+        return 0.19 + 0.28 * t + 0.17 * t * t + 0.12 * smooth(t, 18, 0.50) +
+          wiggle - 0.09 * bell(t, 0.20, 0.06) + 0.06 * bell(t, 0.08, 0.05);
+      }
+
+      function upperTheta(t) {
+        return state.c * gTheta(t);
+      }
+
+      function lowerTheta(t) {
+        return gTheta(t) / state.c;
+      }
+
+      function gO(t) {
+        return 0.19 + 0.19 * t + 0.19 * t * t + 0.07 * smooth(t, 18, 0.78);
+      }
+
+      function fO(t) {
+        return 0.27 + 0.31 * t + 0.05 * t * t -
+          0.22 * bell(t, 0.11, 0.055) + 0.21 * bell(t, 0.24, 0.075) -
+          0.13 * bell(t, 0.41, 0.12);
+      }
+
+      function upperO(t) {
+        return state.c * gO(t);
+      }
+
+      function gOmega(t) {
+        return 0.19 + 0.13 * t + 0.05 * t * t + 0.03 * smooth(t, 18, 0.55);
+      }
+
+      function fOmega(t) {
+        return 0.20 + 0.48 * t + 0.10 * t * t + 0.18 * smooth(t, 24, 0.33) +
+          0.16 * bell(t, 0.08, 0.06) - 0.13 * bell(t, 0.20, 0.065) -
+          0.03 * bell(t, 0.45, 0.14);
+      }
+
+      function lowerOmega(t) {
+        return state.c * gOmega(t);
+      }
+
+      function pathFor(panel, fn, t0, t1, samples) {
+        var parts = [];
+        for (var i = 0; i <= samples; i++) {
+          var t = t0 + (t1 - t0) * i / samples;
+          parts.push((i ? 'L ' : 'M ') + sx(panel, t).toFixed(2) + ' ' + sy(panel, fn(t)).toFixed(2));
+        }
+        return parts.join(' ');
+      }
+
+      function closedBand(panel, lowerFn, upperFn, t0, t1, samples) {
+        var parts = [];
+        for (var i = 0; i <= samples; i++) {
+          var t = t0 + (t1 - t0) * i / samples;
+          parts.push((i ? 'L ' : 'M ') + sx(panel, t).toFixed(2) + ' ' + sy(panel, upperFn(t)).toFixed(2));
+        }
+        for (var j = samples; j >= 0; j--) {
+          var tt = t0 + (t1 - t0) * j / samples;
+          parts.push('L ' + sx(panel, tt).toFixed(2) + ' ' + sy(panel, lowerFn(tt)).toFixed(2));
+        }
+        return parts.join(' ') + ' Z';
+      }
+
+      function makePath(group, panel, fn, width, dashed) {
+        return group.path(pathFor(panel, fn, 0, 1, 130))
+          .fill('none')
+          .stroke({ color: staticInk, width: width || 1.15, dasharray: dashed ? '7 7' : null, linecap: 'round', linejoin: 'round' });
+      }
+
+      function addText(group, text, x, y, size, italic, anchor) {
+        var item = group.text(text).font({
+          family: labelFont.family,
+          size: size || 24,
+          anchor: anchor || 'start'
+        });
+        item.attr({
+          x: x,
+          y: y,
+          'font-style': italic ? 'italic' : 'normal',
+          'paint-order': 'stroke',
+          stroke: '#fff',
+          'stroke-width': 4,
+          'stroke-linejoin': 'round'
+        });
+        item.fill(staticInk);
+        return item;
+      }
+
+      function addInteractive(el, title, body, tip) {
+        el.css('cursor', 'pointer')
+          .on('mousemove', function (e) { showTooltip(tip || title, e); })
+          .on('mouseleave', function () { hideTooltip(); })
+          .on('click', function () { showPopup(title, body); });
+      }
+
+      function drawAxes(group, panel) {
+        group.line(panel.x, panel.top, panel.x, panel.bottom)
+          .stroke({ color: staticInk, width: 1.05, linecap: 'square' });
+        group.line(panel.x, panel.bottom, panel.x + panel.w, panel.bottom)
+          .stroke({ color: staticInk, width: 1.05, linecap: 'square' });
+        addText(group, 'n', panel.x + panel.w + 5, panel.bottom - 2, 25, true);
+      }
+
+      function drawN0(group, panel) {
+        var tx = sx(panel, state.n0);
+        group.line(tx, panel.bottom, tx, panel.bottom - 112)
+          .stroke({ color: guideInk, width: 1.05, dasharray: '6 7', linecap: 'butt' });
+        group.line(tx, panel.bottom, tx, panel.bottom + 6)
+          .stroke({ color: staticInk, width: 1.05 });
+        addText(group, 'n\u2080', tx - 12, panel.bottom + 10, 23, true);
+      }
+
+      function drawViolation(group, panel, fn, rule) {
+        var found = 0;
+        for (var i = 0; i <= 50; i++) {
+          var t = state.n0 + (1 - state.n0) * i / 50;
+          if (rule(t)) {
+            found++;
+            if (found % 2 === 1) {
+              group.circle(5.6)
+                .center(sx(panel, t), sy(panel, fn(t)))
+                .fill('#fff')
+                .stroke({ color: violationInk, width: 1.45 });
+            }
+          }
+        }
+      }
+
+      function drawCaption(group, panel) {
+        addText(group, panel.caption, panel.x + panel.w / 2, 319, 25, true, 'middle');
+        addText(group, panel.letter, panel.x + panel.w / 2, 353, 23, false, 'middle');
+      }
+
+      function labelButton(id, active) {
+        var btn = document.getElementById(id);
+        if (btn) btn.className = active ? 'active' : '';
+      }
+
+      function drawTheta(group, panel) {
+        if (state.mode === 'theta') {
+          group.path(closedBand(panel, lowerTheta, upperTheta, state.n0, 1, 80))
+            .fill(highlightFill).opacity(0.62).stroke('none');
+        }
+        var upper = makePath(group, panel, upperTheta, 1.1);
+        var lower = makePath(group, panel, lowerTheta, 1.1);
+        var f = makePath(group, panel, fTheta, 1.2);
+        drawN0(group, panel);
+        drawViolation(group, panel, fTheta, function (t) {
+          return fTheta(t) > upperTheta(t) || fTheta(t) < lowerTheta(t);
+        });
+        addText(group, 'c\u2082 g(n)', sx(panel, 0.88), sy(panel, upperTheta(0.88)) - 19, 24, true);
+        addText(group, 'f(n)', sx(panel, 0.92), sy(panel, fTheta(0.92)) - 20, 24, true);
+        addText(group, 'c\u2081 g(n)', sx(panel, 0.88), sy(panel, lowerTheta(0.88)) - 10, 24, true);
+        addInteractive(upper, 'Upper constant multiple', 'The upper curve is c2 g(n). In Theta notation, f(n) must stay no higher than this curve after n0.', 'c2 g(n)');
+        addInteractive(lower, 'Lower constant multiple', 'The lower curve is c1 g(n). In Theta notation, f(n) must also stay no lower than this curve after n0.', 'c1 g(n)');
+        addInteractive(f, 'Theta bound', 'Past n0, f(n) remains trapped between the two constant multiples of g(n). That two-sided corridor is what Theta notation asserts.', 'f(n) between two bounds');
+      }
+
+      function drawO(group, panel) {
+        if (state.mode === 'o') {
+          group.path(closedBand(panel, function () { return 0; }, upperO, state.n0, 1, 80))
+            .fill(highlightFill).opacity(0.62).stroke('none');
+        }
+        var upper = makePath(group, panel, upperO, 1.1);
+        var f = makePath(group, panel, fO, 1.2);
+        drawN0(group, panel);
+        drawViolation(group, panel, fO, function (t) {
+          return fO(t) > upperO(t);
+        });
+        addText(group, 'c g(n)', sx(panel, 0.91), sy(panel, upperO(0.91)) - 24, 24, true);
+        addText(group, 'f(n)', sx(panel, 0.95), sy(panel, fO(0.95)) - 13, 24, true);
+        addInteractive(upper, 'Upper bound', 'For O(g(n)), one constant multiple c g(n) must eventually sit above f(n). The red markers show any places to the right of n0 where that fails.', 'c g(n)');
+        addInteractive(f, 'Big-O comparison', 'Small-input oscillations do not matter. Big-O only asks whether f(n) stays at or below c g(n) once n is large enough.', 'f(n) below an upper bound');
+      }
+
+      function drawOmega(group, panel) {
+        if (state.mode === 'omega') {
+          group.path(closedBand(panel, lowerOmega, function () { return 1.04; }, state.n0, 1, 80))
+            .fill(highlightFill).opacity(0.62).stroke('none');
+        }
+        var f = makePath(group, panel, fOmega, 1.2);
+        var lower = makePath(group, panel, lowerOmega, 1.1);
+        drawN0(group, panel);
+        drawViolation(group, panel, fOmega, function (t) {
+          return fOmega(t) < lowerOmega(t);
+        });
+        addText(group, 'f(n)', sx(panel, 0.92), sy(panel, fOmega(0.92)) - 18, 24, true);
+        addText(group, 'c g(n)', sx(panel, 0.82), sy(panel, lowerOmega(0.82)) - 12, 24, true);
+        addInteractive(f, 'Big-Omega comparison', 'For Omega(g(n)), f(n) eventually stays at or above a constant multiple of g(n).', 'f(n) above a lower bound');
+        addInteractive(lower, 'Lower bound', 'The curve c g(n) is the lower comparison curve. Moving c changes how demanding the eventual lower bound is.', 'c g(n)');
+      }
+
+      function render() {
+        root.clear();
+        root.rect(W, H).fill('#fff');
+        for (var i = 0; i < panels.length; i++) {
+          var panel = panels[i];
+          var group = root.group();
+          drawAxes(group, panel);
+          if (panel.key === 'theta') drawTheta(group, panel);
+          if (panel.key === 'o') drawO(group, panel);
+          if (panel.key === 'omega') drawOmega(group, panel);
+          drawCaption(group, panel);
+        }
+        labelButton('thetaModeBtn', state.mode === 'theta');
+        labelButton('oModeBtn', state.mode === 'o');
+        labelButton('omegaModeBtn', state.mode === 'omega');
+        labelButton('allModeBtn', state.mode === null);
+      }
+
+      window.update_n0 = function (v) {
+        state.n0 = clamp(v / 100, 0.10, 0.70);
+        render();
+      };
+
+      window.update_constant = function (v) {
+        state.c = clamp(v, 0.85, 1.75);
+        var out = document.getElementById('constantVal');
+        if (out) out.value = state.c.toFixed(2);
+        render();
+      };
+
+      window.trigger_theta = function () {
+        state.mode = 'theta';
+        render();
+      };
+
+      window.trigger_o = function () {
+        state.mode = 'o';
+        render();
+      };
+
+      window.trigger_omega = function () {
+        state.mode = 'omega';
+        render();
+      };
+
+      window.trigger_all = function () {
+        state.mode = null;
+        render();
+      };
+
+      document.addEventListener('fig-resize', function () {
+        draw.size('100%', '100%');
+      });
+
+      var cOut = document.getElementById('constantVal');
+      if (cOut) cOut.value = state.c.toFixed(2);
+      render();
+      window.__markRendered();
+    }());
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>Decoder layers K: <output id="KVal">1</output><input id="KInput" type="range" min="1" max="6" step="1" value="1" oninput="document.getElementById('KVal').value=this.value;update_K(+this.value)"></label>
+    <button onclick="trigger_animateYourself()">Animate yourself</button>
+    <button onclick="trigger_resetView()">Reset</button>
+    <span id="statusText" style="font-size:11px;line-height:1.3;color:#333">Click a block to inspect its role.</span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', 'right');
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout('right', start);
+      _growDockToFit('right', start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        hideTooltip();
+        hidePopup();
+      }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library choice: svgjs.
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 1647;
+    var H = 607;
+    draw.viewbox(0, 0, W, H);
+
+    var state = {
+      selected: null,
+      animating: false,
+      raf: 0
+    };
+
+    var colors = {
+      black: '#111111',
+      dash: '#45484b',
+      panel: '#c8d0d2',
+      orange: '#d48563',
+      orangeStroke: '#85452d',
+      teal: '#9fd8d2',
+      tealStroke: '#2f8679',
+      blue: '#b8cfda',
+      blueStroke: '#536f80',
+      highlight: '#f4c542',
+      path: '#d54f3a'
+    };
+
+    var titleFont = { family: 'Arial, Helvetica, sans-serif', size: 30, anchor: 'middle' };
+    var serifFont = { family: 'Georgia, Times New Roman, serif', size: 29 };
+    var labelFont = { family: 'Arial, Helvetica, sans-serif', size: 24, anchor: 'middle' };
+
+    var main = draw.group();
+    var bg = main.rect(W, H).fill('#ffffff');
+    var repeatGroup = main.group();
+    var layerStackGroup = main.group();
+    var routeGroup = main.group();
+    var highlightGroup = main.group();
+    var overlayGroup = main.group();
+    var selectedOutlines = {};
+
+    function textLabel(parent, str, x, y, opts) {
+      opts = opts || {};
+      var t = parent.text(str).move(x, y);
+      t.font({
+        family: opts.family || 'Arial, Helvetica, sans-serif',
+        size: opts.size || 22,
+        anchor: opts.anchor || 'start',
+        weight: opts.weight || 'normal'
+      });
+      if (opts.fill) t.fill(opts.fill);
+      if (opts.halo) {
+        t.attr({
+          'paint-order': 'stroke',
+          stroke: '#ffffff',
+          'stroke-width': opts.halo,
+          'stroke-linejoin': 'round'
+        });
+      }
+      return t;
+    }
+
+    function line(parent, x1, y1, x2, y2, opts) {
+      opts = opts || {};
+      return parent.line(x1, y1, x2, y2).stroke({
+        color: opts.color || colors.black,
+        width: opts.width || 3,
+        dasharray: opts.dash || null,
+        linecap: opts.cap || 'butt'
+      });
+    }
+
+    function arrowHead(parent, x1, y1, x2, y2, color, size) {
+      color = color || colors.black;
+      size = size || 15;
+      var a = Math.atan2(y2 - y1, x2 - x1);
+      var p1 = [x2, y2];
+      var p2 = [x2 - size * Math.cos(a - 0.42), y2 - size * Math.sin(a - 0.42)];
+      var p3 = [x2 - size * Math.cos(a + 0.42), y2 - size * Math.sin(a + 0.42)];
+      return parent.polygon([p1, p2, p3]).fill(color);
+    }
+
+    function drawArrow(parent, pts, opts) {
+      opts = opts || {};
+      var flat = [];
+      for (var i = 0; i < pts.length; i++) flat.push(pts[i][0], pts[i][1]);
+      var pl = parent.polyline(flat).fill('none').stroke({
+        color: opts.color || colors.black,
+        width: opts.width || 3,
+        dasharray: opts.dash || null,
+        linejoin: 'miter',
+        linecap: 'butt'
+      });
+      if (opts.arrow !== false) {
+        var a = pts[pts.length - 2];
+        var b = pts[pts.length - 1];
+        arrowHead(parent, a[0], a[1], b[0], b[1], opts.color || colors.black, opts.head || 17);
+      }
+      return pl;
+    }
+
+    function rounded(parent, x, y, w, h, fill, stroke, width, r) {
+      return parent.rect(w, h).move(x, y).radius(r || 12).fill(fill).stroke({ color: stroke, width: width || 3 });
+    }
+
+    function interactiveRect(parent, x, y, w, h, key) {
+      var r = parent.rect(w, h).move(x, y).fill({ color: '#fff', opacity: 0 }).stroke({ color: colors.highlight, width: 0 });
+      r.css('cursor', 'pointer');
+      r.on('mousemove', function (e) { showTooltip(blocks[key].tip, e); });
+      r.on('mouseleave', function () { hideTooltip(); });
+      r.on('click', function (e) { selectBlock(key, e); });
+      selectedOutlines[key] = r;
+      return r;
+    }
+
+    var blocks = {
+      embeddings: {
+        title: 'Word embeddings',
+        tip: 'Each input token is converted into a learned vector before the decoder processes the sequence.',
+        body: 'Word embeddings turn token identities into numeric vectors. In autoregressive training the input side is the prefix sequence, ending here with "let".'
+      },
+      transformer: {
+        title: 'Transformer with masked attention',
+        tip: 'Masked attention lets each position use only itself and earlier tokens.',
+        body: 'The decoder layers run in parallel over all positions, but the causal mask blocks information from future positions. Repeating the layer K times lets representations combine more contextual evidence.'
+      },
+      residual: {
+        title: 'Residual Add',
+        tip: 'Residual additions carry earlier features forward through each decoder layer.',
+        body: 'The add nodes mix transformed features with the incoming stream. This preserves useful information while the attention and feed-forward transformations refine each token representation.'
+      },
+      linear: {
+        title: 'Linear + softmax',
+        tip: 'A linear classifier and softmax convert each representation into vocabulary probabilities.',
+        body: 'Every processed position is projected to a score for each vocabulary token. Softmax turns those scores into a probability distribution for the next token.'
+      },
+      probability: {
+        title: 'Probability of target token',
+        tip: 'The right labels are the shifted training targets predicted from each prefix.',
+        body: 'The target sequence is shifted one token to the right: the representation for "let" predicts "yourself". The dotted vocabulary axis reminds you that the model scores every possible token, not only the shown answer.'
+      }
+    };
+
+    function selectBlock(key, event) {
+      state.selected = key;
+      Object.keys(selectedOutlines).forEach(function (k) {
+        selectedOutlines[k].stroke({ color: colors.highlight, width: k === key ? 5 : 0 });
+      });
+      var b = blocks[key];
+      showTooltip(b.tip, event);
+      showPopup(b.title, b.body);
+      var status = document.getElementById('statusText');
+      if (status) status.textContent = b.title + ': ' + b.tip;
+    }
+
+    function drawTitles() {
+      textLabel(main, 'Word', 236, -4, titleFont);
+      textLabel(main, 'embeddings', 236, 36, titleFont);
+      textLabel(main, 'Transformer with', 668, -3, titleFont);
+      textLabel(main, 'masked attention', 668, 36, titleFont);
+      textLabel(main, 'Linear +', 1194, -4, titleFont);
+      textLabel(main, 'softmax', 1194, 36, titleFont);
+      textLabel(main, 'Probability of', 1411, -4, titleFont);
+      textLabel(main, 'target token', 1411, 36, titleFont);
+    }
+
+    function drawEmbeddings() {
+      var g = main.group();
+      var tokens = ['<start>', 'It', 'takes', 'great', 'courage', 'to', 'let'];
+      var y0 = 100;
+      var rowGap = 57;
+      g.rect(176, 408).move(151, 83).radius(24).fill('none').stroke({ color: colors.dash, width: 4, dasharray: '12 6' });
+      for (var i = 0; i < tokens.length; i++) {
+        var y = y0 + i * rowGap;
+        textLabel(g, tokens[i], 106, y + 6, { family: serifFont.family, size: 30, anchor: 'end', halo: 3 });
+        drawArrow(g, [[111, y + 15], [153, y + 15]], { width: 3 });
+        var row = g.rect(162, 29).move(157, y).fill('#f3f1ee').stroke({ color: colors.black, width: 3 });
+        for (var c = 1; c < 6; c++) line(g, 157 + c * 27, y, 157 + c * 27, y + 29, { width: 3 });
+        line(g, 319, y + 15, 346, y + 15, { width: 3 });
+        if (i > 0 && i < tokens.length - 1) line(g, 346, y + 15, 346, y0 + 3 * rowGap + 15, { width: 3 });
+      }
+      drawArrow(g, [[346, y0 + 3 * rowGap + 15], [418, y0 + 3 * rowGap + 15]], { width: 3 });
+      interactiveRect(overlayGroup, 145, 78, 190, 420, 'embeddings');
+    }
+
+    function drawMaskedAttention(parent) {
+      var panel = rounded(parent, 420, 99, 155, 375, colors.orange, colors.orangeStroke, 4, 14);
+      var rows = [113, 170, 227, 344, 401, 459];
+      for (var i = 0; i < rows.length; i++) line(parent, 422, rows[i], 572, rows[i] + (i < 2 ? 0 : 0), { color: colors.orangeStroke, width: 4 });
+      var ys = [115, 171, 228, 286, 344, 402, 459];
+      for (var r = 0; r < ys.length; r++) {
+        var y = ys[r];
+        line(parent, 422, y, 572, Math.min(459, y + r * 17), { color: colors.orangeStroke, width: 3 });
+        for (var k = 0; k <= r; k++) {
+          var ty = ys[k];
+          line(parent, 422, y, 572, ty, { color: colors.orangeStroke, width: 3 });
+        }
+      }
+      parent.rect(155, 375).move(420, 99).radius(14).fill({ color: '#ffffff', opacity: 0 }).stroke({ color: colors.orangeStroke, width: 4 });
+      return panel;
+    }
+
+    function drawResidualPlus(parent, x, y) {
+      parent.circle(32).center(x, y).fill('#eff5f6').stroke({ color: colors.black, width: 3 });
+      line(parent, x - 11, y, x + 11, y, { width: 3 });
+      line(parent, x, y - 11, x, y + 11, { width: 3 });
+      return parent.circle(42).center(x, y).fill({ color: '#fff', opacity: 0 });
+    }
+
+    function drawTransformer() {
+      var g = main.group();
+      g.rect(568, 421).move(378, 77).radius(20).fill(colors.panel).stroke({ color: colors.dash, width: 4, dasharray: '12 6' });
+      g.rect(222, 389).move(391, 92).fill({ color: '#dde4e5', opacity: 0.35 }).stroke({ color: colors.black, width: 4 });
+      drawMaskedAttention(g);
+      drawArrow(g, [[575, 286], [596, 286]], { width: 3 });
+      drawResidualPlus(g, 612, 286);
+      drawArrow(g, [[628, 286], [648, 286]], { width: 3 });
+      rounded(g, 648, 95, 25, 381, colors.teal, colors.tealStroke, 4, 10);
+
+      line(g, 687, 286, 732, 286, { width: 4 });
+      g.rect(98, 344).move(731, 115).fill({ color: '#d9e0e2', opacity: 0.45 }).stroke({ color: colors.black, width: 4 });
+      var caps = [];
+      for (var i = 0; i < 7; i++) {
+        var y = 115 + i * 57;
+        caps.push(y);
+        drawArrow(g, [[731, y], [758, y]], { width: 3 });
+        rounded(g, 758, y - 11, 47, 22, colors.blue, colors.blueStroke, 4, 8);
+        line(g, 805, y, 828, y, { width: 3 });
+      }
+      line(g, 828, 115, 828, 286, { width: 3 });
+      line(g, 828, 286, 848, 286, { width: 3 });
+      line(g, 828, 286, 828, 459, { width: 3 });
+      drawArrow(g, [[828, 286], [848, 286]], { width: 3, arrow: false });
+      drawResidualPlus(g, 864, 286);
+      drawArrow(g, [[880, 286], [900, 286]], { width: 3 });
+      rounded(g, 900, 95, 25, 381, colors.teal, colors.tealStroke, 4, 10);
+
+      repeatGroup = main.group();
+      repeatGroup.text('. . .').move(971, 263).font({ family: 'Georgia, Times New Roman, serif', size: 42, anchor: 'middle' });
+      repeatGroup.text('\u00d7 K').move(1008, 241).font({ family: 'Georgia, Times New Roman, serif', size: 31, anchor: 'middle' });
+      drawArrow(repeatGroup, [[945, 286], [973, 286]], { width: 3 });
+      drawArrow(repeatGroup, [[1048, 286], [1093, 286]], { width: 3 });
+
+      layerStackGroup = main.group();
+      layerStackGroup.hide();
+      interactiveRect(overlayGroup, 374, 72, 575, 430, 'transformer');
+      interactiveRect(overlayGroup, 590, 260, 52, 55, 'residual');
+      interactiveRect(overlayGroup, 842, 260, 52, 55, 'residual');
+    }
+
+    function drawOutputs() {
+      var g = main.group();
+      var targets = ['It', 'takes', 'great', 'courage', 'to', 'let', 'yourself'];
+      var y0 = 94;
+      var gap = 57;
+      line(g, 1091, 110, 1091, 459, { width: 4 });
+      for (var i = 0; i < targets.length; i++) {
+        var y = y0 + i * gap;
+        drawArrow(g, [[1091, y + 22], [1122, y + 22]], { width: 3 });
+        rounded(g, 1122, y, 132, 45, colors.teal, colors.tealStroke, 3, 17);
+        drawArrow(g, [[1254, y + 22], [1291, y + 22]], { width: 3 });
+        g.rect(99, 31).move(1292, y + 8).fill(colors.blue).stroke({ color: colors.blueStroke, width: 3 });
+        line(g, 1325, y + 8, 1325, y + 39, { color: colors.blueStroke, width: 3 });
+        line(g, 1358, y + 8, 1358, y + 39, { color: colors.blueStroke, width: 3 });
+        line(g, 1391, y + 23, 1460, y + 23, { color: colors.blueStroke, width: 3, dash: '3 8', cap: 'round' });
+        g.rect(66, 31).move(1460, y + 8).fill(colors.blue).stroke({ color: colors.blueStroke, width: 3 });
+        line(g, 1493, y + 8, 1493, y + 39, { color: colors.blueStroke, width: 3 });
+        textLabel(g, targets[i], 1536, y + 11, { family: serifFont.family, size: 29, halo: 3 });
+      }
+      textLabel(g, 'a', 1311, 532, { family: serifFont.family, size: 22, anchor: 'middle' }).rotate(90, 1311, 532);
+      textLabel(g, 'aardvark', 1339, 519, { family: serifFont.family, size: 22, anchor: 'middle' }).rotate(90, 1339, 519);
+      textLabel(g, 'abacus', 1371, 521, { family: serifFont.family, size: 22, anchor: 'middle' }).rotate(90, 1371, 521);
+      textLabel(g, '. . .', 1425, 532, { family: serifFont.family, size: 27, anchor: 'middle' });
+      textLabel(g, 'zero', 1477, 532, { family: serifFont.family, size: 22, anchor: 'middle' }).rotate(90, 1477, 532);
+      textLabel(g, 'zeta', 1512, 532, { family: serifFont.family, size: 22, anchor: 'middle' }).rotate(90, 1512, 532);
+      interactiveRect(overlayGroup, 1115, 88, 150, 410, 'linear');
+      interactiveRect(overlayGroup, 1288, 92, 240, 395, 'probability');
+    }
+
+    function drawHighlightGrid() {
+      highlightGroup.clear();
+      highlightGroup.rect(153, 31).move(421, 343).fill({ color: '#fff35b', opacity: 0.13 }).stroke({ color: '#f2c94c', width: 3 });
+      highlightGroup.rect(153, 31).move(421, 400).fill({ color: '#fff35b', opacity: 0.13 }).stroke({ color: '#f2c94c', width: 3 });
+      highlightGroup.rect(153, 31).move(421, 457).fill({ color: '#fff35b', opacity: 0.13 }).stroke({ color: '#f2c94c', width: 3 });
+      highlightGroup.hide();
+    }
+
+    function pathData(points) {
+      return points.map(function (p, i) {
+        return (i === 0 ? 'M' : 'L') + p[0] + ' ' + p[1];
+      }).join(' ');
+    }
+
+    function trigger_animateYourself() {
+      if (state.animating) cancelAnimationFrame(state.raf);
+      routeGroup.clear();
+      highlightGroup.show();
+      state.animating = true;
+      var status = document.getElementById('statusText');
+      if (status) status.textContent = 'Tracing the prefix ending at "let" to the target token "yourself".';
+      var pts = [
+        [109, 459], [153, 459], [319, 459], [346, 459], [346, 286], [420, 286],
+        [575, 286], [612, 286], [648, 286], [732, 286], [864, 286], [900, 286],
+        [945, 286], [1091, 286], [1091, 459], [1122, 459], [1254, 459],
+        [1292, 459], [1392, 459], [1460, 459], [1526, 459]
+      ];
+      var p = routeGroup.path(pathData(pts)).fill('none').stroke({ color: colors.path, width: 8, linecap: 'round', linejoin: 'round', opacity: 0.26 });
+      var tracerPath = routeGroup.path(pathData(pts)).fill('none').stroke({ color: colors.path, width: 4, linecap: 'round', linejoin: 'round', dasharray: '1 1600' });
+      var dot = routeGroup.circle(18).fill(colors.path).stroke({ color: '#fff', width: 3 }).center(pts[0][0], pts[0][1]);
+      var length = p.node.getTotalLength();
+      var start = performance.now();
+      function step(now) {
+        var t = Math.min(1, (now - start) / 2600);
+        var eased = 1 - Math.pow(1 - t, 3);
+        var at = length * eased;
+        tracerPath.stroke({ dasharray: at + ' ' + (length - at + 1) });
+        var pt = p.node.getPointAtLength(at);
+        dot.center(pt.x, pt.y);
+        if (t < 1) {
+          state.raf = requestAnimationFrame(step);
+        } else {
+          state.animating = false;
+          if (status) status.textContent = 'The bottom row predicts "yourself" from the prefix through "let".';
+          showPopup('Predicting "yourself"', 'The decoder representation for the final input position is mapped through Linear + softmax. Its shifted target is "yourself", so training rewards probability mass on that row.');
+        }
+      }
+      state.raf = requestAnimationFrame(step);
+    }
+
+    function trigger_resetView() {
+      if (state.animating) cancelAnimationFrame(state.raf);
+      state.animating = false;
+      routeGroup.clear();
+      highlightGroup.hide();
+      Object.keys(selectedOutlines).forEach(function (k) {
+        selectedOutlines[k].stroke({ color: colors.highlight, width: 0 });
+      });
+      var status = document.getElementById('statusText');
+      if (status) status.textContent = 'Click a block to inspect its role.';
+      hideTooltip();
+      hidePopup();
+    }
+
+    function update_K(v) {
+      layerStackGroup.clear();
+      if (v <= 1) {
+        repeatGroup.show();
+        layerStackGroup.hide();
+      } else {
+        repeatGroup.hide();
+        layerStackGroup.show();
+        textLabel(layerStackGroup, '\u00d7 ' + v + ' layers', 1005, 239, { family: 'Georgia, Times New Roman, serif', size: 29, anchor: 'middle', halo: 3 });
+        for (var i = 0; i < v; i++) {
+          var offset = i * 11;
+          var alpha = 0.12 + i * (0.42 / Math.max(1, v - 1));
+          layerStackGroup.rect(116, 176).move(955 + offset, 204 - offset * 0.35).radius(12)
+            .fill({ color: colors.panel, opacity: alpha })
+            .stroke({ color: colors.dash, width: 2.5, dasharray: '8 5', opacity: 0.55 });
+          layerStackGroup.rect(38, 124).move(970 + offset, 230 - offset * 0.35).radius(8)
+            .fill({ color: colors.orange, opacity: 0.33 })
+            .stroke({ color: colors.orangeStroke, width: 2, opacity: 0.8 });
+          layerStackGroup.circle(18).center(1026 + offset, 286 - offset * 0.35)
+            .fill('#eff5f6').stroke({ color: colors.black, width: 2, opacity: 0.75 });
+          layerStackGroup.rect(12, 126).move(1050 + offset, 223 - offset * 0.35).radius(5)
+            .fill(colors.teal).stroke({ color: colors.tealStroke, width: 2 });
+        }
+        drawArrow(layerStackGroup, [[945, 286], [957, 286]], { width: 3 });
+        drawArrow(layerStackGroup, [[1048 + v * 11, 286 - (v - 1) * 3.85], [1093, 286]], { width: 3 });
+      }
+      var status = document.getElementById('statusText');
+      if (status) status.textContent = v <= 1 ? 'Compact view: the block denotes K repeated decoder layers.' : 'Expanded view: the repeated decoder layer is shown as ' + v + ' stacked copies.';
+    }
+
+    drawTitles();
+    drawEmbeddings();
+    drawTransformer();
+    drawOutputs();
+    drawHighlightGrid();
+    update_K(1);
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

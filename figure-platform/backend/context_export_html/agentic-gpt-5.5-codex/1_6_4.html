@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>Angle x: <output id="angleVal">0.72</output><input id="angleInput" type="range" min="0.05" max="1.50" step="0.01" value="0.72" oninput="document.getElementById('angleVal').value=(+this.value).toFixed(2);update_angle(+this.value)"></label>
+    <label><input id="overlayInput" type="checkbox" onchange="toggle_overlay(this.checked)"> overlay comparisons</label>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">&#9888; Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '\u26a0 ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var W = 1400;
+    var H = 470;
+    var draw = SVG().addTo(container).size('100%', '100%');
+    draw.viewbox(0, 0, W, H);
+
+    var state = {
+      theta: 0.72,
+      overlay: false,
+      highlight: null
+    };
+
+    var colors = {
+      black: '#242124',
+      blue: '#2aa4d6',
+      red: '#ef565e',
+      fill: '#fde4d5',
+      hot: '#ffd98a',
+      gray: '#555555'
+    };
+
+    var root = draw.group();
+
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    function point(cx, cy, r, a) {
+      return { x: cx + r * Math.cos(a), y: cy - r * Math.sin(a) };
+    }
+
+    function arcPath(cx, cy, r, a0, a1) {
+      var p0 = point(cx, cy, r, a0);
+      var p1 = point(cx, cy, r, a1);
+      var large = Math.abs(a1 - a0) > Math.PI ? 1 : 0;
+      return 'M ' + p0.x + ' ' + p0.y + ' A ' + r + ' ' + r + ' 0 ' + large + ' 0 ' + p1.x + ' ' + p1.y;
+    }
+
+    function sectorPath(cx, cy, r, a0, a1) {
+      return 'M ' + cx + ' ' + cy + ' L ' + point(cx, cy, r, a0).x + ' ' + point(cx, cy, r, a0).y + ' ' +
+        'A ' + r + ' ' + r + ' 0 0 0 ' + point(cx, cy, r, a1).x + ' ' + point(cx, cy, r, a1).y + ' Z';
+    }
+
+    function textEl(parent, s, x, y, size, anchor) {
+      return parent.text(s)
+        .move(x, y)
+        .font({ family: 'Georgia, Times New Roman, serif', size: size, anchor: anchor || 'start' })
+        .fill(colors.black)
+        .attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4, 'stroke-linejoin': 'round' });
+    }
+
+    function centeredText(parent, s, x, y, size) {
+      return textEl(parent, s, x, y, size, 'middle').attr({ 'dominant-baseline': 'middle' });
+    }
+
+    function line(parent, x1, y1, x2, y2, stroke, width, extra) {
+      var e = parent.line(x1, y1, x2, y2).stroke({ color: stroke, width: width, linecap: 'round', linejoin: 'round' });
+      if (extra) e.attr(extra);
+      return e;
+    }
+
+    function path(parent, d, stroke, width, fill, extra) {
+      var e = parent.path(d).fill(fill || 'none').stroke({ color: stroke, width: width, linecap: 'round', linejoin: 'round' });
+      if (extra) e.attr(extra);
+      return e;
+    }
+
+    function dot(parent, x, y, r, color) {
+      return parent.circle(2 * r).center(x, y).fill(color).stroke('none');
+    }
+
+    function arrowHead(parent, x, y, angle, size, color) {
+      var a = angle;
+      var p1 = [x, y];
+      var p2 = [x - size * Math.cos(a - 0.42), y - size * Math.sin(a - 0.42)];
+      var p3 = [x - size * Math.cos(a + 0.42), y - size * Math.sin(a + 0.42)];
+      return parent.polygon(p1[0] + ',' + p1[1] + ' ' + p2[0] + ',' + p2[1] + ' ' + p3[0] + ',' + p3[1]).fill(color);
+    }
+
+    function angleMark(parent, cx, cy, radius, theta, labelSize) {
+      var a = clamp(theta, 0.08, 1.48);
+      path(parent, arcPath(cx, cy, radius, 0, a), colors.black, 2, 'none');
+      line(parent, cx + radius * 0.88, cy, cx + radius * 0.88, cy - 13, colors.black, 2);
+      var tx = cx + (radius + 22) * Math.cos(a * 0.52);
+      var ty = cy - (radius + 22) * Math.sin(a * 0.52) - 8;
+      centeredText(parent, 'x', tx, ty, labelSize || 30);
+    }
+
+    function underBrace(parent, x1, x2, y) {
+      var mid = (x1 + x2) / 2;
+      var d = 'M ' + x1 + ' ' + y +
+        ' C ' + (x1 + 4) + ' ' + (y + 17) + ' ' + (x1 + 18) + ' ' + (y + 17) + ' ' + (x1 + 34) + ' ' + (y + 17) +
+        ' L ' + (mid - 12) + ' ' + (y + 17) +
+        ' C ' + (mid - 2) + ' ' + (y + 17) + ' ' + (mid - 3) + ' ' + (y + 34) + ' ' + mid + ' ' + (y + 34) +
+        ' C ' + (mid + 3) + ' ' + (y + 34) + ' ' + (mid + 2) + ' ' + (y + 17) + ' ' + (mid + 12) + ' ' + (y + 17) +
+        ' L ' + (x2 - 34) + ' ' + (y + 17) +
+        ' C ' + (x2 - 18) + ' ' + (y + 17) + ' ' + (x2 - 4) + ' ' + (y + 17) + ' ' + x2 + ' ' + y;
+      path(parent, d, colors.black, 2.1, 'none');
+    }
+
+    function rightBrace(parent, x, y1, y2) {
+      var mid = (y1 + y2) / 2;
+      var d = 'M ' + x + ' ' + y1 +
+        ' C ' + (x + 18) + ' ' + y1 + ' ' + (x + 18) + ' ' + (y1 + 10) + ' ' + (x + 18) + ' ' + (y1 + 24) +
+        ' L ' + (x + 18) + ' ' + (mid - 16) +
+        ' C ' + (x + 18) + ' ' + (mid - 3) + ' ' + (x + 36) + ' ' + (mid - 4) + ' ' + (x + 36) + ' ' + mid +
+        ' C ' + (x + 36) + ' ' + (mid + 4) + ' ' + (x + 18) + ' ' + (mid + 3) + ' ' + (x + 18) + ' ' + (mid + 16) +
+        ' L ' + (x + 18) + ' ' + (y2 - 24) +
+        ' C ' + (x + 18) + ' ' + (y2 - 10) + ' ' + (x + 18) + ' ' + y2 + ' ' + x + ' ' + y2;
+      path(parent, d, colors.black, 2.1, 'none');
+    }
+
+    function formulaFraction(parent, top, bottom, x, y, size) {
+      centeredText(parent, top, x, y, size);
+      line(parent, x - 32, y + 31, x + 32, y + 31, colors.black, 2);
+      centeredText(parent, bottom, x, y + 50, size);
+    }
+
+    function makeInteractive(el, key, label) {
+      el.css('cursor', 'pointer');
+      el.on('mousemove', function (e) { showTooltip(label, e); });
+      el.on('mouseleave', function () { hideTooltip(); });
+      el.on('click', function () { selectRegion(key); });
+      return el;
+    }
+
+    function selectRegion(key) {
+      state.highlight = state.highlight === key ? null : key;
+      render();
+      if (key === 'outer') {
+        showPopup('Outer triangle', 'The large tangent triangle has base 1 and height tan x, so its area is tan x / 2. It contains the circular sector for 0 < x < pi/2.');
+      } else if (key === 'sector') {
+        showPopup('Circular sector', 'In a unit circle, a sector with angle x radians has area x / 2. This sector sits between the tangent triangle and the smaller sine triangle.');
+      } else if (key === 'inner') {
+        showPopup('Inner triangle', 'The small triangle has base 1 and height sin x, so its area is sin x / 2. Comparing these three areas gives tan x / 2 >= x / 2 >= sin x / 2.');
+      }
+    }
+
+    function regionFill(key) {
+      return state.highlight === key ? colors.hot : colors.fill;
+    }
+
+    function regionOpacity(key) {
+      return state.highlight === key ? 0.78 : 0.58;
+    }
+
+    function regionStroke(key) {
+      return state.highlight === key ? 4.6 : 3.2;
+    }
+
+    function drawUnitCirclePanel(parent, theta) {
+      var g = parent.group();
+      var cx = 235;
+      var cy = 238;
+      var r = 150;
+      var c = point(cx, cy, r, theta);
+      var t = { x: cx + r, y: cy - r * Math.tan(theta) };
+      var base = { x: cx + r, y: cy };
+
+      line(g, 18, cy, cx + r + 92, cy, colors.black, 2.3);
+      arrowHead(g, cx + r + 92, cy, 0, 22, colors.black);
+      line(g, cx, H - 36, cx, 8, colors.black, 2.3);
+      arrowHead(g, cx, 8, -Math.PI / 2, 22, colors.black);
+
+      g.circle(2 * r).center(cx, cy).fill('none').stroke({ color: colors.blue, width: 4.2 });
+      line(g, cx, cy, t.x, t.y, colors.red, 3.2);
+      line(g, c.x, c.y, base.x, base.y, colors.red, 3.2, { 'stroke-dasharray': '12 8' });
+      line(g, t.x, t.y, base.x, base.y, colors.red, 3.2, { 'stroke-dasharray': '12 8' });
+      line(g, cx, cy, base.x, base.y, colors.red, 2.3);
+
+      dot(g, base.x, base.y, 8, colors.red);
+      dot(g, c.x, c.y, 8, colors.red);
+      dot(g, t.x, t.y, 8, colors.red);
+
+      angleMark(g, cx, cy, 40, theta, 30);
+      underBrace(g, cx + 8, base.x - 7, cy + 18);
+      centeredText(g, '1', (cx + base.x) / 2, cy + 58, 30);
+
+      textEl(g, '(1, tan x)', t.x + 10, t.y - 36, 33, 'start');
+      textEl(g, '(1, 0)', base.x + 14, base.y - 28, 33, 'start');
+      textEl(g, '(cos x, sin x)', c.x + 78, c.y - 42, 31, 'start');
+      line(g, c.x + 70, c.y - 12, c.x + 16, c.y - 2, colors.black, 2.2);
+      arrowHead(g, c.x + 16, c.y - 2, Math.PI - 0.18, 17, colors.black);
+    }
+
+    function trianglePath(x0, y0, base, height) {
+      return 'M ' + x0 + ' ' + y0 + ' L ' + (x0 + base) + ' ' + y0 + ' L ' + (x0 + base) + ' ' + (y0 - height) + ' Z';
+    }
+
+    function innerTrianglePath(x0, y0, base, theta) {
+      var p = point(x0, y0, base, theta);
+      return 'M ' + x0 + ' ' + y0 + ' L ' + (x0 + base) + ' ' + y0 + ' L ' + p.x + ' ' + p.y + ' Z';
+    }
+
+    function drawOuterTriangle(parent, x0, y0, base, theta, scaleY, compact) {
+      var h = base * Math.tan(theta) * scaleY;
+      var g = parent.group();
+      var tri = path(g, trianglePath(x0, y0, base, h), colors.red, regionStroke('outer'), regionFill('outer'), { opacity: regionOpacity('outer') });
+      makeInteractive(tri, 'outer', 'Outer triangle: area tan x / 2');
+      path(g, arcPath(x0, y0, base * scaleY, 0, theta), colors.blue, 4, 'none', { 'stroke-dasharray': '13 8' });
+      angleMark(g, x0, y0, 39, theta, 28);
+      centeredText(g, '1', x0 + base / 2, y0 + 26, 29);
+      if (!compact) textEl(g, 'tan x', x0 + base + 18, y0 - h / 2 - 24, 32, 'start');
+      return g;
+    }
+
+    function drawSector(parent, x0, y0, base, theta, compact) {
+      var g = parent.group();
+      var sec = path(g, sectorPath(x0, y0, base, 0, theta), colors.red, 3.2, regionFill('sector'), { opacity: regionOpacity('sector') });
+      makeInteractive(sec, 'sector', 'Sector: area x / 2');
+      path(g, arcPath(x0, y0, base, 0, theta), colors.blue, state.highlight === 'sector' ? 5.4 : 4.4, 'none');
+      angleMark(g, x0, y0, 38, theta, 28);
+      centeredText(g, '1', x0 + base / 2, y0 + 26, 29);
+      return g;
+    }
+
+    function drawInnerTriangle(parent, x0, y0, base, theta, compact) {
+      var g = parent.group();
+      var p = point(x0, y0, base, theta);
+      var tri = path(g, innerTrianglePath(x0, y0, base, theta), colors.red, regionStroke('inner'), regionFill('inner'), { opacity: regionOpacity('inner') });
+      makeInteractive(tri, 'inner', 'Inner triangle: area sin x / 2');
+      line(g, p.x, p.y, p.x, y0, colors.red, 2.8, { 'stroke-dasharray': '12 8' });
+      path(g, arcPath(x0, y0, base, 0, theta), colors.blue, 4.4, 'none', { 'stroke-dasharray': '12 8' });
+      angleMark(g, x0, y0, 38, theta, 28);
+      centeredText(g, '1', x0 + base / 2, y0 + 26, 29);
+      if (!compact) {
+        line(g, p.x, p.y, p.x + 36, p.y, colors.black, 2);
+        rightBrace(g, p.x + 56, p.y, y0);
+        textEl(g, 'sin x', p.x + 98, (p.y + y0) / 2 - 18, 32, 'start');
+      }
+      return g;
+    }
+
+    function addAreaLabel(parent, key, x, y, title, topFormula) {
+      var label = centeredText(parent, title, x, y, 30);
+      makeInteractive(label, key, title + ': click to highlight');
+      formulaFraction(parent, topFormula, '2', x, y + 66, 30);
+      return label;
+    }
+
+    function drawComparisons(parent, theta) {
+      var g = parent.group();
+      var y0 = 240;
+      var base = 128;
+      var maxH = 150;
+      var h = base * Math.tan(theta);
+      var scaleY = h > maxH ? maxH / h : 1;
+      var x1 = 540;
+      var x2 = 805;
+      var x3 = 1100;
+
+      if (state.overlay) {
+        var ox = 765;
+        var oy = 230;
+        var obase = 180;
+        var oh = obase * Math.tan(theta);
+        var oscale = oh > 178 ? 178 / oh : 1;
+        drawOuterTriangle(g, ox, oy, obase, theta, oscale, true);
+        drawSector(g, ox, oy, obase * oscale, theta, true).opacity(0.82);
+        drawInnerTriangle(g, ox, oy, obase * oscale, theta, true).opacity(0.9);
+        centeredText(g, 'tan x / 2', ox + obase + 92, oy - 130, 29);
+        centeredText(g, '\u2265', ox + obase + 92, oy - 85, 34);
+        centeredText(g, 'x / 2', ox + obase + 92, oy - 40, 29);
+        centeredText(g, '\u2265', ox + obase + 92, oy + 5, 34);
+        centeredText(g, 'sin x / 2', ox + obase + 92, oy + 50, 29);
+        return;
+      }
+
+      drawOuterTriangle(g, x1, y0, base, theta, scaleY, false);
+      drawSector(g, x2, y0, base, theta, false);
+      drawInnerTriangle(g, x3, y0, base, theta, false);
+
+      addAreaLabel(g, 'outer', x1 + base / 2, 306, 'Area of triangle', 'tan x');
+      centeredText(g, '\u2265', 738, 328, 38);
+      addAreaLabel(g, 'sector', x2 + base / 2, 306, 'Area of sector', 'x');
+      centeredText(g, '\u2265', 1017, 328, 38);
+      addAreaLabel(g, 'inner', x3 + base / 2, 306, 'Area of triangle', 'sin x');
+      centeredText(g, '\u2265', 738, 392, 38);
+      centeredText(g, '\u2265', 1017, 392, 38);
+    }
+
+    function render() {
+      root.clear();
+      var theta = clamp(state.theta, 0.05, 1.50);
+      drawUnitCirclePanel(root, theta);
+      drawComparisons(root, theta);
+    }
+
+    function update_angle(v) {
+      state.theta = clamp(v, 0.05, 1.50);
+      render();
+    }
+
+    function toggle_overlay(on) {
+      state.overlay = !!on;
+      render();
+    }
+
+    render();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

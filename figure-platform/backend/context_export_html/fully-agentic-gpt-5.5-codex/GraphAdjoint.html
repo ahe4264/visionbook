@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adjoint Graph Construction</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111111;
+      --muted: #5d6670;
+      --paper: #ffffff;
+      --frame: #d8dee5;
+      --soft: #f5f7f9;
+      --orange: #d98662;
+      --teal: #a0d9d3;
+      --teal-dark: #438b84;
+      --accent: #0f766e;
+      --warn: #f5bd3b;
+      --hot: #d22f27;
+      --ghost: #c7ced2;
+      --shadow: 0 18px 45px rgba(18, 30, 42, 0.13);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background: #eef2f5;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2vw, 22px);
+    }
+
+    .figure-shell {
+      width: min(100%, 1280px);
+      background: var(--paper);
+      border: 1px solid var(--frame);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: #f9fafb;
+      border-bottom: 1px solid var(--frame);
+    }
+
+    .button-group {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid #b9c4cc;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #172026;
+      padding: 6px 10px;
+      font: 650 13px/1.1 inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #7e8c98;
+      background: #f3f8f8;
+    }
+
+    button:focus-visible {
+      outline: 3px solid rgba(15, 118, 110, 0.28);
+      outline-offset: 2px;
+    }
+
+    button[aria-pressed="true"],
+    .primary {
+      background: #dff2ef;
+      border-color: var(--accent);
+      color: #063f3a;
+    }
+
+    .status {
+      flex: 1 1 280px;
+      min-width: min(100%, 280px);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      text-align: right;
+    }
+
+    .stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1637 / 588;
+      min-height: 320px;
+      background: #ffffff;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .panel-title {
+      font-size: 39px;
+      font-weight: 400;
+      letter-spacing: 0;
+      fill: #050505;
+    }
+
+    .panel-letter {
+      font-size: 39px;
+      font-weight: 400;
+      fill: #050505;
+    }
+
+    .instruction {
+      font-size: 30px;
+      font-weight: 400;
+      fill: #050505;
+    }
+
+    .edge-line,
+    .linegraph-link {
+      stroke: #111111;
+      stroke-width: 3.1;
+      stroke-linecap: round;
+      fill: none;
+      vector-effect: non-scaling-stroke;
+      transition: stroke 180ms ease, stroke-width 180ms ease, opacity 180ms ease;
+    }
+
+    .linegraph-link {
+      stroke-width: 3.4;
+    }
+
+    .original-edge-hit {
+      stroke: transparent;
+      stroke-width: 24;
+      stroke-linecap: round;
+      fill: none;
+      cursor: pointer;
+      pointer-events: stroke;
+    }
+
+    .original-edge-hit:focus {
+      outline: none;
+    }
+
+    .original-edge-hit:focus-visible + .edge-line,
+    .edge-line.hovered {
+      stroke: var(--accent);
+      stroke-width: 5.4;
+    }
+
+    .node {
+      stroke: #050505;
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+      transition: fill 200ms ease, stroke 200ms ease, stroke-width 200ms ease, opacity 200ms ease;
+    }
+
+    .original-node {
+      fill: var(--orange);
+    }
+
+    .adjoint-node {
+      fill: var(--teal);
+    }
+
+    .node-label {
+      font-size: 29px;
+      font-weight: 400;
+      fill: #050505;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+    }
+
+    .adjoint-node-label {
+      font-size: 28px;
+    }
+
+    .shared-label {
+      opacity: 0;
+      font-size: 18px;
+      font-weight: 700;
+      fill: #7f1d1d;
+      text-anchor: middle;
+      dominant-baseline: central;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 5;
+      stroke-linejoin: round;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+    }
+
+    .panel {
+      transition: opacity 220ms ease;
+    }
+
+    .panel.dimmed {
+      opacity: 0.22;
+    }
+
+    .stage-edge-node,
+    .linegraph-link {
+      opacity: 1;
+    }
+
+    .animation-ready .stage-edge-node {
+      opacity: 0;
+      transform: scale(0.36);
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .animation-ready .stage-edge-node.reveal {
+      animation: pop-node 420ms cubic-bezier(.18, .86, .26, 1.18) forwards;
+      animation-delay: var(--delay, 0ms);
+    }
+
+    .animation-ready .linegraph-link {
+      opacity: 0;
+      stroke-dasharray: 1;
+      stroke-dashoffset: 1;
+    }
+
+    .animation-ready .linegraph-link.reveal {
+      animation: draw-link 480ms ease forwards;
+      animation-delay: var(--delay, 0ms);
+    }
+
+    .linegraph-link.incident,
+    .edge-line.selected,
+    .linegraph-link.selected {
+      stroke: var(--hot);
+      stroke-width: 5.2;
+      opacity: 1;
+    }
+
+    .adjoint-node.selected {
+      fill: var(--warn);
+      stroke: #7c2d12;
+      stroke-width: 4.8;
+    }
+
+    .stage-edge-node.selected circle {
+      fill: var(--warn);
+      stroke: #7c2d12;
+      stroke-width: 4.8;
+    }
+
+    .linegraph-link.muted {
+      opacity: 0.28;
+    }
+
+    .shared-label.visible {
+      opacity: 1;
+    }
+
+    .annotation-arrow {
+      fill: var(--ghost);
+    }
+
+    .annotation-line {
+      stroke: var(--ghost);
+      stroke-width: 7;
+      stroke-linecap: butt;
+      fill: none;
+    }
+
+    .hint {
+      fill: #4b5563;
+      font-size: 17px;
+      text-anchor: middle;
+    }
+
+    @keyframes pop-node {
+      0% {
+        opacity: 0;
+        transform: scale(0.36);
+      }
+      65% {
+        opacity: 1;
+        transform: scale(1.12);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    @keyframes draw-link {
+      from {
+        opacity: 1;
+        stroke-dashoffset: 1;
+      }
+      to {
+        opacity: 1;
+        stroke-dashoffset: 0;
+      }
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 0;
+        place-items: stretch;
+      }
+
+      .figure-shell {
+        min-height: 100vh;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      .toolbar {
+        align-items: stretch;
+      }
+
+      .button-group {
+        width: 100%;
+      }
+
+      button {
+        flex: 1 1 auto;
+        padding-inline: 8px;
+      }
+
+      .status {
+        flex-basis: 100%;
+        text-align: left;
+      }
+
+      .stage {
+        min-height: 430px;
+        aspect-ratio: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="figure-shell" aria-label="Interactive adjoint graph construction">
+    <div class="toolbar" role="toolbar" aria-label="Graph view controls">
+      <div class="button-group" aria-label="Panel selection">
+        <button type="button" data-view="all" aria-pressed="true">All panels</button>
+        <button type="button" data-view="original" aria-pressed="false">Original</button>
+        <button type="button" data-view="edge" aria-pressed="false">Edge graph</button>
+      </div>
+      <div class="button-group" aria-label="Construction controls">
+        <button type="button" id="animate" class="primary">Animate</button>
+        <button type="button" id="reset">Reset</button>
+      </div>
+      <div class="status" id="status" aria-live="polite">Click an original edge to trace its node in the edge graph.</div>
+    </div>
+    <div class="stage">
+      <svg id="graphFigure" viewBox="0 0 1640 590" role="img" aria-labelledby="title desc">
+        <title id="title">Construction of the adjoint graph from an undirected graph</title>
+        <desc id="desc">Three panels show the original graph, new nodes placed on every original edge, and the resulting line graph whose nodes are original edges.</desc>
+      </svg>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const svg = document.getElementById("graphFigure");
+      const status = document.getElementById("status");
+      const animateButton = document.getElementById("animate");
+      const resetButton = document.getElementById("reset");
+      const viewButtons = Array.from(document.querySelectorAll("[data-view]"));
+      const ns = "http://www.w3.org/2000/svg";
+
+      const vertexPositions = {
+        "1": { x: 443, y: 207 },
+        "2": { x: 115, y: 173 },
+        "3": { x: 307, y: 104 },
+        "4": { x: 156, y: 431 },
+        "5": { x: 36, y: 329 },
+        "6": { x: 461, y: 425 }
+      };
+
+      const originalEdges = [
+        { id: "2/3", a: "2", b: "3" },
+        { id: "1/3", a: "1", b: "3" },
+        { id: "1/6", a: "1", b: "6" },
+        { id: "4/6", a: "4", b: "6" },
+        { id: "4/5", a: "4", b: "5" },
+        { id: "2/5", a: "2", b: "5" },
+        { id: "1/5", a: "1", b: "5" },
+        { id: "1/4", a: "1", b: "4" }
+      ];
+
+      const edgeNodePositions = {
+        "2/3": midpoint("2", "3"),
+        "1/3": midpoint("1", "3"),
+        "1/6": midpoint("1", "6"),
+        "4/6": midpoint("4", "6"),
+        "4/5": midpoint("4", "5"),
+        "2/5": midpoint("2", "5"),
+        "1/5": midpoint("1", "5"),
+        "1/4": midpoint("1", "4")
+      };
+
+      const lineNodePositions = {
+        "2/3": { x: 210, y: 138 },
+        "1/3": { x: 375, y: 155 },
+        "2/5": { x: 75, y: 250 },
+        "1/5": { x: 242, y: 269 },
+        "1/4": { x: 303, y: 320 },
+        "1/6": { x: 428, y: 321 },
+        "4/5": { x: 96, y: 379 },
+        "4/6": { x: 308, y: 427 }
+      };
+
+      const panelOffsets = {
+        a: { x: 0, y: 0 },
+        b: { x: 575, y: 0 },
+        c: { x: 1150, y: 0 }
+      };
+
+      const lineEdges = buildLineEdges(originalEdges);
+      const edgeDataById = new Map(originalEdges.map(edge => [edge.id, edge]));
+      const state = {
+        selectedEdge: null,
+        view: "all",
+        animationTimers: []
+      };
+
+      buildFigure();
+      setView("all");
+
+      viewButtons.forEach(button => {
+        button.addEventListener("click", () => setView(button.dataset.view));
+      });
+
+      animateButton.addEventListener("click", runAnimation);
+      resetButton.addEventListener("click", () => {
+        clearAnimation();
+        svg.classList.remove("animation-ready");
+        selectEdge(null);
+        setView("all");
+        status.textContent = "Click an original edge to trace its node in the edge graph.";
+      });
+
+      function midpoint(a, b) {
+        const p = vertexPositions[a];
+        const q = vertexPositions[b];
+        return { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+      }
+
+      function sharedVertex(edgeOne, edgeTwo) {
+        return [edgeOne.a, edgeOne.b].find(v => edgeTwo.a === v || edgeTwo.b === v) || null;
+      }
+
+      function buildLineEdges(edges) {
+        const links = [];
+        for (let i = 0; i < edges.length; i += 1) {
+          for (let j = i + 1; j < edges.length; j += 1) {
+            const shared = sharedVertex(edges[i], edges[j]);
+            if (shared) {
+              links.push({
+                id: `${edges[i].id}|${edges[j].id}`,
+                from: edges[i].id,
+                to: edges[j].id,
+                shared
+              });
+            }
+          }
+        }
+        return links;
+      }
+
+      function el(name, attrs = {}, parent = svg) {
+        const node = document.createElementNS(ns, name);
+        Object.entries(attrs).forEach(([key, value]) => {
+          if (key === "text") {
+            node.textContent = value;
+          } else if (key === "className") {
+            node.setAttribute("class", value);
+          } else if (key === "dataset") {
+            Object.entries(value).forEach(([dataKey, dataValue]) => {
+              node.dataset[dataKey] = dataValue;
+            });
+          } else {
+            node.setAttribute(key, value);
+          }
+        });
+        parent.appendChild(node);
+        return node;
+      }
+
+      function buildFigure() {
+        buildPanelA();
+        buildPanelB();
+        buildPanelC();
+      }
+
+      function buildPanelA() {
+        const panel = el("g", { id: "panel-a", className: "panel", transform: `translate(${panelOffsets.a.x} ${panelOffsets.a.y})` });
+        el("text", { x: 0, y: 37, className: "panel-letter", text: "a)" }, panel);
+        el("text", { x: 255, y: 54, className: "panel-title", "text-anchor": "middle", text: "Original graph" }, panel);
+        drawOriginalGraph(panel, { interactive: true, nodeClass: "panel-a-node" });
+      }
+
+      function buildPanelB() {
+        const panel = el("g", { id: "panel-b", className: "panel", transform: `translate(${panelOffsets.b.x} ${panelOffsets.b.y})` });
+        el("text", { x: 0, y: 37, className: "panel-letter", text: "b)" }, panel);
+        drawOriginalGraph(panel, { interactive: true, nodeClass: "panel-b-node" });
+        originalEdges.forEach((edge, index) => drawAdjointNode(panel, edge.id, edgeNodePositions[edge.id], {
+          groupClass: "stage-edge-node",
+          delay: 95 * index
+        }));
+        drawArrow(panel, 395, 497, 725, 497);
+        const instruction = el("text", { className: "instruction", "text-anchor": "middle" }, panel);
+        el("tspan", { x: 520, y: 543, text: "Add new node" }, instruction);
+        el("tspan", { x: 520, y: 581, text: "at each original edge" }, instruction);
+      }
+
+      function buildPanelC() {
+        const panel = el("g", { id: "panel-c", className: "panel", transform: `translate(${panelOffsets.c.x} ${panelOffsets.c.y})` });
+        el("text", { x: -4, y: 37, className: "panel-letter", text: "c)" }, panel);
+        el("text", { x: 272, y: 54, className: "panel-title", "text-anchor": "middle", text: "Edge graph" }, panel);
+        const linksGroup = el("g", { id: "linegraph-links" }, panel);
+        lineEdges.forEach((link, index) => drawLineGraphLink(linksGroup, link, index));
+        const nodesGroup = el("g", { id: "linegraph-nodes" }, panel);
+        originalEdges.forEach(edge => drawAdjointNode(nodesGroup, edge.id, lineNodePositions[edge.id], {
+          groupClass: "line-node"
+        }));
+        drawArrow(panel, -170, 497, 170, 497);
+        const instruction = el("text", { className: "instruction", "text-anchor": "middle" }, panel);
+        el("tspan", { x: 0, y: 543, text: "Connect new nodes if" }, instruction);
+        el("tspan", { x: 0, y: 581, text: "original edges shared node" }, instruction);
+      }
+
+      function drawArrow(parent, x1, y1, x2, y2) {
+        el("line", { x1, y1, x2: x2 - 34, y2, className: "annotation-line" }, parent);
+        el("path", { d: `M ${x2} ${y2} l -48 -15 l 12 15 l -12 15 Z`, className: "annotation-arrow" }, parent);
+      }
+
+      function drawOriginalGraph(parent, options = {}) {
+        const edgesGroup = el("g", {}, parent);
+        originalEdges.forEach(edge => {
+          const p = vertexPositions[edge.a];
+          const q = vertexPositions[edge.b];
+          if (options.interactive) {
+            const hit = el("line", {
+              x1: p.x,
+              y1: p.y,
+              x2: q.x,
+              y2: q.y,
+              className: "original-edge-hit",
+              tabindex: "0",
+              role: "button",
+              "aria-label": `Select original edge ${edge.id}`,
+              dataset: { edgeId: edge.id }
+            }, edgesGroup);
+            hit.addEventListener("click", () => selectEdge(edge.id));
+            hit.addEventListener("keydown", event => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                selectEdge(edge.id);
+              }
+            });
+            hit.addEventListener("pointerenter", () => setHovered(edge.id, true));
+            hit.addEventListener("pointerleave", () => setHovered(edge.id, false));
+          }
+          el("line", {
+            x1: p.x,
+            y1: p.y,
+            x2: q.x,
+            y2: q.y,
+            className: "edge-line",
+            dataset: { edgeId: edge.id }
+          }, edgesGroup);
+        });
+
+        const nodesGroup = el("g", {}, parent);
+        Object.entries(vertexPositions).forEach(([id, point]) => {
+          el("circle", {
+            cx: point.x,
+            cy: point.y,
+            r: 23,
+            className: `node original-node ${options.nodeClass || ""}`,
+            dataset: { vertexId: id }
+          }, nodesGroup);
+          el("text", {
+            x: point.x,
+            y: point.y + 1,
+            className: "node-label",
+            text: id
+          }, nodesGroup);
+        });
+      }
+
+      function drawAdjointNode(parent, id, point, options = {}) {
+        const group = el("g", {
+          className: options.groupClass || "",
+          style: `--delay: ${options.delay || 0}ms`,
+          dataset: { edgeId: id }
+        }, parent);
+        el("circle", {
+          cx: point.x,
+          cy: point.y,
+          r: 32,
+          className: "node adjoint-node",
+          dataset: { edgeId: id }
+        }, group);
+        el("text", {
+          x: point.x,
+          y: point.y + 1,
+          className: "node-label adjoint-node-label",
+          text: id
+        }, group);
+        return group;
+      }
+
+      function drawLineGraphLink(parent, link, index) {
+        const p = lineNodePositions[link.from];
+        const q = lineNodePositions[link.to];
+        const line = el("line", {
+          x1: p.x,
+          y1: p.y,
+          x2: q.x,
+          y2: q.y,
+          pathLength: "1",
+          className: "linegraph-link",
+          style: `--delay: ${880 + index * 70}ms`,
+          dataset: { from: link.from, to: link.to, shared: link.shared }
+        }, parent);
+        const mx = (p.x + q.x) / 2;
+        const my = (p.y + q.y) / 2;
+        const label = el("text", {
+          x: mx,
+          y: my - 5,
+          className: "shared-label",
+          text: link.shared,
+          dataset: { from: link.from, to: link.to, shared: link.shared }
+        }, parent);
+        line.dataset.labelId = `${link.from}-${link.to}-${link.shared}`;
+        label.dataset.linkId = `${link.from}-${link.to}-${link.shared}`;
+      }
+
+      function setHovered(edgeId, isHovered) {
+        document.querySelectorAll(`.edge-line[data-edge-id="${cssEscape(edgeId)}"]`).forEach(edge => {
+          edge.classList.toggle("hovered", isHovered);
+        });
+      }
+
+      function selectEdge(edgeId) {
+        state.selectedEdge = edgeId;
+        document.querySelectorAll(".selected,.incident,.muted,.visible").forEach(node => {
+          node.classList.remove("selected", "incident", "muted", "visible");
+        });
+
+        if (!edgeId) {
+          document.querySelectorAll(".linegraph-link").forEach(link => link.classList.remove("muted"));
+          return;
+        }
+
+        document.querySelectorAll(`.edge-line[data-edge-id="${cssEscape(edgeId)}"]`).forEach(edge => {
+          edge.classList.add("selected");
+        });
+        document.querySelectorAll(`[data-edge-id="${cssEscape(edgeId)}"]`).forEach(node => {
+          if (node.classList.contains("adjoint-node") || node.classList.contains("stage-edge-node") || node.classList.contains("line-node")) {
+            node.classList.add("selected");
+          }
+        });
+
+        const incidentLinks = lineEdges.filter(link => link.from === edgeId || link.to === edgeId);
+        document.querySelectorAll(".linegraph-link").forEach(link => {
+          const incident = link.dataset.from === edgeId || link.dataset.to === edgeId;
+          link.classList.toggle("incident", incident);
+          link.classList.toggle("muted", !incident);
+        });
+        document.querySelectorAll(".shared-label").forEach(label => {
+          const incident = label.dataset.from === edgeId || label.dataset.to === edgeId;
+          label.classList.toggle("visible", incident);
+        });
+
+        const selected = edgeDataById.get(edgeId);
+        const viaA = incidentLinks
+          .filter(link => link.shared === selected.a)
+          .map(link => link.from === edgeId ? link.to : link.from)
+          .sort(compareEdgeLabel);
+        const viaB = incidentLinks
+          .filter(link => link.shared === selected.b)
+          .map(link => link.from === edgeId ? link.to : link.from)
+          .sort(compareEdgeLabel);
+        const left = viaA.length ? `${selected.a}: ${viaA.join(", ")}` : `${selected.a}: none`;
+        const right = viaB.length ? `${selected.b}: ${viaB.join(", ")}` : `${selected.b}: none`;
+        status.textContent = `Original edge ${edgeId} becomes node ${edgeId}; shared-node links are ${left} and ${right}.`;
+      }
+
+      function runAnimation() {
+        clearAnimation();
+        selectEdge(null);
+        setView("all");
+        svg.classList.add("animation-ready");
+        status.textContent = "Step 1: new teal nodes appear at each original edge.";
+
+        const stagedNodes = Array.from(document.querySelectorAll(".stage-edge-node"));
+        const links = Array.from(document.querySelectorAll(".linegraph-link"));
+        stagedNodes.forEach(node => node.classList.remove("reveal"));
+        links.forEach(link => link.classList.remove("reveal"));
+
+        requestAnimationFrame(() => {
+          stagedNodes.forEach(node => node.classList.add("reveal"));
+          state.animationTimers.push(window.setTimeout(() => {
+            status.textContent = "Step 2: line-graph edges are drawn between new nodes whose original edges share a node.";
+            links.forEach(link => link.classList.add("reveal"));
+          }, 920));
+          state.animationTimers.push(window.setTimeout(() => {
+            status.textContent = "Construction complete: every original edge is now a node in the edge graph.";
+          }, 2450));
+        });
+      }
+
+      function clearAnimation() {
+        state.animationTimers.forEach(timer => window.clearTimeout(timer));
+        state.animationTimers = [];
+      }
+
+      function setView(view) {
+        state.view = view;
+        viewButtons.forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.view === view));
+        });
+
+        const viewBoxes = {
+          all: "0 0 1640 590",
+          original: "0 48 525 445",
+          edge: "1146 47 486 446"
+        };
+        svg.setAttribute("viewBox", viewBoxes[view]);
+
+        document.querySelectorAll(".panel").forEach(panel => panel.classList.remove("dimmed"));
+        if (view === "original") {
+          document.getElementById("panel-b").classList.add("dimmed");
+          document.getElementById("panel-c").classList.add("dimmed");
+          status.textContent = state.selectedEdge
+            ? `Original graph view; selected edge ${state.selectedEdge} is the line-graph node with the same label.`
+            : "Original graph view; click an edge to identify its adjoint node.";
+        } else if (view === "edge") {
+          document.getElementById("panel-a").classList.add("dimmed");
+          document.getElementById("panel-b").classList.add("dimmed");
+          status.textContent = state.selectedEdge
+            ? `Edge graph view; highlighted links show neighbors created by original edge ${state.selectedEdge}.`
+            : "Edge graph view; each teal node is one original edge.";
+        } else {
+          status.textContent = state.selectedEdge
+            ? `Original edge ${state.selectedEdge} is selected in both constructions.`
+            : "Click an original edge to trace its node in the edge graph.";
+        }
+      }
+
+      function compareEdgeLabel(a, b) {
+        const [a0, a1] = a.split("/").map(Number);
+        const [b0, b1] = b.split("/").map(Number);
+        return a0 - b0 || a1 - b1;
+      }
+
+      function cssEscape(value) {
+        if (window.CSS && typeof window.CSS.escape === "function") {
+          return window.CSS.escape(value);
+        }
+        return value.replace(/["\\]/g, "\\$&");
+      }
+    })();
+  </script>
+</body>
+</html>

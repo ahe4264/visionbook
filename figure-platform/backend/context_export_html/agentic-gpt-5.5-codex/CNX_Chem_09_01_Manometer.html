@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+      background: #fff;
+    }
+
+    #container svg {
+      display: block;
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+      font: inherit;
+      text-align: left;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    #ui .readout {
+      color: #333;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <button id="closedBtn" class="active" onclick="trigger_closed()">Closed end: vacuum</button>
+    <button id="openLowBtn" onclick="trigger_openLow()">Open end: Pgas &lt; Patm</button>
+    <button id="openHighBtn" onclick="trigger_openHigh()">Open end: Pgas &gt; Patm</button>
+    <label>Gas pressure: <output id="pressureVal">650</output> mmHg<input id="pressureInput" type="range" min="200" max="1000" step="10" value="650" oninput="document.getElementById('pressureVal').value=this.value;update_pressure(+this.value)"></label>
+    <span id="caseReadout" class="readout">Closed-end manometer: h rises with Pgas.</span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) _errOverlay.style.display = 'flex'; }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+    function _applyUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', 'right');
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(function () {
+        var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+        _applyUiLayout('right', hasEditor ? 360 : 320);
+      }, 0);
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    (function () {
+      if (typeof SVG === 'undefined') throw new Error('SVG.js failed to load');
+
+      var container = document.getElementById('container');
+      var draw = SVG().addTo(container).size('100%', '100%').viewbox(0, 0, 1239, 448);
+      draw.attr({
+        preserveAspectRatio: 'xMidYMid meet',
+        role: 'img',
+        'aria-label': 'Three U-tube manometers showing closed-end, open-end low gas pressure, and open-end high gas pressure cases.'
+      });
+
+      var arrowMarker = draw.marker(12, 12, function (add) {
+        add.path('M 1 1 L 11 6 L 1 11 Z').fill('#111');
+      });
+      arrowMarker.ref(10, 6).attr({ orient: 'auto-start-reverse', markerUnits: 'strokeWidth' });
+
+      var atmMarker = draw.marker(11, 11, function (add) {
+        add.path('M 1 1 L 10 5.5 L 1 10 Z').fill('#111');
+      });
+      atmMarker.ref(9, 5.5).attr({ orient: 'auto', markerUnits: 'strokeWidth' });
+
+      var state = { mode: 'closed', pressure: 650 };
+      var pressureInput = document.getElementById('pressureInput');
+      var pressureVal = document.getElementById('pressureVal');
+      var readout = document.getElementById('caseReadout');
+      var buttons = {
+        closed: document.getElementById('closedBtn'),
+        openLow: document.getElementById('openLowBtn'),
+        openHigh: document.getElementById('openHighBtn')
+      };
+      var panels = {};
+
+      function clamp(n, lo, hi) {
+        return Math.max(lo, Math.min(hi, n));
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function tubePath(lx, rx, leftLevel, rightLevel) {
+        var mid = (lx + rx) / 2;
+        return 'M ' + lx + ' ' + leftLevel +
+          ' V 344 Q ' + lx + ' 382 ' + mid + ' 382 Q ' + rx + ' 382 ' + rx + ' 344 V ' + rightLevel;
+      }
+
+      function roundedGlassPath(gasX, gasY, lx, rx, topY) {
+        var start = gasX + 34;
+        return 'M ' + start + ' ' + gasY +
+          ' H ' + (lx - 12) + ' Q ' + lx + ' ' + gasY + ' ' + lx + ' ' + (gasY + 12) +
+          ' V 344 Q ' + lx + ' 382 ' + ((lx + rx) / 2) + ' 382 Q ' + rx + ' 382 ' + rx + ' 344 V ' + topY;
+      }
+
+      function addText(text, x, y, size, opts) {
+        opts = opts || {};
+        return draw.text(text)
+          .font({
+            family: 'Arial, Helvetica, sans-serif',
+            size: size,
+            weight: opts.weight || 'normal',
+            style: opts.style || 'normal'
+          })
+          .fill(opts.fill || '#111')
+          .move(x, y);
+      }
+
+      function addHaloText(text, x, y, size, opts) {
+        var t = addText(text, x, y, size, opts);
+        t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4, 'stroke-linejoin': 'round' });
+        return t;
+      }
+
+      function addSubLabel(x, y, base, sub, size) {
+        var g = draw.group();
+        g.text(base).font({ family: 'Arial, Helvetica, sans-serif', size: size, style: 'italic' }).fill('#111').move(x, y);
+        g.text(sub).font({ family: 'Arial, Helvetica, sans-serif', size: size * 0.55 }).fill('#111').move(x + size * 0.62, y + size * 0.47);
+        return g;
+      }
+
+      function addFormula(panel, x, y, sign) {
+        var g = draw.group();
+        var bg = g.rect(sign === 'closed' ? 205 : 300, 47).radius(4).move(x - 10, y - 5)
+          .fill('#fff3b0').stroke({ color: '#b87918', width: 2 }).opacity(0);
+        g.text('P').font({ family: 'Arial, Helvetica, sans-serif', size: 26, style: 'italic' }).fill('#111').move(x, y);
+        g.text('gas').font({ family: 'Arial, Helvetica, sans-serif', size: 15 }).fill('#111').move(x + 17, y + 14);
+        var suffix = sign === 'closed' ? ' = hρg' : (sign === 'minus' ? ' = P' : ' = P');
+        g.text(suffix).font({ family: 'Arial, Helvetica, sans-serif', size: 26, style: 'italic' }).fill('#111').move(x + 55, y);
+        if (sign !== 'closed') {
+          g.text('atm').font({ family: 'Arial, Helvetica, sans-serif', size: 15 }).fill('#111').move(x + 112, y + 14);
+          g.text(sign === 'minus' ? ' − hρg' : ' + hρg')
+            .font({ family: 'Arial, Helvetica, sans-serif', size: 26, style: 'italic' }).fill('#111').move(x + 148, y);
+        }
+        panels[panel].highlight = bg;
+        return g;
+      }
+
+      function addGasBulb(cx, cy) {
+        var g = draw.group();
+        g.ellipse(74, 74).center(cx, cy).fill('#ded2ec').stroke({ color: '#111', width: 2 });
+        g.ellipse(52, 52).center(cx - 10, cy - 9).fill('#efe9f5').opacity(0.42);
+        addText('Gas', cx - 20, cy - 16, 25).front();
+        return g;
+      }
+
+      function addValve(cx, cy) {
+        var g = draw.group();
+        g.line(cx - 8, cy - 20, cx + 8, cy - 20).stroke({ color: '#111', width: 2 });
+        g.ellipse(34, 8).center(cx, cy - 24).fill('#d8e2e8').stroke({ color: '#111', width: 1.4 });
+        g.rect(12, 28).center(cx, cy - 4).fill('#d8e2e8').stroke({ color: '#111', width: 1.4 });
+        g.line(cx - 15, cy - 10, cx + 15, cy - 10).stroke({ color: '#111', width: 1.5 });
+        g.line(cx - 13, cy + 8, cx + 13, cy + 8).stroke({ color: '#111', width: 1.5 });
+        g.line(cx, cy - 18, cx, cy + 16).stroke({ color: '#60686b', width: 1 });
+        return g;
+      }
+
+      function addGlassTube(gasX, gasY, lx, rx, topY, openEnd) {
+        var path = roundedGlassPath(gasX, gasY, lx, rx, topY);
+        draw.path(path).fill('none').stroke({ color: '#111', width: 19, linecap: 'round', linejoin: 'round' });
+        draw.path(path).fill('none').stroke({ color: '#eadff1', width: 15, linecap: 'round', linejoin: 'round' });
+        draw.path(path).fill('none').stroke({ color: '#f8fbfb', width: 8, linecap: 'round', linejoin: 'round' }).opacity(0.65);
+        if (openEnd) {
+          draw.ellipse(19, 8).center(rx, topY).fill('#d7e0e5').stroke({ color: '#111', width: 2 });
+        }
+      }
+
+      function addMercury(lx, rx, leftLevel, rightLevel) {
+        var p = draw.path(tubePath(lx, rx, leftLevel, rightLevel))
+          .fill('none')
+          .stroke({ color: '#9ba3a6', width: 14, linecap: 'butt', linejoin: 'round' });
+        draw.path(tubePath(lx, rx, leftLevel, rightLevel))
+          .fill('none')
+          .stroke({ color: '#596064', width: 3, linecap: 'butt', linejoin: 'round' })
+          .opacity(0.55);
+        return p;
+      }
+
+      function addGuideLines(x1, x2, yTop, yBottom) {
+        var g = draw.group();
+        g.line(x1, yTop, x2, yTop).stroke({ color: '#111', width: 2 });
+        g.line(x1, yBottom, x2, yBottom).stroke({ color: '#111', width: 2 });
+        return g;
+      }
+
+      function addHArrow(panel, x, yTop, yBottom, labelSide) {
+        var g = draw.group();
+        panels[panel].hArrow = g;
+        g.line(x, yTop + 14, x, yBottom - 14).stroke({ color: '#111', width: 2.5 });
+        g.polygon([[x, yTop + 2], [x - 6, yTop + 14], [x + 6, yTop + 14]]).fill('#111');
+        g.polygon([[x, yBottom - 2], [x - 6, yBottom - 14], [x + 6, yBottom - 14]]).fill('#111');
+        var labelX = labelSide === 'left' ? x - 20 : x + 12;
+        addHaloText('h', labelX, (yTop + yBottom) / 2 - 18, 27, { style: 'italic' });
+        var hit = g.rect(54, Math.max(48, Math.abs(yBottom - yTop) + 20))
+          .center(x, (yTop + yBottom) / 2)
+          .fill('#fff')
+          .opacity(0);
+        hit.css('cursor', 'pointer');
+        hit.on('mousemove', function (e) { showTooltip('Click for the pressure-balance derivation.', e); });
+        hit.on('mouseleave', function () { hideTooltip(); });
+        hit.on('click', function () {
+          var text = {
+            closed: 'The sealed arm contains a vacuum, so the pressure on that side starts at zero. At the same horizontal level in the mercury, the pressures must balance, which gives Pgas = hρg.',
+            openLow: 'Atmospheric pressure pushes the open arm lower while the gas-side mercury stands higher. The atmosphere exceeds the gas by one liquid column, so Pgas = Patm − hρg.',
+            openHigh: 'The gas pushes its side of the mercury lower and raises the open arm. At equal depth the pressures match, so the gas pressure is atmospheric pressure plus the column: Pgas = Patm + hρg.'
+          }[panel];
+          showPopup('Deriving the manometer equation', text);
+        });
+        panels[panel].hHit = hit;
+        panels[panel].hLabelX = labelX;
+        return g;
+      }
+
+      function moveHArrow(panel, x, yTop, yBottom) {
+        var data = panels[panel];
+        data.hArrow.clear();
+        data.hArrow.line(x, yTop + 14, x, yBottom - 14).stroke({ color: '#111', width: 2.5 });
+        data.hArrow.polygon([[x, yTop + 2], [x - 6, yTop + 14], [x + 6, yTop + 14]]).fill('#111');
+        data.hArrow.polygon([[x, yBottom - 2], [x - 6, yBottom - 14], [x + 6, yBottom - 14]]).fill('#111');
+        var labelSide = panel === 'closed' ? 'left' : 'right';
+        var labelX = labelSide === 'left' ? x - 20 : x + 12;
+        var label = data.hArrow.text('h')
+          .font({ family: 'Arial, Helvetica, sans-serif', size: 27, style: 'italic' })
+          .fill('#111')
+          .move(labelX, (yTop + yBottom) / 2 - 18);
+        label.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4, 'stroke-linejoin': 'round' });
+        var hit = data.hArrow.rect(54, Math.max(48, Math.abs(yBottom - yTop) + 20))
+          .center(x, (yTop + yBottom) / 2)
+          .fill('#fff')
+          .opacity(0);
+        hit.css('cursor', 'pointer');
+        hit.on('mousemove', function (e) { showTooltip('Click for the pressure-balance derivation.', e); });
+        hit.on('mouseleave', function () { hideTooltip(); });
+        hit.on('click', function () {
+          var text = {
+            closed: 'The sealed arm contains a vacuum, so the pressure on that side starts at zero. At the same horizontal level in the mercury, the pressures must balance, which gives Pgas = hρg.',
+            openLow: 'Atmospheric pressure pushes the open arm lower while the gas-side mercury stands higher. The atmosphere exceeds the gas by one liquid column, so Pgas = Patm − hρg.',
+            openHigh: 'The gas pushes its side of the mercury lower and raises the open arm. At equal depth the pressures match, so the gas pressure is atmospheric pressure plus the column: Pgas = Patm + hρg.'
+          }[panel];
+          showPopup('Deriving the manometer equation', text);
+        });
+      }
+
+      function buildClosedPanel() {
+        panels.closed = {};
+        addGasBulb(40, 92);
+        addGlassTube(40, 92, 163, 227, 74, false);
+        addValve(110, 94);
+        panels.closed.mercury = addMercury(163, 227, 268, 176);
+        panels.closed.guides = addGuideLines(165, 267, 176, 268);
+        addHArrow('closed', 252, 176, 268, 'left');
+        draw.line(229, 72, 258, 38).stroke({ color: '#111', width: 2 });
+        draw.line(229, 102, 282, 38).stroke({ color: '#111', width: 2 });
+        addText('Closed end', 260, 16, 25);
+        addText('Vacuum', 282, 48, 25);
+        addFormula('closed', 132, 408, 'closed');
+      }
+
+      function buildOpenLowPanel() {
+        panels.openLow = {};
+        addGasBulb(460, 92);
+        addGlassTube(460, 92, 584, 648, 74, true);
+        addValve(530, 94);
+        panels.openLow.mercury = addMercury(584, 648, 144, 292);
+        panels.openLow.guides = addGuideLines(584, 687, 144, 292);
+        addHArrow('openLow', 671, 144, 292, 'right');
+        draw.line(648, 28, 648, 64).stroke({ color: '#111', width: 3 }).marker('end', atmMarker);
+        addSubLabel(625, 0, 'P', 'atm', 27);
+        draw.line(668, 73, 700, 79).stroke({ color: '#111', width: 2 });
+        addText('Open end', 706, 71, 25);
+        addFormula('openLow', 514, 408, 'minus');
+      }
+
+      function buildOpenHighPanel() {
+        panels.openHigh = {};
+        addGasBulb(880, 92);
+        addGlassTube(880, 92, 1004, 1068, 74, true);
+        addValve(950, 94);
+        panels.openHigh.mercury = addMercury(1004, 1068, 144, 111);
+        panels.openHigh.guides = addGuideLines(1004, 1124, 111, 144);
+        addHArrow('openHigh', 1107, 111, 144, 'right');
+        draw.line(1068, 28, 1068, 64).stroke({ color: '#111', width: 3 }).marker('end', atmMarker);
+        addSubLabel(1044, 0, 'P', 'atm', 27);
+        draw.line(1088, 73, 1120, 79).stroke({ color: '#111', width: 2 });
+        addText('Open end', 1126, 71, 25);
+        addFormula('openHigh', 930, 408, 'plus');
+      }
+
+      function closedLevels() {
+        var t = (state.pressure - 200) / 800;
+        var h = lerp(45, 130, clamp(t, 0, 1));
+        return { left: 268, right: 268 - h, h: h };
+      }
+
+      function openLowLevels() {
+        var diff = 760 - state.pressure;
+        var h = lerp(18, 148, clamp((diff - 10) / 250, 0, 1));
+        return { left: 144, right: 144 + h, h: h };
+      }
+
+      function openHighLevels() {
+        var diff = state.pressure - 760;
+        var h = lerp(18, 78, clamp((diff - 10) / 290, 0, 1));
+        return { left: 144, right: 144 - h, h: h };
+      }
+
+      function setPanelLevels(panel, levels) {
+        var data = panels[panel];
+        var coords = {
+          closed: { lx: 163, rx: 227, guideX1: 165, guideX2: 267, hX: 252 },
+          openLow: { lx: 584, rx: 648, guideX1: 584, guideX2: 687, hX: 671 },
+          openHigh: { lx: 1004, rx: 1068, guideX1: 1004, guideX2: 1124, hX: 1107 }
+        }[panel];
+        data.mercury.plot(tubePath(coords.lx, coords.rx, levels.left, levels.right));
+        data.guides.clear();
+        data.guides.line(coords.guideX1, Math.min(levels.left, levels.right), coords.guideX2, Math.min(levels.left, levels.right)).stroke({ color: '#111', width: 2 });
+        data.guides.line(coords.guideX1, Math.max(levels.left, levels.right), coords.guideX2, Math.max(levels.left, levels.right)).stroke({ color: '#111', width: 2 });
+        moveHArrow(panel, coords.hX, Math.min(levels.left, levels.right), Math.max(levels.left, levels.right));
+      }
+
+      function refresh() {
+        setPanelLevels('closed', state.mode === 'closed' ? closedLevels() : { left: 268, right: 176 });
+        setPanelLevels('openLow', state.mode === 'openLow' ? openLowLevels() : { left: 144, right: 292 });
+        setPanelLevels('openHigh', state.mode === 'openHigh' ? openHighLevels() : { left: 144, right: 111 });
+
+        Object.keys(buttons).forEach(function (key) {
+          buttons[key].classList.toggle('active', key === state.mode);
+          panels[key].highlight.opacity(key === state.mode ? 0.9 : 0);
+        });
+
+        var copy = {
+          closed: 'Closed-end manometer: h rises with Pgas.',
+          openLow: 'Open-end low-pressure case: h is Patm minus Pgas.',
+          openHigh: 'Open-end high-pressure case: h is Pgas minus Patm.'
+        }[state.mode];
+        readout.textContent = copy;
+      }
+
+      function setPressureBounds(min, max, value) {
+        pressureInput.min = String(min);
+        pressureInput.max = String(max);
+        pressureInput.value = String(value);
+        pressureVal.value = String(value);
+        state.pressure = value;
+      }
+
+      window.update_pressure = function (v) {
+        state.pressure = v;
+        refresh();
+      };
+
+      window.trigger_closed = function () {
+        state.mode = 'closed';
+        setPressureBounds(200, 1000, 650);
+        refresh();
+      };
+
+      window.trigger_openLow = function () {
+        state.mode = 'openLow';
+        setPressureBounds(500, 750, 500);
+        refresh();
+      };
+
+      window.trigger_openHigh = function () {
+        state.mode = 'openHigh';
+        setPressureBounds(770, 1050, 850);
+        refresh();
+      };
+
+      buildClosedPanel();
+      buildOpenLowPanel();
+      buildOpenHighPanel();
+      refresh();
+      window.__markRendered();
+    })();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Curl as a Paddle Wheel</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#f7f8fa;
+    --line:#dfe3e8;
+    --ink:#15181d;
+    --muted:#5d6570;
+    --accent:#1d5fa8;
+    --salmon:#f9cdb9;
+    --salmonEdge:#161616;
+    --blue:#6fc0e0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 16px 40px;}
+  h1{font-size:19px;margin:0 0 2px;font-weight:650;letter-spacing:-0.01em}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 14px;line-height:1.45;max-width:78ch}
+  .layout{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .stage{flex:1 1 560px;min-width:320px;position:relative;
+    border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  canvas{display:block;width:100%;height:auto;touch-action:none;cursor:grab}
+  canvas.dragging{cursor:grabbing}
+  .hint{position:absolute;left:10px;bottom:8px;font-size:11.5px;color:#93999f;pointer-events:none}
+  .panel{flex:0 0 330px;min-width:290px;display:flex;flex-direction:column;gap:12px}
+  .card{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:12px 13px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+    margin:0 0 9px;font-weight:700}
+  .ctl{margin-bottom:12px}
+  .ctl:last-child{margin-bottom:0}
+  .ctl label{display:flex;justify-content:space-between;align-items:baseline;
+    font-size:12.5px;margin-bottom:4px;gap:8px}
+  .ctl label b{font-weight:600}
+  .ctl label span{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .note{font-size:11.5px;color:var(--muted);line-height:1.4;margin-top:3px}
+  .btns{display:flex;gap:7px;flex-wrap:wrap;margin-top:2px}
+  button{font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--line);
+    background:#fff;border-radius:6px;cursor:pointer;color:var(--ink)}
+  button:hover{background:#eef2f7;border-color:#c3cbd4}
+  .chk{display:flex;align-items:center;gap:6px;font-size:12.5px;margin-top:7px}
+  table.read{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.read td{padding:3px 0;vertical-align:baseline}
+  table.read td.k{color:var(--muted);white-space:nowrap;padding-right:8px}
+  table.read td.v{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .eq{font-family:"Cambria Math","Times New Roman",Georgia,serif;font-size:13.5px;
+    line-height:1.7;color:var(--ink)}
+  .eq .sm{font-size:12px;color:var(--muted)}
+  i.v{font-style:italic}
+  .flag{font-size:11.5px;border-radius:6px;padding:6px 8px;line-height:1.4;margin-top:8px}
+  .flag.up{background:#eaf3ff;color:#14477f}
+  .flag.dn{background:#fdeef0;color:#8c2230}
+  .flag.zero{background:#f1f1f1;color:#555}
+  @media (max-width:820px){ .panel{flex:1 1 100%} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Curl F(P₀): the paddle-wheel interpretation</h1>
+  <p class="sub">A tiny paddle wheel is held at <b>P₀</b> in a swirling fluid. Its angular speed is
+    <b>ω = ½ (curl&nbsp;<b>F</b>(P₀) · <b>n</b>)</b>, where <b>n</b> is the spindle direction — so the wheel
+    spins <em>fastest when the spindle points along curl&nbsp;<b>F</b>(P₀)</em>, and the curl vector's length is
+    twice that maximum spin rate.</p>
+
+  <div class="layout">
+    <div class="stage">
+      <canvas id="cv" width="1520" height="1280"></canvas>
+      <div class="hint">Drag the black point P₀ to move the wheel · drag elsewhere to orbit · scroll to zoom</div>
+    </div>
+
+    <div class="panel">
+      <div class="card">
+        <h2>Controls</h2>
+
+        <div class="ctl">
+          <label><b>Local field strength&nbsp;s₀</b><span id="vS">1.00</span></label>
+          <input type="range" id="sS" min="-2" max="2" step="0.01" value="1">
+          <div class="note">Scales the circulation of the fluid. The spin indicator and the curl arrow
+            grow together — stronger circulation ⇒ larger |curl&nbsp;<b>F</b>|.</div>
+        </div>
+
+        <div class="ctl">
+          <label><b>Spindle tilt θ from curl</b><span id="vT">0°</span></label>
+          <input type="range" id="sT" min="0" max="180" step="1" value="0">
+          <div class="note">Tilts the spindle away from curl&nbsp;<b>F</b>(P₀). Spin rate falls off as
+            cos θ, vanishes at 90°, and reverses beyond it.</div>
+        </div>
+
+        <div class="ctl">
+          <label><b>Animation rate (time scale)</b><span id="vR">1.0×</span></label>
+          <input type="range" id="sR" min="0" max="3" step="0.05" value="1">
+          <div class="note">Playback speed only — the physical spin rate ω is reported below.</div>
+        </div>
+
+        <div class="btns">
+          <button id="bAlign">Align spindle with curl</button>
+          <button id="bReset">Reset all</button>
+          <button id="bView">Reset view</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="cField" checked> show the field on the plane z = 0</label>
+        <label class="chk"><input type="checkbox" id="cArcs" checked> show local circulation arcs</label>
+      </div>
+
+      <div class="card">
+        <h2>Readout</h2>
+        <table class="read">
+          <tr><td class="k">P₀</td><td class="v" id="rP">(0.45, 0.25, 0)</td></tr>
+          <tr><td class="k">curl <b>F</b>(P₀)</td><td class="v" id="rC">—</td></tr>
+          <tr><td class="k">|curl <b>F</b>(P₀)|</td><td class="v" id="rCm">—</td></tr>
+          <tr><td class="k">spindle <b>n</b></td><td class="v" id="rN">—</td></tr>
+          <tr><td class="k">angle θ(<b>n</b>, curl)</td><td class="v" id="rTh">—</td></tr>
+          <tr><td class="k">ω = ½ curl·<b>n</b></td><td class="v" id="rW">—</td></tr>
+          <tr><td class="k">max possible ω</td><td class="v" id="rWm">—</td></tr>
+        </table>
+        <div class="flag up" id="flag">—</div>
+      </div>
+
+      <div class="card">
+        <h2>The field being sampled</h2>
+        <div class="eq">
+          <b>F</b> = ⟨ −<i class="v">y</i>S + a<i class="v">z</i>,&nbsp; <i class="v">x</i>S + b<i class="v">z</i>,&nbsp; 0 ⟩<br>
+          <span class="sm">S(<i class="v">x</i>,<i class="v">y</i>) = s₀·e<sup>−(x²+y²)/2σ²</sup>,&nbsp;
+            σ = 1.60,&nbsp; a = 0.10,&nbsp; b = 0.06</span><br>
+          curl <b>F</b> = ⟨ −b,&nbsp; a,&nbsp; S·(2 − (x²+y²)/σ²) ⟩
+        </div>
+        <div class="note">The vertical part of the curl changes sign on the dashed circle
+          <i class="v">r</i> = σ√2 ≈ 2.26: inside it the wheel turns counter-clockwise, outside it turns
+          the other way even though the fluid still circles the same direction.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================ vector helpers ============================ */
+const V = {
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  mul:(a,k)=>[a[0]*k,a[1]*k,a[2]*k],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  len:a=>Math.hypot(a[0],a[1],a[2]),
+  norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];},
+  comb:(a,ka,b,kb)=>[a[0]*ka+b[0]*kb, a[1]*ka+b[1]*kb, a[2]*ka+b[2]*kb]
+};
+// Rodrigues rotation of v about unit axis k by angle t
+function rot(v,k,t){
+  const c=Math.cos(t), s=Math.sin(t);
+  return V.add(V.add(V.mul(v,c), V.mul(V.cross(k,v),s)), V.mul(k, V.dot(k,v)*(1-c)));
+}
+
+/* ============================ the vector field ============================ */
+const FLD = { sigma:1.60, a:0.10, b:0.06, s0:1.00 };
+
+function Sfun(x,y){ return FLD.s0*Math.exp(-(x*x+y*y)/(2*FLD.sigma*FLD.sigma)); }
+function Ffield(p){
+  const [x,y,z]=p, s=Sfun(x,y);
+  return [ -y*s + FLD.a*z,  x*s + FLD.b*z,  0 ];
+}
+// analytic curl
+function curlAt(p){
+  const [x,y]=p, s=Sfun(x,y), sg2=FLD.sigma*FLD.sigma;
+  return [ -FLD.b, FLD.a, s*(2 - (x*x+y*y)/sg2) ];
+}
+// numerical curl (central differences) — used to self-check the analytic formula
+function curlNum(p,h){
+  h=h||1e-4;
+  const d=(i,j)=>{ const a=p.slice(),b=p.slice(); a[j]+=h; b[j]-=h;
+                   return (Ffield(a)[i]-Ffield(b)[i])/(2*h); };
+  return [ d(2,1)-d(1,2), d(0,2)-d(2,0), d(1,0)-d(0,1) ];
+}
+
+/* ============================ state ============================ */
+const ST = {
+  P0:[0.45,0.25,0],
+  tilt:0,            // radians, spindle away from curl
+  rate:1.0,          // animation time-scale
+  showField:true, showArcs:true,
+  az:-0.62, el:0.58, dist:9.2, zoom:1.12,   // camera
+  phaseWheel:0, phaseFlow:0
+};
+const DEF = JSON.parse(JSON.stringify({P0:ST.P0, tilt:0, rate:1, s0:1}));
+
+/* ============================ camera / projection ============================ */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W=cv.width, H=cv.height, DPR=1;
+let cam = {};
+
+function buildCam(){
+  const ce=Math.cos(ST.el), se=Math.sin(ST.el);
+  const dir=[Math.cos(ST.az)*ce, Math.sin(ST.az)*ce, se];
+  const target=[ST.P0[0]*0.38, ST.P0[1]*0.38, 0.38];
+  const eye=V.add(target, V.mul(dir, ST.dist));
+  const fwd=V.norm(V.sub(target,eye));
+  let right=V.norm(V.cross(fwd,[0,0,1]));
+  const up=V.cross(right,fwd);
+  cam={eye,fwd,right,up, focal:3.0, scale:Math.min(W,H)*0.44*ST.zoom, cx:W*0.5, cy:H*0.50};
+}
+function proj(p){
+  const d=V.sub(p,cam.eye);
+  const X=V.dot(d,cam.right), Y=V.dot(d,cam.up), Z=V.dot(d,cam.fwd);
+  const k=cam.focal/Math.max(Z,0.05)*cam.scale;
+  return {x:cam.cx+X*k, y:cam.cy-Y*k, z:Z};
+}
+// screen point -> point on the plane z = 0
+function unprojectToGround(sx,sy){
+  const kx=(sx-cam.cx)/(cam.focal*cam.scale);
+  const ky=-(sy-cam.cy)/(cam.focal*cam.scale);
+  const dir=V.add(V.add(V.mul(cam.right,kx), V.mul(cam.up,ky)), cam.fwd);
+  if(Math.abs(dir[2])<1e-6) return null;
+  const t=-cam.eye[2]/dir[2];
+  if(t<=0) return null;
+  const p=V.add(cam.eye, V.mul(dir,t));
+  return [p[0],p[1],0];
+}
+
+/* ============================ derived quantities ============================ */
+function derive(){
+  const c = curlAt(ST.P0);
+  const cm = V.len(c);
+  let cd = cm>1e-9 ? V.mul(c,1/cm) : [0,0,1];
+  // if the curl points downward, keep the drawn arrow honest (it really points down)
+  // spindle: curl direction rotated by `tilt` about a perpendicular axis
+  const helper = Math.abs(cd[2])<0.92 ? [0,0,1] : [1,0,0];
+  let axis = V.cross(cd,helper);
+  if(V.len(axis)<1e-6) axis=[1,0,0];
+  axis=V.norm(axis);
+  const n = V.norm(rot(cd,axis,ST.tilt));
+  const omega = 0.5*V.dot(c,n);         // paddle-wheel angular speed
+  const omegaMax = 0.5*cm;
+  return {c,cm,cd,n,omega,omegaMax,axis};
+}
+
+/* ============================ drawing primitives ============================ */
+let items=[];   // {z, f}
+function push(z,f){ items.push({z,f}); }
+function flush(){
+  items.sort((A,B)=>B.z-A.z);
+  for(const it of items) it.f();
+  items.length=0;
+}
+function poly3(pts, fill, stroke, lw, alpha){
+  const ps=pts.map(proj);
+  const zc=ps.reduce((s,p)=>s+p.z,0)/ps.length;
+  push(zc,()=>{
+    ctx.save(); ctx.globalAlpha=alpha==null?1:alpha;
+    ctx.beginPath(); ctx.moveTo(ps[0].x,ps[0].y);
+    for(let i=1;i<ps.length;i++) ctx.lineTo(ps[i].x,ps[i].y);
+    ctx.closePath();
+    if(fill){ctx.fillStyle=fill;ctx.fill();}
+    if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw||2;ctx.lineJoin='round';ctx.stroke();}
+    ctx.restore();
+  });
+}
+function seg3(a,b,stroke,lw,alpha,dash){
+  const A=proj(a),B=proj(b);
+  push((A.z+B.z)/2,()=>{
+    ctx.save(); ctx.globalAlpha=alpha==null?1:alpha;
+    if(dash) ctx.setLineDash(dash);
+    ctx.strokeStyle=stroke; ctx.lineWidth=lw||2; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+    ctx.restore();
+  });
+}
+function path3(pts,stroke,lw,alpha,cap){
+  if(pts.length<2) return;
+  const ps=pts.map(proj);
+  const zc=ps.reduce((s,p)=>s+p.z,0)/ps.length;
+  push(zc,()=>{
+    ctx.save(); ctx.globalAlpha=alpha==null?1:alpha;
+    ctx.strokeStyle=stroke; ctx.lineWidth=lw||2;
+    ctx.lineCap=cap||'round'; ctx.lineJoin='round';
+    ctx.beginPath(); ctx.moveTo(ps[0].x,ps[0].y);
+    for(let i=1;i<ps.length;i++) ctx.lineTo(ps[i].x,ps[i].y);
+    ctx.stroke(); ctx.restore();
+  });
+}
+// solid screen-space arrow head at world point `tip`, pointing away from world point `from`
+function head3(from,tip,size,color){
+  const A=proj(from), B=proj(tip);
+  const dx=B.x-A.x, dy=B.y-A.y, L=Math.hypot(dx,dy)||1;
+  const ux=dx/L, uy=dy/L, px=-uy, py=ux;
+  push(B.z,()=>{
+    ctx.save(); ctx.fillStyle=color;
+    ctx.beginPath();
+    ctx.moveTo(B.x,B.y);
+    ctx.lineTo(B.x-ux*size+px*size*0.40, B.y-uy*size+py*size*0.40);
+    ctx.lineTo(B.x-ux*size*0.76, B.y-uy*size*0.76);
+    ctx.lineTo(B.x-ux*size-px*size*0.40, B.y-uy*size-py*size*0.40);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  });
+}
+function dot3(p,r,color,ring){
+  const P=proj(p);
+  push(P.z-0.02,()=>{
+    ctx.save();
+    if(ring){ctx.beginPath();ctx.arc(P.x,P.y,r+ring,0,7);ctx.fillStyle='#fff';ctx.fill();}
+    ctx.beginPath(); ctx.arc(P.x,P.y,r,0,7); ctx.fillStyle=color; ctx.fill();
+    ctx.restore();
+  });
+}
+/* styled text runs: [{t, f:font, dy, fill}] */
+function runsText(runs,x,y,align,z,halo){
+  push(z==null?-1e9:z,()=>{
+    ctx.save(); ctx.textBaseline='alphabetic'; ctx.textAlign='left';
+    let w=0; for(const r of runs){ctx.font=r.f; w+=ctx.measureText(r.t).width;}
+    let sx = align==='center'? x-w/2 : align==='right'? x-w : x;
+    if(halo!==false){
+      let hx=sx;
+      ctx.strokeStyle='#ffffff'; ctx.lineWidth=5.5*DPRfont(); ctx.lineJoin='round';
+      for(const r of runs){ ctx.font=r.f; ctx.strokeText(r.t, hx, y+(r.dy||0));
+                            hx+=ctx.measureText(r.t).width; }
+    }
+    for(const r of runs){
+      ctx.font=r.f; ctx.fillStyle=r.fill||'#101317';
+      ctx.fillText(r.t, sx, y+(r.dy||0));
+      sx+=ctx.measureText(r.t).width;
+    }
+    ctx.restore();
+  });
+}
+
+/* ============================ scene pieces ============================ */
+const FS = s => Math.round(s*DPRfont())+'px';
+function DPRfont(){ return W/760; }   // design units -> device px
+function fnt(spec){ // spec like "600 15px sans" in design px
+  return spec.replace(/(\d+(?:\.\d+)?)px/, (m,n)=> (parseFloat(n)*DPRfont()).toFixed(1)+'px');
+}
+
+function drawGroundField(){
+  const R=3.25;
+  // grid
+  ctx.save();
+  ctx.strokeStyle='#e9edf2'; ctx.lineWidth=1.2*DPRfont();
+  for(let i=-3;i<=3;i++){
+    if(Math.abs(i)>=R) continue;
+    const h=Math.sqrt(R*R-i*i);
+    for(const seg of [[[i,-h,0],[i,h,0]],[[-h,i,0],[h,i,0]]]){
+      const A=proj(seg[0]),B=proj(seg[1]);
+      ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();
+    }
+  }
+  // rim of the sampled disc
+  ctx.strokeStyle='#dde3ea'; ctx.lineWidth=1.4*DPRfont(); ctx.beginPath();
+  for(let k=0;k<=110;k++){const t=k/110*Math.PI*2,P=proj([R*Math.cos(t),R*Math.sin(t),0]);
+    k?ctx.lineTo(P.x,P.y):ctx.moveTo(P.x,P.y);} ctx.stroke();
+  ctx.restore();
+  if(!ST.showField) return;
+  // streamlines of F on z = 0 : circles about the origin, speed |x|·S
+  ctx.save();
+  for(const r of [0.7,1.3,1.9,2.55,3.1]){
+    const s=Math.abs(Sfun(r,0))/Math.max(Math.abs(FLD.s0),1e-6);
+    const al=0.10+0.42*s;
+    ctx.globalAlpha=al; ctx.strokeStyle='#9ec4dd'; ctx.lineWidth=1.6*DPRfont();
+    ctx.beginPath();
+    for(let k=0;k<=96;k++){
+      const t=k/96*Math.PI*2, P=proj([r*Math.cos(t), r*Math.sin(t), 0]);
+      k?ctx.lineTo(P.x,P.y):ctx.moveTo(P.x,P.y);
+    }
+    ctx.stroke();
+    // little tangent arrows showing flow direction (sign of s0)
+    const dirSign = FLD.s0>=0?1:-1;
+    for(const t0 of [0.45, 2.55, 4.45]){
+      const p=[r*Math.cos(t0), r*Math.sin(t0),0];
+      const tg=V.mul([-Math.sin(t0),Math.cos(t0),0], dirSign*0.001);
+      const A=proj(V.sub(p,V.mul(tg,120))), B=proj(V.add(p,V.mul(tg,120)));
+      const dx=B.x-A.x,dy=B.y-A.y,L=Math.hypot(dx,dy)||1,ux=dx/L,uy=dy/L;
+      const sz=9*DPRfont();
+      ctx.fillStyle='#8fb8d4';
+      ctx.beginPath();
+      ctx.moveTo(B.x,B.y);
+      ctx.lineTo(B.x-ux*sz-uy*sz*0.42, B.y-uy*sz+ux*sz*0.42);
+      ctx.lineTo(B.x-ux*sz+uy*sz*0.42, B.y-uy*sz-ux*sz*0.42);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  // reversal circle  r = sigma*sqrt(2)
+  const rr=FLD.sigma*Math.SQRT2;
+  ctx.globalAlpha=0.9; ctx.strokeStyle='#c8a23a'; ctx.lineWidth=1.7*DPRfont();
+  ctx.setLineDash([7*DPRfont(),6*DPRfont()]);
+  ctx.beginPath();
+  for(let k=0;k<=110;k++){
+    const t=k/110*Math.PI*2, P=proj([rr*Math.cos(t), rr*Math.sin(t),0]);
+    k?ctx.lineTo(P.x,P.y):ctx.moveTo(P.x,P.y);
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
+  const lp=proj([rr*Math.cos(-1.35), rr*Math.sin(-1.35), 0]);
+  ctx.save();
+  const txt='(curl F)  = 0', fA=fnt('600 13px -apple-system,Segoe UI,sans-serif');
+  ctx.font=fA;
+  const w=ctx.measureText('(curl F)').width;
+  ctx.strokeStyle='#fff'; ctx.lineWidth=5.5*DPRfont(); ctx.lineJoin='round';
+  ctx.strokeText(txt, lp.x+10*DPRfont(), lp.y+20*DPRfont());
+  ctx.fillStyle='#a8842a';
+  ctx.fillText(txt, lp.x+10*DPRfont(), lp.y+20*DPRfont());
+  ctx.font=fnt('600 10px -apple-system,Segoe UI,sans-serif');
+  ctx.strokeText('z', lp.x+10*DPRfont()+w, lp.y+24*DPRfont());
+  ctx.fillText('z', lp.x+10*DPRfont()+w, lp.y+24*DPRfont());
+  ctx.restore();
+}
+
+// local circulation arcs: circles about the CURL axis, centred at P0
+function drawFlowArcs(D){
+  if(!ST.showArcs) return;
+  const cd = D.cm>1e-9 ? D.cd : [0,0,1];
+  let u=V.norm(V.cross(cd, Math.abs(cd[2])<0.9?[0,0,1]:[1,0,0]));
+  let v=V.cross(cd,u);
+  const radii=[0.62,0.95,1.28,1.62,1.96];
+  const speed=Math.min(1,Math.abs(D.cm)/2.2);
+  radii.forEach((R,ri)=>{
+    const nDash = 4 + (ri%2);
+    const span  = (2*Math.PI/nDash)*0.62;
+    const off   = ST.phaseFlow + ri*0.7;
+    for(let d=0;d<nDash;d++){
+      const t0 = off + d*2*Math.PI/nDash;
+      const pts=[];
+      for(let k=0;k<=14;k++){
+        const t=t0+span*k/14;
+        pts.push(V.add(ST.P0, V.comb(u,R*Math.cos(t), v,R*Math.sin(t))));
+      }
+      path3(pts, '#6fc0e0', 3.0*DPRfont(), 0.35+0.55*speed);
+    }
+  });
+}
+
+function drawWheel(D){
+  const n=D.n;
+  let u=V.norm(V.cross(n, Math.abs(n[2])<0.9?[0,0,1]:[1,0,0]));
+  let v=V.cross(n,u);
+  const r0=0.36, r1=1.14, hh=0.34;
+  // spindle rod
+  const lowRod=V.add(ST.P0, V.mul(n,-0.92));
+  // arms + blades
+  for(let j=0;j<4;j++){
+    const ang=ST.phaseWheel + j*Math.PI/2;
+    const d=V.comb(u,Math.cos(ang), v,Math.sin(ang));
+    const A=V.add(ST.P0, V.mul(d,r0));
+    const B=V.add(ST.P0, V.mul(d,r1));
+    seg3(ST.P0, A, '#101317', 2.6*DPRfont());
+    poly3([ V.add(A,V.mul(n,hh)), V.add(B,V.mul(n,hh)),
+            V.add(B,V.mul(n,-hh)), V.add(A,V.mul(n,-hh)) ],
+          '#f9cdb9', '#101317', 2.4*DPRfont(), 0.97);
+  }
+  const tilted = ST.tilt>0.03;
+  seg3(lowRod, ST.P0, tilted?'#8b93a0':'#101317', (tilted?2.4:2.8)*DPRfont(), 1,
+       tilted?[9*DPRfont(),7*DPRfont()]:null);
+  return {u,v,lowRod};
+}
+
+const KC = 0.95;                       // world units per unit of |curl F|
+function drawCurlArrow(D){
+  const L = Math.min(3.2, KC*D.cm);    // length is PROPORTIONAL to |curl F|
+  if(L<0.12) return {L:0,tip:ST.P0,dir:D.cd};
+  const dir=D.cd;
+  const tip=V.add(ST.P0, V.mul(dir,L));
+  const shaftEnd=V.add(ST.P0, V.mul(dir, Math.max(0.02,L-0.28)));
+  seg3(ST.P0, shaftEnd, '#101317', 3.4*DPRfont());
+  head3(V.add(ST.P0,V.mul(dir,L*0.5)), tip, 26*DPRfont(), '#101317');
+  return {L,tip,dir};
+}
+
+// dotted drop-line from the curl tip onto the spindle axis: the component curl.n
+function drawProjection(D,L){
+  if(ST.tilt<0.05 || L<0.15) return;
+  const comp = V.dot(D.c,D.n)*KC;               // signed length along n
+  const foot = V.add(ST.P0, V.mul(D.n,comp));
+  const tip  = V.add(ST.P0, V.mul(D.cd,L));
+  seg3(tip, foot, '#1d5fa8', 2.0*DPRfont(), 0.85, [6*DPRfont(),6*DPRfont()]);
+  if(Math.abs(comp)>0.05){
+    seg3(ST.P0, foot, '#1d5fa8', 5.0*DPRfont(), 0.9);
+    const M=proj(V.add(ST.P0, V.mul(D.n,comp*0.55)));
+    // push the label perpendicular to the spindle, on the side away from curl F
+    const O=proj(ST.P0), T2=proj(V.add(ST.P0, V.mul(D.cd,L)));
+    let px=-(M.y-O.y), py=(M.x-O.x);
+    const pl=Math.hypot(px,py)||1; px/=pl; py/=pl;
+    if(px*(T2.x-O.x)+py*(T2.y-O.y) > 0){ px=-px; py=-py; }
+    const off=30*DPRfont();
+    runsText([{t:'curl ', f:fnt('600 15px -apple-system,Segoe UI,sans-serif'), fill:'#1d5fa8'},
+              {t:'F', f:fnt('700 16px Cambria Math, Times New Roman, serif'), fill:'#1d5fa8'},
+              {t:' · ', f:fnt('600 15px -apple-system,Segoe UI,sans-serif'), fill:'#1d5fa8'},
+              {t:'n', f:fnt('700 16px Cambria Math, Times New Roman, serif'), fill:'#1d5fa8'}],
+             M.x+px*off, M.y+py*off+5*DPRfont(), 'center');
+  }
+}
+
+function drawSpindle(D,L){
+  // spindle rod continues above P0 to about the curl-arrow length
+  const n=D.n;
+  const top=V.add(ST.P0, V.mul(n, Math.max(1.35, L*0.95)));
+  const tilted = ST.tilt>0.03;
+  seg3(ST.P0, top, tilted?'#8b93a0':'#101317', (tilted?2.4:2.8)*DPRfont(), 1, tilted?[9*DPRfont(),7*DPRfont()]:null);
+  return top;
+}
+
+// curved rotation arrow encircling the spindle near its top
+function drawSpinArrow(D,L){
+  const n=D.n;
+  let u=V.norm(V.cross(n, Math.abs(n[2])<0.9?[0,0,1]:[1,0,0]));
+  let v=V.cross(n,u);
+  const h=Math.max(0.85, L*0.70), R=0.42;
+  const base=V.add(ST.P0, V.mul(n,h));
+  const sgn = D.omega>=0 ? 1 : -1;
+  if(Math.abs(D.omega)<1e-3){
+    // no rotation: show a plain closed circle in grey
+    const pts=[]; for(let k=0;k<=60;k++){const t=k/60*2*Math.PI;
+      pts.push(V.add(base, V.comb(u,R*Math.cos(t), v,R*Math.sin(t))));}
+    path3(pts,'#b3b9c2',2.2*DPRfont(),1);
+    return;
+  }
+  const t0=-2.0, t1=t0+sgn*Math.PI*1.72;
+  const pts=[];
+  for(let k=0;k<=70;k++){
+    const t=t0+(t1-t0)*k/70;
+    pts.push(V.add(base, V.comb(u,R*Math.cos(t), v,R*Math.sin(t))));
+  }
+  path3(pts,'#101317',2.6*DPRfont(),1);
+  const pEnd=pts[pts.length-1], pPrev=pts[pts.length-6];
+  head3(pPrev,pEnd, 20*DPRfont(), '#101317');
+}
+
+// small arc showing the angle between the spindle and the curl vector
+function drawAngleArc(D){
+  if(ST.tilt<0.06) return;
+  const R=0.62, N=36;
+  const pts=[];
+  for(let k=0;k<=N;k++){
+    const t=ST.tilt*k/N;
+    pts.push(V.add(ST.P0, V.mul(V.norm(rot(D.cd,D.axis,t)),R)));
+  }
+  path3(pts,'#1d5fa8',2.2*DPRfont(),0.95);
+  const mid=pts[Math.floor(N/2)];
+  const M=proj(V.add(ST.P0, V.mul(V.norm(V.sub(mid,ST.P0)), R+0.22)));
+  runsText([{t:'θ', f:fnt('italic 600 17px Cambria Math, Times New Roman, serif'), fill:'#1d5fa8'}],
+           M.x, M.y, 'center');
+}
+
+/* ============================ main render ============================ */
+function render(){
+  buildCam();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+
+  const D=derive();
+  drawGroundField();
+
+  drawFlowArcs(D);
+  const arrow=drawCurlArrow(D);
+  drawSpindle(D, arrow.L||1.4);
+  drawProjection(D, arrow.L);
+  drawWheel(D);
+  drawSpinArrow(D, arrow.L||1.4);
+  drawAngleArc(D);
+  dot3(ST.P0, 9.5*DPRfont(), '#101317', 2.5*DPRfont());
+  flush();
+
+  /* --- labels, always on top --- */
+  ctx.save();
+  // Curl F(P0)
+  if(arrow.L>0){
+    const O=proj(ST.P0), T0=proj(arrow.tip);
+    let ux=T0.x-O.x, uy=T0.y-O.y;
+    const ul=Math.hypot(ux,uy)||1; ux/=ul; uy/=ul;
+    const reach=Math.max(ul+26*DPRfont(), 132*DPRfont());
+    const T={x:O.x+ux*reach, y:O.y+uy*reach};
+    const leftSide = T.x > W*0.55;
+    runsText([
+      {t:'Curl ', f:fnt('400 27px -apple-system,Segoe UI,Helvetica,sans-serif')},
+      {t:'F',     f:fnt('700 29px Cambria Math, Times New Roman, serif')},
+      {t:'(',     f:fnt('400 27px Cambria Math, Times New Roman, serif')},
+      {t:'P',     f:fnt('italic 400 27px Cambria Math, Times New Roman, serif')},
+      {t:'0',     f:fnt('400 19px Cambria Math, Times New Roman, serif'), dy:5*DPRfont()},
+      {t:')',     f:fnt('400 27px Cambria Math, Times New Roman, serif')}
+    ], T.x + (leftSide?-20*DPRfont():20*DPRfont()), T.y - 14*DPRfont(), leftSide?'right':'left');
+  }
+  // P0
+  const Pp=proj(ST.P0);
+  let lx=-0.50, ly=0.866;
+  if(arrow.L>0){
+    const T0=proj(arrow.tip);
+    let ax=T0.x-Pp.x, ay=T0.y-Pp.y; const al=Math.hypot(ax,ay)||1; ax/=al; ay/=al;
+    if(lx*ax+ly*ay > 0.30){ lx=0.50; }
+  }
+  runsText([
+    {t:'P', f:fnt('italic 400 27px Cambria Math, Times New Roman, serif')},
+    {t:'0', f:fnt('400 19px Cambria Math, Times New Roman, serif'), dy:5*DPRfont()}
+  ], Pp.x+lx*62*DPRfont(), Pp.y+ly*62*DPRfont(), lx<0?'right':'left');
+
+  // spindle label when tilted
+  if(ST.tilt>0.06){
+    const n=D.n, L=Math.max(1.35,(arrow.L||1.4)*0.95);
+    const top=V.add(ST.P0, V.mul(n,L));
+    const S=proj(top), B=proj(ST.P0);
+    const dx=S.x-B.x, dy=S.y-B.y, ln=Math.hypot(dx,dy)||1;
+    runsText([{t:'spindle ', f:fnt('600 17px -apple-system,Segoe UI,sans-serif'), fill:'#6d757f'},
+              {t:'n', f:fnt('700 19px Cambria Math, Times New Roman, serif'), fill:'#6d757f'}],
+              S.x+dx/ln*26*DPRfont(), S.y+dy/ln*26*DPRfont()-4*DPRfont(), 'center');
+  }
+  // spin readout beside the rotation arrow
+  ctx.restore();
+  flush();
+  updatePanel(D);
+}
+
+/* ============================ panel ============================ */
+const el = id=>document.getElementById(id);
+const f2 = v => (Math.abs(v)<5e-3?0:v).toFixed(2);
+function updatePanel(D){
+  el('rP').textContent = '('+f2(ST.P0[0])+', '+f2(ST.P0[1])+', 0)';
+  el('rC').textContent = '⟨'+f2(D.c[0])+', '+f2(D.c[1])+', '+f2(D.c[2])+'⟩';
+  el('rCm').textContent = D.cm.toFixed(3);
+  el('rN').textContent = '⟨'+f2(D.n[0])+', '+f2(D.n[1])+', '+f2(D.n[2])+'⟩';
+  el('rTh').textContent = (ST.tilt*180/Math.PI).toFixed(0)+'°';
+  el('rW').textContent = D.omega.toFixed(3)+' rad/s';
+  el('rWm').textContent = D.omegaMax.toFixed(3)+' rad/s';
+  const fl=el('flag');
+  const pct = D.omegaMax>1e-6 ? (D.omega/D.omegaMax*100) : 0;
+  if(Math.abs(D.omega)<1e-3){
+    fl.className='flag zero';
+    fl.textContent='Spindle ⟂ curl F — zero net circulation through the wheel, so it does not turn.';
+  }else if(D.omega>0){
+    fl.className='flag up';
+    fl.textContent='Turning counter-clockwise about n at '+pct.toFixed(0)+'% of the maximum rate'
+      + (ST.tilt<0.03 ? ' — the spindle is aligned with curl F, so this is the fastest possible spin.' : '.');
+  }else{
+    fl.className='flag dn';
+    fl.textContent='Turning clockwise about n at '+Math.abs(pct).toFixed(0)+'% of the maximum rate — curl·n is negative.';
+  }
+}
+
+/* ============================ interaction ============================ */
+let drag=null;
+function localXY(e){
+  const r=cv.getBoundingClientRect();
+  return [ (e.clientX-r.left)*(W/r.width), (e.clientY-r.top)*(H/r.height) ];
+}
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId);
+  const [mx,my]=localXY(e);
+  buildCam();
+  const P=proj(ST.P0);
+  if(Math.hypot(mx-P.x,my-P.y) < 34*DPRfont()) drag={mode:'p0'};
+  else drag={mode:'orbit', x:mx, y:my, az:ST.az, el:ST.el};
+  cv.classList.add('dragging');
+});
+cv.addEventListener('pointermove',e=>{
+  if(!drag) return;
+  const [mx,my]=localXY(e);
+  if(drag.mode==='p0'){
+    const g=unprojectToGround(mx,my);
+    if(g){
+      let r=Math.hypot(g[0],g[1]);
+      const RMAX=3.15;
+      if(r>RMAX){ g[0]*=RMAX/r; g[1]*=RMAX/r; }
+      ST.P0=[g[0],g[1],0];
+      render();
+    }
+  }else{
+    ST.az = drag.az - (mx-drag.x)/(W*0.42);
+    ST.el = Math.max(0.10, Math.min(1.35, drag.el + (my-drag.y)/(H*0.60)));
+    render();
+  }
+});
+function endDrag(){ drag=null; cv.classList.remove('dragging'); }
+cv.addEventListener('pointerup',endDrag);
+cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  ST.zoom=Math.max(0.55,Math.min(2.2, ST.zoom*(e.deltaY>0?0.92:1.087)));
+  render();
+},{passive:false});
+
+el('sS').addEventListener('input',e=>{
+  FLD.s0=parseFloat(e.target.value); el('vS').textContent=FLD.s0.toFixed(2); render();
+});
+el('sT').addEventListener('input',e=>{
+  ST.tilt=parseFloat(e.target.value)*Math.PI/180;
+  el('vT').textContent=e.target.value+'°'; render();
+});
+el('sR').addEventListener('input',e=>{
+  ST.rate=parseFloat(e.target.value); el('vR').textContent=ST.rate.toFixed(1)+'×'; render();
+});
+el('cField').addEventListener('change',e=>{ST.showField=e.target.checked;render();});
+el('cArcs').addEventListener('change',e=>{ST.showArcs=e.target.checked;render();});
+el('bAlign').addEventListener('click',()=>{ST.tilt=0;el('sT').value=0;el('vT').textContent='0°';render();});
+el('bView').addEventListener('click',()=>{ST.az=-0.62;ST.el=0.58;ST.zoom=1.12;render();});
+el('bReset').addEventListener('click',()=>{
+  ST.P0=[0.45,0.25,0]; ST.tilt=0; ST.rate=1; FLD.s0=1;
+  el('sS').value=1; el('vS').textContent='1.00';
+  el('sT').value=0; el('vT').textContent='0°';
+  el('sR').value=1; el('vR').textContent='1.0×';
+  ST.az=-0.62;ST.el=0.58;ST.zoom=1.12; render();
+});
+
+/* ============================ resize + animation loop ============================ */
+function resize(){
+  const rect=cv.parentElement.getBoundingClientRect();
+  const cssW=Math.max(320,rect.width);
+  const cssH=Math.round(cssW*0.80);
+  DPR=Math.min(2, window.devicePixelRatio||1);
+  W=Math.round(cssW*DPR); H=Math.round(cssH*DPR);
+  cv.width=W; cv.height=H;
+  cv.style.height=cssH+'px';
+  render();
+}
+window.addEventListener('resize',resize);
+
+let last=performance.now();
+function tick(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  const D=derive();
+  ST.phaseWheel += D.omega*ST.rate*dt;
+  ST.phaseFlow  += 0.5*D.cm*ST.rate*dt;
+  render();
+  requestAnimationFrame(tick);
+}
+
+/* ---- self-check: analytic curl vs. central differences ---- */
+(function selfTest(){
+  let worst=0;
+  for(const p of [[0.4,0.3,0],[1.5,-0.9,0.4],[-2.2,1.1,-0.5],[0,0,0],[2.8,0.2,1]]){
+    const a=curlAt(p), b=curlNum(p);
+    for(let i=0;i<3;i++) worst=Math.max(worst,Math.abs(a[i]-b[i]));
+  }
+  console.log('curl analytic vs numeric, max abs error =', worst.toExponential(2));
+})();
+
+resize();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

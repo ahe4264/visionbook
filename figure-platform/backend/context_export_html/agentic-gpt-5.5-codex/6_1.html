@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>Index i: <output id="indexVal">1</output><input id="indexInput" type="range" min="1" max="10" step="1" value="1" oninput="document.getElementById('indexVal').value=this.value;update_index(+this.value)"></label>
+    <span id="indexRule" style="font-size:11px;line-height:1.3">Move the slider or click an item.</span>
+    <label style="flex-direction:row;align-items:center;gap:6px"><input id="overlayInput" type="checkbox" onchange="toggle_overlay(this.checked)"> Value order overlay</label>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    function compileExpr(src, vars) {
+      vars = vars || ['x'];
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable');
+      }
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var names = expr.variables();
+      for (var i = 0; i < names.length; i++) {
+        if (vars.indexOf(names[i]) === -1) throw new Error('Unknown variable ' + names[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      throw new Error('No equation inputs are used in this figure');
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var heap = [
+      null,
+      { value: 16, x: 322, y: 62 },
+      { value: 14, x: 180, y: 158 },
+      { value: 10, x: 466, y: 158 },
+      { value: 8, x: 88, y: 253 },
+      { value: 7, x: 273, y: 253 },
+      { value: 9, x: 374, y: 253 },
+      { value: 3, x: 560, y: 253 },
+      { value: 2, x: 41, y: 348 },
+      { value: 4, x: 136, y: 348 },
+      { value: 1, x: 226, y: 348 }
+    ];
+    var edges = [[1, 2], [1, 3], [2, 4], [2, 5], [3, 6], [3, 7], [4, 8], [4, 9], [5, 10]];
+    var W = 1200;
+    var H = 430;
+    var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+    draw.viewbox(0, 0, W, H);
+
+    var selectedIndex = null;
+    var valueOverlay = false;
+    var radius = 33;
+    var baseGray = '#d9d9d9';
+    var ink = '#000000';
+    var selectedFill = '#f5d66b';
+    var parentFill = '#bcd8f4';
+    var childFill = '#cfe6a5';
+    var valueGreen = '#2f7f49';
+    var structuralOrange = '#b56b00';
+    var treeNodeShapes = {};
+    var treeTextShapes = {};
+    var arrayCellShapes = {};
+    var arrayTextShapes = {};
+    var treeEdgeShapes = {};
+    var arrayArcShapes = {};
+
+    function centeredText(group, str, x, y, size, weight) {
+      return group.text(String(str))
+        .font({ family: 'Times New Roman, Times, serif', size: size, weight: weight || 'normal', anchor: 'middle' })
+        .attr({ 'dominant-baseline': 'middle' })
+        .center(x, y);
+    }
+
+    function relationInfo(i) {
+      var parent = i > 1 ? Math.floor(i / 2) : null;
+      var kids = [];
+      if (2 * i <= 10) kids.push(2 * i);
+      if (2 * i + 1 <= 10) kids.push(2 * i + 1);
+      return { parent: parent, kids: kids };
+    }
+
+    function relationLabel(i) {
+      var r = relationInfo(i);
+      var p = r.parent ? r.parent : 'none';
+      var c = r.kids.length ? r.kids.join(', ') : 'none';
+      return 'i=' + i + ', A[' + i + ']=' + heap[i].value + '; parent floor(i/2)=' + p + '; children 2i,2i+1=' + c;
+    }
+
+    function popupFor(i) {
+      var r = relationInfo(i);
+      var parentText = r.parent ? 'Its parent is index ' + r.parent + ' with value ' + heap[r.parent].value + '.' : 'It is the root, so it has no parent.';
+      var childText = r.kids.length ? ' Its children are indices ' + r.kids.join(' and ') + '.' : ' It has no children inside the ten-item heap.';
+      return 'A[' + i + '] = ' + heap[i].value + '. ' + parentText + childText + ' The highlighted tree node and array cell are the same heap item.';
+    }
+
+    function installInteraction(el, i) {
+      el.css('cursor', 'pointer');
+      el.on('mousemove', function (event) { showTooltip(relationLabel(i), event); });
+      el.on('mouseleave', function () { hideTooltip(); });
+      el.on('click', function () {
+        selectIndex(i);
+        showPopup('Index ' + i, popupFor(i));
+      });
+    }
+
+    function drawTree() {
+      var edgeGroup = draw.group();
+      edges.forEach(function (pair) {
+        var a = heap[pair[0]];
+        var b = heap[pair[1]];
+        var edge = edgeGroup.line(a.x, a.y, b.x, b.y)
+          .stroke({ color: ink, width: 2.4, linecap: 'round' });
+        treeEdgeShapes[pair[0] + '-' + pair[1]] = edge;
+      });
+
+      var nodeGroup = draw.group();
+      for (var i = 1; i <= 10; i++) {
+        var n = heap[i];
+        var g = nodeGroup.group();
+        treeNodeShapes[i] = g.circle(radius * 2)
+          .center(n.x, n.y)
+          .fill(baseGray)
+          .stroke({ color: ink, width: 1.7 });
+        treeTextShapes[i] = centeredText(g, n.value, n.x, n.y + 1, 31);
+        centeredText(g, i, n.x, n.y - radius - 18, 22);
+        installInteraction(g, i);
+      }
+      centeredText(draw, '(a)', 322, 406, 34);
+    }
+
+    function arcPath(from, to, side, depth) {
+      var cellW = 47;
+      var x0 = 695;
+      var y = side === 'top' ? 202 : 250;
+      var bend = side === 'top' ? -depth : depth;
+      var x1 = x0 + (from - 0.5) * cellW;
+      var x2 = x0 + (to - 0.5) * cellW;
+      return 'M ' + x1 + ' ' + y + ' C ' + x1 + ' ' + (y + bend) + ', ' + x2 + ' ' + (y + bend) + ', ' + x2 + ' ' + y;
+    }
+
+    function drawArray() {
+      var x0 = 695;
+      var y0 = 202;
+      var cellW = 47;
+      var cellH = 48;
+      var arcs = [
+        [1, 2, 'top', 19], [1, 3, 'top', 34],
+        [2, 4, 'bottom', 28], [2, 5, 'bottom', 43],
+        [3, 6, 'top', 35], [3, 7, 'top', 50],
+        [4, 8, 'bottom', 39], [4, 9, 'bottom', 55],
+        [5, 10, 'bottom', 70]
+      ];
+
+      var arcGroup = draw.group();
+      arcs.forEach(function (a) {
+        var arc = arcGroup.path(arcPath(a[0], a[1], a[2], a[3]))
+          .fill('none')
+          .stroke({ color: ink, width: 1.6, linecap: 'round' });
+        arrayArcShapes[a[0] + '-' + a[1]] = arc;
+      });
+
+      var boxGroup = draw.group();
+      for (var i = 1; i <= 10; i++) {
+        var gx = x0 + (i - 1) * cellW;
+        var g = boxGroup.group();
+        arrayCellShapes[i] = g.rect(cellW, cellH)
+          .move(gx, y0)
+          .fill(baseGray)
+          .stroke({ color: ink, width: 1.35 });
+        arrayTextShapes[i] = centeredText(g, heap[i].value, gx + cellW / 2, y0 + cellH / 2 + 1, 29);
+        centeredText(draw, i, gx + cellW / 2, y0 - 58, 24);
+        installInteraction(g, i);
+      }
+      centeredText(draw, '(b)', x0 + cellW * 5, 406, 34);
+    }
+
+    function isFamilyEdge(a, b, selected, rel) {
+      if (!selected) return false;
+      return (a === selected && rel.kids.indexOf(b) !== -1) || (b === selected && a === rel.parent);
+    }
+
+    function applyStyles() {
+      var rel = selectedIndex ? relationInfo(selectedIndex) : { parent: null, kids: [] };
+      for (var i = 1; i <= 10; i++) {
+        var fill = baseGray;
+        var stroke = ink;
+        var width = 1.7;
+        if (i === selectedIndex) {
+          fill = selectedFill;
+          stroke = structuralOrange;
+          width = 2.8;
+        } else if (i === rel.parent) {
+          fill = parentFill;
+          stroke = '#356a9b';
+          width = 2.4;
+        } else if (rel.kids.indexOf(i) !== -1) {
+          fill = childFill;
+          stroke = '#5f7d20';
+          width = 2.4;
+        }
+        treeNodeShapes[i].fill(fill).stroke({ color: stroke, width: width });
+        arrayCellShapes[i].fill(fill).stroke({ color: stroke, width: width });
+      }
+
+      edges.forEach(function (pair) {
+        var key = pair[0] + '-' + pair[1];
+        var family = isFamilyEdge(pair[0], pair[1], selectedIndex, rel);
+        var color = valueOverlay ? valueGreen : ink;
+        var width = valueOverlay ? 3.1 : 2.4;
+        if (family) {
+          color = structuralOrange;
+          width = 4.1;
+        }
+        treeEdgeShapes[key].stroke({ color: color, width: width, linecap: 'round' });
+      });
+
+      Object.keys(arrayArcShapes).forEach(function (key) {
+        var parts = key.split('-').map(Number);
+        var family = isFamilyEdge(parts[0], parts[1], selectedIndex, rel);
+        var color = valueOverlay ? valueGreen : ink;
+        var width = valueOverlay ? 2.4 : 1.6;
+        var opacity = valueOverlay ? 0.78 : 1;
+        if (family) {
+          color = structuralOrange;
+          width = 3.8;
+          opacity = 1;
+        }
+        arrayArcShapes[key].stroke({ color: color, width: width, linecap: 'round' }).opacity(opacity);
+      });
+    }
+
+    function updateRuleText(i) {
+      var rel = relationInfo(i);
+      var p = rel.parent ? rel.parent : 'none';
+      var kids = rel.kids.length ? rel.kids.join(', ') : 'none';
+      document.getElementById('indexRule').textContent = 'floor(i/2) = ' + p + '; 2i, 2i+1 = ' + kids;
+    }
+
+    function selectIndex(i) {
+      selectedIndex = Math.max(1, Math.min(10, i));
+      document.getElementById('indexInput').value = selectedIndex;
+      document.getElementById('indexVal').value = selectedIndex;
+      updateRuleText(selectedIndex);
+      applyStyles();
+    }
+
+    function update_index(v) {
+      selectIndex(v);
+    }
+
+    function toggle_overlay(on) {
+      valueOverlay = Boolean(on);
+      applyStyles();
+    }
+
+    drawTree();
+    drawArray();
+    applyStyles();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

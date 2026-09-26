@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swin Transformer &mdash; Hierarchical Windowed Self-Attention</title>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --card:#ffffff;
+    --ink:#15181d;
+    --ink2:#4a5260;
+    --ink3:#7a8494;
+    --line:#dfe3ea;
+    --accent:#1c6fd6;
+    --accent-soft:rgba(28,111,214,.12);
+    --gain:#0b9f77;
+    --block:#e03131;
+    --query:#f03e3e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font:15px/1.55 "Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1280px;margin:0 auto;padding:26px 20px 70px}
+  h1{font-size:25px;line-height:1.25;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--ink2);margin:0 0 22px;max-width:74ch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:22px}
+  .card > h2{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink3);margin:0 0 12px;font-weight:700}
+  #figstrip{width:100%;height:auto;display:block}
+  .striphint{color:var(--ink3);font-size:12.5px;margin-top:6px;text-align:center}
+
+  .cols{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+  .stagecol{flex:1 1 430px;min-width:330px}
+  .sidecol{flex:1 1 380px;min-width:300px}
+  #stage{width:100%;height:auto;display:block;max-width:560px;margin:0 auto}
+  .stagetitle{text-align:center;font-weight:600;font-size:15px;margin:0 0 2px}
+  .stagesub{text-align:center;color:var(--ink3);font-size:12.5px;margin:0 0 8px}
+
+  .ctrl{margin-bottom:16px}
+  .ctrl label.hdr{display:block;font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink3);font-weight:700;margin-bottom:7px}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .ticks{display:flex;justify-content:space-between;font-size:12px;color:var(--ink2);margin-top:2px}
+  .ticks span{width:33%;text-align:center;cursor:pointer}
+  .ticks span:first-child{text-align:left}
+  .ticks span:last-child{text-align:right}
+  .ticks span.on{color:var(--accent);font-weight:700}
+
+  .switchrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .switch{position:relative;display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .track{width:42px;height:23px;border-radius:12px;background:#c9ced8;transition:background .16s;flex:none}
+  .knob{position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#fff;transition:transform .16s;box-shadow:0 1px 3px rgba(0,0,0,.28)}
+  .switch input:checked + .track{background:var(--accent)}
+  .switch input:checked + .track + .knob{transform:translateX(19px)}
+  .switch.disabled{opacity:.42;cursor:not-allowed}
+  button{font:inherit;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:7px;padding:5px 11px;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  table.stats{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.stats td{padding:4px 0;border-bottom:1px dashed var(--line);vertical-align:baseline}
+  table.stats td:first-child{color:var(--ink2)}
+  table.stats td:last-child{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .big{font-size:15px}
+  .legend{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--ink2);margin-top:4px}
+  .legend i{display:inline-block;width:13px;height:13px;border-radius:3px;margin-right:8px;vertical-align:-2px}
+  .note{font-size:13.2px;color:var(--ink2);background:#f2f6fd;border-left:3px solid var(--accent);padding:9px 12px;border-radius:0 6px 6px 0;margin-top:12px}
+  .note.empty{background:#f4f5f7;border-left-color:#c3c9d3}
+  .note b{color:var(--ink)}
+  .k{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;background:#eef1f5;border-radius:4px;padding:1px 5px}
+  .foot{color:var(--ink2);font-size:13.5px;max-width:92ch}
+  .foot p{margin:0 0 9px}
+  /* vector-effect does NOT inherit, so set it on every shape: strokes stay
+     constant in viewBox units instead of being stretched by the plate matrix */
+  #figstrip line,#figstrip rect,#figstrip circle,#figstrip path,#figstrip polygon,
+  #stage line,#stage rect,#stage circle,#stage path,#stage polygon{vector-effect:non-scaling-stroke}
+  g.tilehit .hit{fill:#1c6fd6;fill-opacity:0}
+  g.tilehit:hover .hit{fill-opacity:.10}
+  g.tilehit .hit:hover{fill-opacity:.26}
+  g.panelhit{cursor:pointer}
+  g.panelhit:hover .phit{fill-opacity:.07}
+  .hit{cursor:crosshair}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Hierarchical windowed self-attention in the Swin Transformer</h1>
+  <p class="sub">Self-attention is computed <em>only between patches that fall inside the same window</em>. Shrinking the
+  windows makes attention cheap but local; shifting the window grid by half a window between successive layers lets
+  information leak across window borders &mdash; without ever paying the quadratic cost of global attention.</p>
+
+  <div class="card">
+    <h2>The partitioning scheme</h2>
+    <svg id="figstrip" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="striphint">Click panel <b>b</b>, <b>c</b>, <b>d</b>, <b>e</b> or <b>f</b> to load that partition into the interactive view below.</div>
+  </div>
+
+  <div class="card">
+    <h2>Explore a partition</h2>
+    <div class="cols">
+      <div class="stagecol">
+        <div class="stagetitle" id="stageTitle"></div>
+        <div class="stagesub" id="stageSub"></div>
+        <svg id="stage" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+
+      <div class="sidecol">
+        <div class="ctrl">
+          <label class="hdr" for="sizeSlider">Window size &mdash; windows per side</label>
+          <input id="sizeSlider" type="range" min="0" max="2" step="1" value="2">
+          <div class="ticks">
+            <span data-g="1">1&times;1 &middot; global</span>
+            <span data-g="2">2&times;2</span>
+            <span data-g="4">4&times;4</span>
+          </div>
+        </div>
+
+        <div class="ctrl switchrow">
+          <label class="switch" id="offsetSwitch">
+            <input type="checkbox" id="offsetChk">
+            <span class="track"></span><span class="knob"></span>
+            <span>Offset (shifted) windows</span>
+          </label>
+          <button id="altBtn" title="Alternate between the regular and shifted partition, as successive Swin blocks do">Alternate layers</button>
+          <button id="clearBtn">Clear selection</button>
+        </div>
+
+        <div class="ctrl">
+          <label class="hdr">Partition &amp; attention cost</label>
+          <table class="stats" id="statTable"></table>
+        </div>
+
+        <div id="selNote" class="note empty"></div>
+
+        <div class="ctrl" style="margin-top:14px">
+          <label class="hdr">Legend</label>
+          <div class="legend">
+            <div><i style="background:#f03e3e"></i>query patch you clicked</div>
+            <div><i style="background:#1c6fd6"></i>patches it can attend to (same window)</div>
+            <div><i style="background:#0b9f77"></i>patches reachable <em>only</em> thanks to the shift</div>
+            <div><i style="background:#e03131;border-radius:2px;height:3px;margin-bottom:5px"></i>blocked &mdash; across a window boundary</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card foot">
+    <h2>What the figure shows</h2>
+    <p><b>a)</b> the input image, tokenised into a <span class="k">16&times;16</span> grid of patches. <b>b&ndash;f)</b> the same
+    token grid cut into attention windows: <span class="k">4&times;4</span> windows (b) and the same grid displaced by half a
+    window (c); <span class="k">2&times;2</span> windows (d) and their offset variant (e); and the degenerate
+    <span class="k">1&times;1</span> case (f), which is ordinary global self-attention over all 256 tokens.</p>
+    <p>Attention cost is <span class="k">&Sigma;<sub>w</sub> |w|&sup2;</span> summed over windows, so splitting the 256 tokens into 16
+    windows of 16 tokens costs 4&thinsp;096 pairs instead of 65&thinsp;536 &mdash; a 16&times; saving, but every token is then blind to
+    everything outside its own window. A Swin block therefore uses the regular partition in layer&nbsp;&#8467; and the shifted
+    partition in layer&nbsp;&#8467;+1: two patches separated by a boundary in one layer share a window in the next, so the receptive
+    field grows layer by layer while attention stays linear in the number of tokens.</p>
+    <p>Note that the shifted partition is genuinely finer at the borders: displacing a grid of
+    <span class="k">M&times;M</span> windows by <span class="k">&lfloor;M/2&rfloor;</span> produces partial windows along all four edges
+    (panels c and e), which is why the shifted layer has more &mdash; and smaller &mdash; windows than the regular one.</p>
+  </div>
+
+</div>
+
+<script>
+/* ================================================================
+   0.  Deterministic pseudo-random generator
+   ================================================================ */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+/* ================================================================
+   1.  Procedural stand-in for the photograph (graffiti wall mural)
+       Drawn once on a canvas, embedded as a single data-URL.
+   ================================================================ */
+function buildMural(){
+  const cw=470, ch=619;                       // 1 : 1.3175  (matches the plate aspect)
+  const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+  const g=c.getContext('2d');
+  const R=mulberry32(917342);
+  const X=f=>f*cw, Y=f=>f*ch;
+  const pick=a=>a[(R()*a.length)|0];
+
+  // ---- sky + foliage strip -------------------------------------
+  g.fillStyle='#bdd6e8'; g.fillRect(0,0,cw,Y(0.20));
+  const greens=['#2c4720','#375a27','#456e2f','#567f38','#20381a','#628c3e'];
+  for(let i=0;i<150;i++){
+    const x=R()*cw, y=Y(0.0)+R()*Y(0.15), r=7+R()*20;
+    g.fillStyle=pick(greens); g.globalAlpha=.75+R()*.25;
+    g.beginPath(); g.ellipse(x,y,r,r*(.55+R()*.5),R()*3.14,0,6.3); g.fill();
+  }
+  g.globalAlpha=1;
+  // a couple of trunks / branches
+  g.strokeStyle='#31421f'; g.lineWidth=4;
+  for(let i=0;i<5;i++){g.beginPath();const bx=R()*cw;g.moveTo(bx,Y(0.16));g.lineTo(bx+(R()-.5)*40,Y(0.02));g.stroke();}
+
+  // ---- top of the wall : bright ochre ledge --------------------
+  g.fillStyle='#b8a03a'; g.fillRect(0,Y(0.145),cw,Y(0.038));
+  g.fillStyle='#8d7a26'; g.fillRect(0,Y(0.176),cw,Y(0.009));
+  g.fillStyle='#d8c765'; g.fillRect(0,Y(0.148),cw,Y(0.008));
+
+  // ---- wall face -----------------------------------------------
+  const wallTop=Y(0.185), wallBot=Y(0.845);
+  let lg=g.createLinearGradient(0,wallTop,0,wallBot);
+  lg.addColorStop(0,'#cfd8de'); lg.addColorStop(.55,'#c3cedb'); lg.addColorStop(1,'#b3c0d0');
+  g.fillStyle=lg; g.fillRect(0,wallTop,cw,wallBot-wallTop);
+
+  /* ---------- the mural painting ---------- */
+  // left leaning board
+  g.beginPath(); g.moveTo(X(.015),Y(.565)); g.lineTo(X(.295),Y(.545));
+  g.lineTo(X(.315),Y(.885)); g.lineTo(X(.025),Y(.895)); g.closePath();
+  g.fillStyle='#dde7f0'; g.fill(); g.strokeStyle='#2a3440'; g.lineWidth=4; g.stroke();
+  g.beginPath(); g.moveTo(X(.05),Y(.57)); g.lineTo(X(.10),Y(.89)); g.strokeStyle='#33404f'; g.lineWidth=5; g.stroke();
+
+  // right paper / sign
+  g.beginPath(); g.moveTo(X(.595),Y(.345)); g.lineTo(X(.845),Y(.378));
+  g.lineTo(X(.822),Y(.745)); g.lineTo(X(.578),Y(.712)); g.closePath();
+  g.fillStyle='#e9eff5'; g.fill(); g.strokeStyle='#1f2a33'; g.lineWidth=4; g.stroke();
+
+  // hair (bob)
+  g.fillStyle='#181820';
+  g.beginPath(); g.ellipse(X(.435),Y(.355),X(.175),Y(.145),0,0,6.3); g.fill();
+  g.beginPath(); g.ellipse(X(.295),Y(.445),X(.055),Y(.095),.12,0,6.3); g.fill();
+  g.beginPath(); g.ellipse(X(.575),Y(.445),X(.055),Y(.095),-.12,0,6.3); g.fill();
+  // face
+  g.fillStyle='#eda0c0';
+  g.beginPath(); g.ellipse(X(.437),Y(.385),X(.108),Y(.086),0,0,6.3); g.fill();
+  // fringe over forehead
+  g.fillStyle='#181820';
+  g.beginPath(); g.ellipse(X(.437),Y(.300),X(.150),Y(.058),0,0,6.3); g.fill();
+  g.beginPath(); g.moveTo(X(.34),Y(.31)); g.quadraticCurveTo(X(.40),Y(.375),X(.335),Y(.40));
+  g.quadraticCurveTo(X(.315),Y(.35),X(.34),Y(.31)); g.fill();
+  // eyes
+  for(const ex of [.397,.487]){
+    g.beginPath(); g.ellipse(X(ex),Y(.388),X(.030),Y(.026),0,0,6.3);
+    g.fillStyle='#fff'; g.fill(); g.strokeStyle='#181820'; g.lineWidth=3.2; g.stroke();
+    g.beginPath(); g.ellipse(X(ex+.002),Y(.396),X(.011),Y(.011),0,0,6.3); g.fillStyle='#181820'; g.fill();
+  }
+  // brow + mouth
+  g.strokeStyle='#181820'; g.lineWidth=3.4; g.lineCap='round';
+  g.beginPath(); g.moveTo(X(.462),Y(.356)); g.quadraticCurveTo(X(.492),Y(.348),X(.515),Y(.362)); g.stroke();
+  g.beginPath(); g.moveTo(X(.418),Y(.437)); g.quadraticCurveTo(X(.442),Y(.449),X(.466),Y(.436)); g.stroke();
+  // cheek shading
+  g.fillStyle='rgba(212,120,160,.55)';
+  g.beginPath(); g.ellipse(X(.396),Y(.424),X(.020),Y(.013),0,0,6.3); g.fill();
+
+  // yellow shirt
+  g.beginPath();
+  g.moveTo(X(.275),Y(.615)); g.quadraticCurveTo(X(.315),Y(.500),X(.400),Y(.487));
+  g.lineTo(X(.520),Y(.492)); g.quadraticCurveTo(X(.610),Y(.512),X(.640),Y(.618));
+  g.lineTo(X(.652),Y(.845)); g.lineTo(X(.262),Y(.845)); g.closePath();
+  g.fillStyle='#e0b418'; g.fill(); g.strokeStyle='#8a6c0b'; g.lineWidth=3; g.stroke();
+  // collar
+  g.strokeStyle='#181820'; g.lineWidth=4;
+  g.beginPath(); g.moveTo(X(.385),Y(.492)); g.quadraticCurveTo(X(.455),Y(.545),X(.525),Y(.494)); g.stroke();
+  // bow
+  g.lineWidth=3.2;
+  for(let k=0;k<4;k++){
+    const a=k*Math.PI/4+0.3;
+    g.beginPath(); g.ellipse(X(.452)+Math.cos(a)*16,Y(.588)+Math.sin(a)*16,17,6,a,0,6.3); g.stroke();
+  }
+  g.beginPath(); g.moveTo(X(.452),Y(.600)); g.quadraticCurveTo(X(.44),Y(.655),X(.463),Y(.690)); g.stroke();
+
+  // arms / hands (lavender)
+  g.fillStyle='#c9a0d8';
+  g.beginPath(); g.ellipse(X(.300),Y(.690),X(.058),Y(.100),0.18,0,6.3); g.fill();
+  g.beginPath(); g.ellipse(X(.615),Y(.605),X(.050),Y(.070),-0.35,0,6.3); g.fill();
+  g.beginPath(); g.ellipse(X(.375),Y(.792),X(.098),Y(.048),0.06,0,6.3); g.fill();
+  g.beginPath(); g.ellipse(X(.553),Y(.672),X(.045),Y(.030),0.2,0,6.3); g.fill();
+  g.strokeStyle='#6f4f80'; g.lineWidth=2.5;
+  g.beginPath(); g.ellipse(X(.375),Y(.792),X(.098),Y(.048),0.06,0,6.3); g.stroke();
+
+  // dark blue outline sketch, lower left
+  g.strokeStyle='#26405e'; g.lineWidth=5;
+  g.beginPath(); g.moveTo(X(.05),Y(.640)); g.quadraticCurveTo(X(.17),Y(.70),X(.135),Y(.860)); g.stroke();
+  g.beginPath(); g.moveTo(X(.215),Y(.900)); g.lineTo(X(.245),Y(.730)); g.stroke();
+
+  // navy blobs, right side
+  g.fillStyle='#2c2d50';
+  const blobs=[[.700,.250,15],[.762,.222,21],[.818,.283,17],[.737,.303,9],
+               [.786,.600,23],[.735,.560,12],[.845,.552,15],[.700,.663,9],[.872,.630,11]];
+  for(const b of blobs){g.beginPath(); g.ellipse(X(b[0]),Y(b[1]),b[2],b[2]*.88,R(),0,6.3); g.fill();}
+
+  // teal / cyan patch far right
+  g.save(); g.translate(X(.93),Y(.385)); g.rotate(-0.12);
+  g.fillStyle='#39b5d2'; g.fillRect(-X(.07),-Y(.085),X(.16),Y(.175));
+  g.fillStyle='#e8a020'; g.fillRect(-X(.065),Y(.055),X(.05),Y(.035));
+  g.restore();
+  // green squiggles
+  g.strokeStyle='#59ab33'; g.lineWidth=5;
+  for(let k=0;k<3;k++){g.beginPath(); g.moveTo(X(.855+k*.017),Y(.395)); g.lineTo(X(.848+k*.017),Y(.455)); g.stroke();}
+  // pink tag, bottom right
+  g.strokeStyle='#e368a8'; g.lineWidth=5;
+  g.beginPath(); g.moveTo(X(.80),Y(.735)); g.quadraticCurveTo(X(.845),Y(.700),X(.862),Y(.760));
+  g.quadraticCurveTo(X(.878),Y(.800),X(.912),Y(.748)); g.stroke();
+
+  // red spray tag, upper left
+  g.strokeStyle='#cf2233'; g.lineWidth=7; g.lineJoin='round';
+  g.beginPath(); g.moveTo(X(.030),Y(.470)); g.quadraticCurveTo(X(.075),Y(.375),X(.095),Y(.470));
+  g.quadraticCurveTo(X(.118),Y(.380),X(.160),Y(.455));
+  g.quadraticCurveTo(X(.205),Y(.520),X(.150),Y(.510)); g.stroke();
+  g.lineWidth=5;
+  g.beginPath(); g.moveTo(X(.040),Y(.505)); g.quadraticCurveTo(X(.120),Y(.545),X(.195),Y(.495)); g.stroke();
+
+  // hand-written red graffiti text
+  const script='bold 30px "Comic Sans MS","Segoe Script","Bradley Hand",cursive';
+  g.fillStyle='#cf2233'; g.font=script; g.textBaseline='middle';
+  g.save(); g.translate(X(.075),Y(.640)); g.rotate(-0.10);
+  g.fillText('FOR',0,0); g.fillText('ALL',6,Y(.070)); g.fillText('KIDS',12,Y(.140)); g.restore();
+  g.save(); g.translate(X(.625),Y(.425)); g.rotate(0.10); g.font='bold 27px "Comic Sans MS","Segoe Script",cursive';
+  g.fillText('CIAO',0,0); g.fillText('BABE',2,Y(.068)); g.fillText('A',16,Y(.132)); g.fillText('DOMANI',-4,Y(.196)); g.restore();
+
+  // ---- pavement ------------------------------------------------
+  g.fillStyle='#d2cec5'; g.fillRect(0,Y(0.845),cw,Y(0.055));
+  g.fillStyle='#e6e3dc'; g.fillRect(0,Y(0.848),cw,Y(0.018));
+  let pg=g.createLinearGradient(0,Y(0.90),0,ch);
+  pg.addColorStop(0,'#8d8a85'); pg.addColorStop(1,'#6f6d69');
+  g.fillStyle=pg; g.fillRect(0,Y(0.90),cw,ch-Y(0.90));
+
+  // ---- texture / grain -----------------------------------------
+  for(let i=0;i<5200;i++){
+    const x=R()*cw, y=R()*ch;
+    g.fillStyle = R()<.5 ? 'rgba(0,0,0,.05)' : 'rgba(255,255,255,.05)';
+    g.fillRect(x,y,1+R()*2,1+R()*2);
+  }
+  // faint vertical streaks on the wall
+  g.globalAlpha=.10; g.strokeStyle='#5c646e'; g.lineWidth=2;
+  for(let i=0;i<26;i++){const x=R()*cw; g.beginPath(); g.moveTo(x,wallTop); g.lineTo(x+(R()-.5)*8,wallBot); g.stroke();}
+  g.globalAlpha=1;
+  // vignette
+  const vg=g.createLinearGradient(cw,0,0,ch);
+  vg.addColorStop(0,'rgba(255,255,255,.10)'); vg.addColorStop(1,'rgba(0,0,0,.10)');
+  g.fillStyle=vg; g.fillRect(0,0,cw,ch);
+
+  return c.toDataURL('image/png');
+}
+const MURAL = buildMural();
+
+/* ================================================================
+   2.  Geometry  (all computed, nothing hard-coded)
+   ================================================================ */
+const NP      = 16;        // patch tokens per side  ->  256 tokens
+const ASPECT  = 1.3175;    // plate height / width
+const SHEAR   = 0.743;     // 3-D tilt : rise / width
+
+/* Cut positions (in patch units) of a gridN x gridN partition,
+   optionally displaced by floor(M/2) -> partial windows at the edges. */
+function cutList(gridN, offset){
+  if(gridN<=1) return offset ? [0, NP>>1, NP] : [0, NP];
+  const M = NP/gridN;
+  if(!offset){ const a=[]; for(let k=0;k<=gridN;k++) a.push(k*M); return a; }
+  const s = Math.floor(M/2), a=[0];
+  for(let x=s; x<NP; x+=M) a.push(x);
+  if(a[a.length-1] !== NP) a.push(NP);
+  return a;
+}
+
+function partition(gridN, offset){
+  const cx = cutList(gridN, offset), cy = cutList(gridN, offset);
+  const nc = cx.length-1, nr = cy.length-1;
+  const wins=[];
+  for(let ri=0; ri<nr; ri++) for(let ci=0; ci<nc; ci++)
+    wins.push({ci, ri, i0:cx[ci], i1:cx[ci+1], j0:cy[ri], j1:cy[ri+1]});
+  const colOf=i=>{let k=0; while(k<nc-1 && i>=cx[k+1]) k++; return k;};
+  const rowOf=j=>{let k=0; while(k<nr-1 && j>=cy[k+1]) k++; return k;};
+  const winOf=(i,j)=>wins[rowOf(j)*nc + colOf(i)];
+  const cost = wins.reduce((s,w)=>{const n=(w.i1-w.i0)*(w.j1-w.j0); return s+n*n;},0);
+  return {cx,cy,nc,nr,wins,winOf,colOf,rowOf,cost};
+}
+const GLOBAL_COST = (NP*NP)*(NP*NP);
+
+/* ---- one drawn plate ------------------------------------------- */
+/* tx,ty = screen position of image-space point (0,0) */
+function plate(o){
+  const {tx,ty,W,gridN,offset,gap,grid,id} = o;
+  const imgId = o.imgId || 'muralImg';
+  const H = W*ASPECT, S = W*SHEAR;
+  const P = partition(gridN, offset);
+  const uOff = ci => gap*(ci-(P.nc-1)/2);
+  const vOff = ri => gap*(ri-(P.nr-1)/2);
+  const sx = (u,v)=> tx + W*u;
+  const sy = (u,v)=> ty - S*u + H*v;
+  const M  = `matrix(${W},${-S},0,${H},${tx},${ty})`;
+  const lw = o.lw || 1;
+
+  // depth ("slab") offset of (-dx,+dy) screen px, expressed in image space
+  const dxs=-4, dys=4;
+  const du = dxs/W, dv = (dys + S*du)/H;
+
+  const uA = uOff(0),            uB = 1+uOff(P.nc-1);
+  const vA = vOff(0),            vB = 1+vOff(P.nr-1);
+
+  let s = `<g transform="${M}">`;
+  // slab thickness behind the tiles
+  s += `<path d="M${uA+du} ${vA+dv} L${uB+du} ${vA+dv} L${uB+du} ${vB+dv} L${uA+du} ${vB+dv} Z" fill="#23242a"/>`;
+  // white sheet: the thin separations between tiles read as white gaps, as in the figure
+  s += `<rect x="${uA}" y="${vA}" width="${uB-uA}" height="${vB-vA}" fill="#ffffff"/>`;
+
+  let defs = '';
+  P.wins.forEach((w,k)=>{
+    const u0=w.i0/NP+uOff(w.ci), u1=w.i1/NP+uOff(w.ci);
+    const v0=w.j0/NP+vOff(w.ri), v1=w.j1/NP+vOff(w.ri);
+    const cid=`${id}c${k}`;
+    defs += `<clipPath id="${cid}" clipPathUnits="userSpaceOnUse"><rect x="${u0}" y="${v0}" width="${u1-u0}" height="${v1-v0}"/></clipPath>`;
+    const dx=uOff(w.ci), dy=vOff(w.ri);
+    // clip rect lives in plate space (no transform on the clipped group);
+    // the image itself is shifted by the tile's gap offset.
+    s += `<g clip-path="url(#${cid})"><g transform="translate(${dx},${dy})">`;
+    s += `<use href="#${imgId}"/>`;
+    if(grid){
+      let ln='';
+      for(let i=w.i0+1;i<w.i1;i++) ln += `<line x1="${i/NP}" y1="${w.j0/NP}" x2="${i/NP}" y2="${w.j1/NP}"/>`;
+      for(let j=w.j0+1;j<w.j1;j++) ln += `<line x1="${w.i0/NP}" y1="${j/NP}" x2="${w.i1/NP}" y2="${j/NP}"/>`;
+      s += `<g stroke="#1b1b1f" stroke-opacity=".5" stroke-width="${0.55*lw}" vector-effect="non-scaling-stroke">${ln}</g>`;
+    }
+    s += `</g></g>`;
+    s += `<rect x="${u0}" y="${v0}" width="${u1-u0}" height="${v1-v0}" fill="none" stroke="#111318" stroke-width="${1.35*lw}" vector-effect="non-scaling-stroke"/>`;
+  });
+  s += `</g>`;
+  return {svg:`<defs>${defs}</defs>`+s, P, uOff, vOff, sx, sy, W, H, S, tx, ty, matrix:M,
+          bbox:{x0:tx+W*uA, x1:tx+W*uB, y0:ty-S*uB+H*vA, y1:ty-S*uA+H*vB}};
+}
+
+/* ================================================================
+   3.  State
+   ================================================================ */
+const state = {gridN:4, offset:false, sel:null, alt:null};
+const CONFIGS = [
+  {key:'a', gridN:0, offset:false, cap:['Original','image'],       label:'a)'},
+  {key:'b', gridN:4, offset:false, cap:['4×4','windows'],      label:'b)'},
+  {key:'c', gridN:4, offset:true,  cap:['4×4 offset','windows'],label:'c)'},
+  {key:'d', gridN:2, offset:false, cap:['2×2','windows'],      label:'d)'},
+  {key:'e', gridN:2, offset:true,  cap:['2×2 offset','windows'],label:'e)'},
+  {key:'f', gridN:1, offset:false, cap:['1×1','window'],       label:'f)'}
+];
+
+/* ================================================================
+   4.  The six-panel figure strip
+   ================================================================ */
+function renderStrip(){
+  const PW=150, gap=0.030, pad=26;
+  const H=PW*ASPECT, S=PW*SHEAR;
+  const eMax=gap*2;                      // widest plate = the 5-column offset one
+  const topLab=34, capTop=topLab+S+H+eMax*(2*H+S)+32;
+  let x=pad, body='', hit='';
+  const dotsAfter={c:true, e:true};
+
+  CONFIGS.forEach(cfg=>{
+    const gridN = cfg.gridN||1;
+    const nCols = cfg.gridN? partition(gridN,cfg.offset).nc : 1;
+    const e = cfg.gridN ? gap*(nCols-1)/2 : 0;
+    const tx = x + e*PW;
+    const ty = topLab + S + e*H;
+    const p = plate({tx, ty, W:PW, gridN, offset:cfg.offset, imgId:'muralA',
+                     gap: cfg.gridN?gap:0, grid: cfg.key!=='a', id:'s'+cfg.key, lw:0.8});
+    body += p.svg;
+    const bx0=p.bbox.x0, bx1=p.bbox.x1, by0=p.bbox.y0, by1=p.bbox.y1;
+    const active = cfg.gridN && state.gridN===cfg.gridN && state.offset===cfg.offset;
+    if(active) body += `<rect x="${bx0-9}" y="${by0-9}" width="${bx1-bx0+18}" height="${by1-by0+18}" rx="7"
+        fill="none" stroke="#1c6fd6" stroke-width="2.5"/>`;
+    body += `<text x="${bx0-4}" y="${topLab-6}" font-size="27" font-weight="500" fill="#15181d">${cfg.label}</text>`;
+    const cxm=(bx0+bx1)/2;
+    body += `<text x="${cxm}" y="${capTop}" text-anchor="middle" font-size="19.5" fill="${active?'#1c6fd6':'#15181d'}" font-weight="${active?'700':'400'}">${cfg.cap[0]}</text>`;
+    body += `<text x="${cxm}" y="${capTop+24}" text-anchor="middle" font-size="19.5" fill="${active?'#1c6fd6':'#15181d'}" font-weight="${active?'700':'400'}">${cfg.cap[1]}</text>`;
+    if(cfg.gridN)
+      hit += `<g class="panelhit" data-g="${cfg.gridN}" data-o="${cfg.offset?1:0}"><rect class="phit" x="${bx0-9}" y="${by0-9}"
+              width="${bx1-bx0+18}" height="${by1-by0+18}" fill="#1c6fd6" fill-opacity="0"/></g>`;
+    x = bx1 + 30;
+    if(dotsAfter[cfg.key]){
+      const dy=topLab+(S+H)/2;
+      for(let k=0;k<3;k++) body += `<circle cx="${x+10+k*20}" cy="${dy}" r="4.5" fill="#15181d"/>`;
+      x += 74;
+    }
+  });
+
+  const w = x+pad-14, h = capTop+40;
+  const svg=document.getElementById('figstrip');
+  svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
+  svg.innerHTML = `<defs><image id="muralA" href="${MURAL}" x="0" y="0" width="1" height="1" preserveAspectRatio="none"/></defs>`
+                + body + hit;
+  svg.querySelectorAll('.panelhit').forEach(el=>{
+    el.addEventListener('click',()=>{
+      state.gridN=+el.dataset.g; state.offset=el.dataset.o==='1'; state.sel=null;
+      stopAlt(); syncControls(); renderAll();
+    });
+  });
+}
+
+/* ================================================================
+   5.  The interactive stage
+   ================================================================ */
+function renderStage(){
+  const W=302, gap=0.019;
+  const H=W*ASPECT, S=W*SHEAR;
+  const P0=partition(state.gridN,state.offset);
+  const e=gap*(P0.nc-1)/2;
+  const padL=58, padT=26;
+  const tx=padL+e*W, ty=padT+S+e*H;
+  const p=plate({tx,ty,W,gridN:state.gridN,offset:state.offset,gap,grid:true,id:'st',lw:1,imgId:'muralB'});
+  const P=p.P, uOff=p.uOff, vOff=p.vOff;
+  const bb=p.bbox;
+  const vw=Math.ceil(bb.x1+padL), vh=Math.ceil(bb.y1+38);
+
+  const tokU=(i,ci)=> (i+0.5)/NP + uOff(ci);
+  const tokV=(j,ri)=> (j+0.5)/NP + vOff(ri);
+
+  let ov='';                       // overlay inside the sheared space
+  let flat='';                     // labels in screen space
+  const sel=state.sel;
+
+  /* hit targets ------------------------------------------------- */
+  let hits='';
+  P.wins.forEach(w=>{
+    const dx=uOff(w.ci), dy=vOff(w.ri);
+    let r='';
+    for(let j=w.j0;j<w.j1;j++) for(let i=w.i0;i<w.i1;i++)
+      r+=`<rect class="hit" data-i="${i}" data-j="${j}" x="${i/NP+dx}" y="${j/NP+dy}" width="${1/NP}" height="${1/NP}"/>`;
+    hits+=`<g class="tilehit">${r}</g>`;
+  });
+
+  /* selection --------------------------------------------------- */
+  let info={};
+  if(sel){
+    const w=P.winOf(sel.i,sel.j);
+    const nW=(w.i1-w.i0)*(w.j1-w.j0);
+    const reg=partition(state.gridN,false);
+    const wr=reg.winOf(sel.i,sel.j);
+    const inReg=(i,j)=> i>=wr.i0&&i<wr.i1&&j>=wr.j0&&j<wr.j1;
+
+    // veil : wash out everything, keep the selected window bright
+    P.wins.forEach(v=>{
+      const u0=v.i0/NP+uOff(v.ci), u1=v.i1/NP+uOff(v.ci);
+      const v0=v.j0/NP+vOff(v.ri), v1=v.j1/NP+vOff(v.ri);
+      const a=(v===w)?0.06:0.62;
+      ov+=`<rect x="${u0}" y="${v0}" width="${u1-u0}" height="${v1-v0}" fill="#ffffff" fill-opacity="${a}"/>`;
+    });
+
+    // selected-window tint + border
+    const u0=w.i0/NP+uOff(w.ci), u1=w.i1/NP+uOff(w.ci);
+    const v0=w.j0/NP+vOff(w.ri), v1=w.j1/NP+vOff(w.ri);
+    ov+=`<rect x="${u0}" y="${v0}" width="${u1-u0}" height="${v1-v0}" fill="#1c6fd6" fill-opacity=".10"
+         stroke="#1c6fd6" stroke-width="3" vector-effect="non-scaling-stroke"/>`;
+
+    // "gained by the shift" tint, per patch
+    let gained=0;
+    if(state.offset){
+      for(let j=w.j0;j<w.j1;j++) for(let i=w.i0;i<w.i1;i++) if(!inReg(i,j)){
+        gained++;
+        ov+=`<rect x="${i/NP+uOff(w.ci)}" y="${j/NP+vOff(w.ri)}" width="${1/NP}" height="${1/NP}"
+             fill="#0b9f77" fill-opacity=".30"/>`;
+      }
+    }
+
+    // attention fan : query -> every patch of its window
+    const qu=tokU(sel.i,w.ci), qv=tokV(sel.j,w.ri);
+    const op = nW>150 ? .22 : nW>40 ? .34 : .58;
+    const dr = nW>150 ? 1.5 : 2.1;
+    let lines='', dots='';
+    for(let j=w.j0;j<w.j1;j++) for(let i=w.i0;i<w.i1;i++){
+      if(i===sel.i&&j===sel.j) continue;
+      const u=tokU(i,w.ci), v=tokV(j,w.ri);
+      lines+=`<line x1="${qu}" y1="${qv}" x2="${u}" y2="${v}"/>`;
+      const col=(state.offset&&!inReg(i,j))?'#0b9f77':'#1c6fd6';
+      dots+=`<circle cx="${u}" cy="${v}" r="${dr/W}" fill="${col}"/>`;
+    }
+    ov+=`<g stroke="#1c6fd6" stroke-opacity="${op}" stroke-width="1" vector-effect="non-scaling-stroke" fill="none">${lines}</g>`;
+    ov+=`<g>${dots}</g>`;
+
+    // query marker
+    ov+=`<circle cx="${qu}" cy="${qv}" r="${4.6/W}" fill="#f03e3e" stroke="#fff" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;
+
+    /* blocked links to the neighbouring window ------------------- */
+    let blocked=0, dirName='';
+    const cand=[];
+    if(w.ci>0)        cand.push(['left',  sel.i-w.i0,        {ci:w.ci-1,ri:w.ri}]);
+    if(w.ci<P.nc-1)   cand.push(['right', w.i1-1-sel.i,      {ci:w.ci+1,ri:w.ri}]);
+    if(w.ri>0)        cand.push(['top',   sel.j-w.j0,        {ci:w.ci,ri:w.ri-1}]);
+    if(w.ri<P.nr-1)   cand.push(['bottom',w.j1-1-sel.j,      {ci:w.ci,ri:w.ri+1}]);
+    if(cand.length){
+      cand.sort((a,b)=>a[1]-b[1]);
+      const [dname,,nc]=cand[0];
+      dirName=dname;
+      const nb=P.wins[nc.ri*P.nc+nc.ci];
+      const targets=[];
+      if(dname==='left'||dname==='right'){
+        const i = dname==='left' ? nb.i1-1 : nb.i0;
+        for(let d=-1;d<=1;d++){const j=sel.j+d; if(j>=nb.j0&&j<nb.j1) targets.push([i,j]);}
+      }else{
+        const j = dname==='top' ? nb.j1-1 : nb.j0;
+        for(let d=-1;d<=1;d++){const i=sel.i+d; if(i>=nb.i0&&i<nb.i1) targets.push([i,j]);}
+      }
+      blocked=(nb.i1-nb.i0)*(nb.j1-nb.j0);
+      let bl='';
+      targets.forEach(t=>{
+        const u=tokU(t[0],nb.ci), v=tokV(t[1],nb.ri);
+        bl+=`<line x1="${qu}" y1="${qv}" x2="${u}" y2="${v}"/>`;
+      });
+      ov+=`<g stroke="#e03131" stroke-width="1.6" stroke-dasharray="3 3" vector-effect="non-scaling-stroke">${bl}</g>`;
+      // neighbour outline
+      const nu0=nb.i0/NP+uOff(nb.ci), nu1=nb.i1/NP+uOff(nb.ci);
+      const nv0=nb.j0/NP+vOff(nb.ri), nv1=nb.j1/NP+vOff(nb.ri);
+      ov+=`<rect x="${nu0}" y="${nv0}" width="${nu1-nu0}" height="${nv1-nv0}" fill="none"
+           stroke="#e03131" stroke-width="2" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"/>`;
+      // cross marker at the midpoint of the middle blocked link, in screen space
+      if(targets.length){
+        const t=targets[(targets.length/2)|0];
+        const tu=tokU(t[0],nb.ci), tv=tokV(t[1],nb.ri);
+        const mu=(qu+tu)/2, mv=(qv+tv)/2;
+        const X=p.sx(mu,mv), Y=p.sy(mu,mv);
+        flat+=`<circle cx="${X}" cy="${Y}" r="9" fill="#fff" stroke="#e03131" stroke-width="2"/>`
+            + `<path d="M${X-4} ${Y-4} L${X+4} ${Y+4} M${X+4} ${Y-4} L${X-4} ${Y+4}" stroke="#e03131" stroke-width="2.2" stroke-linecap="round"/>`;
+        // short caption just beyond the blocked link (the full wording is in the side panel)
+        const anch = dname==='left'?'end' : dname==='right'?'start' : 'middle';
+        const ox = dname==='left'?-13 : dname==='right'?13 : 0;
+        const oy = dname==='top'?-13 : dname==='bottom'?18 : -12;
+        const lw2 = 52;                                  // approx. half-width of the label
+        const lx = Math.min(Math.max(p.sx(tu,tv)+ox, lw2), vw-lw2);
+        flat+=`<text x="${lx}" y="${p.sy(tu,tv)+oy}" text-anchor="${anch}" font-size="11.5" font-weight="700"
+                fill="#e03131" paint-order="stroke" stroke="#fff" stroke-width="3.5">blocked</text>`;
+      }
+    }
+    info={nW, gained, wi:w, blocked, dirName};
+  }
+
+  const svg=document.getElementById('stage');
+  svg.setAttribute('viewBox',`0 0 ${vw} ${vh}`);
+  svg.innerHTML = `<defs><image id="muralB" href="${MURAL}" x="0" y="0" width="1" height="1" preserveAspectRatio="none"/></defs>`
+    + p.svg
+    + `<g transform="${p.matrix}">${ov}</g>`
+    + `<g transform="${p.matrix}">${hits}</g>`
+    + flat
+    + `<text x="${(bb.x0+bb.x1)/2}" y="${vh-10}" text-anchor="middle" font-size="12.5" fill="#7a8494">16 &#215; 16 = 256 patch tokens</text>`;
+
+  svg.querySelectorAll('.hit').forEach(el=>{
+    el.addEventListener('click',()=>{
+      state.sel={i:+el.dataset.i, j:+el.dataset.j};
+      lastInfo=renderStage(); renderSide();
+    });
+  });
+  return info;
+}
+
+/* ================================================================
+   6.  Numbers & prose panel
+   ================================================================ */
+let lastInfo={};
+function renderSide(){
+  const P=partition(state.gridN,state.offset);
+  const sizes=new Set(P.wins.map(w=>`${w.i1-w.i0}×${w.j1-w.j0}`));
+  const pct=(100*P.cost/GLOBAL_COST);
+  const rows=[
+    ['Windows', `${P.nc} &times; ${P.nr} = ${P.nc*P.nr}`],
+    ['Patches per window', [...sizes].join(', ')],
+    ['Attention pairs &nbsp;<span class="k">&Sigma;|w|&sup2;</span>', P.cost.toLocaleString()],
+    ['vs. global (65,536)', `${pct.toFixed(1)}&thinsp;%`]
+  ];
+  document.getElementById('statTable').innerHTML =
+    rows.map(r=>`<tr><td>${r[0]}</td><td class="big">${r[1]}</td></tr>`).join('');
+
+  const t=document.getElementById('stageTitle'), s=document.getElementById('stageSub');
+  const gname = state.gridN===1 ? '1×1 window (global attention)'
+                                : `${state.gridN}×${state.gridN}${state.offset?' offset':''} windows`;
+  t.innerHTML = gname;
+  s.innerHTML = state.gridN===1 ? 'panel f &mdash; the degenerate case: one window covers the whole image'
+              : (state.offset ? `panel ${state.gridN===4?'c':'e'} &mdash; layer &#8467;+1: grid shifted by &lfloor;M/2&rfloor; = ${NP/state.gridN/2|0} patches in x and y`
+                              : `panel ${state.gridN===4?'b':'d'} &mdash; layer &#8467;: regular partition`);
+
+  const note=document.getElementById('selNote');
+  const inf=lastInfo;
+  if(!state.sel){
+    note.className='note empty';
+    note.innerHTML='Click any patch on the image to pick a <b>query token</b> and see exactly which tokens it is allowed to attend to.';
+  }else{
+    note.className='note';
+    const w=inf.wi;
+    let html=`Query patch <span class="k">(${state.sel.i}, ${state.sel.j})</span> sits in window `+
+             `<span class="k">(${w.ci}, ${w.ri})</span>, which holds <b>${inf.nW}</b> of 256 tokens &mdash; `+
+             `so it attends to <b>${(100*inf.nW/256).toFixed(1)}&thinsp;%</b> of the image.`;
+    if(inf.blocked) html+=` The <span style="color:#e03131;font-weight:700">${inf.blocked} tokens</span> in the neighbouring window just across the boundary are unreachable in this layer.`;
+    if(state.offset && inf.gained>0)
+      html+=` Of the ${inf.nW} tokens it <em>can</em> reach, <b style="color:#0b9f77">${inf.gained}</b> (green) sat in a <em>different</em> window before the shift &mdash; that is exactly the information the shifted partition lets cross the old boundary.`;
+    if(state.offset && inf.gained===0)
+      html+=` For this particular patch the shift adds nothing new &mdash; try one closer to a boundary of the regular grid.`;
+    if(state.gridN===1)
+      html+=` This is full global self-attention: 255 connections from a single token, 65,536 pairs in total.`;
+    note.innerHTML=html;
+  }
+}
+
+/* ================================================================
+   7.  Controls
+   ================================================================ */
+const GRIDS=[1,2,4];
+const slider=document.getElementById('sizeSlider');
+const chk=document.getElementById('offsetChk');
+const sw=document.getElementById('offsetSwitch');
+
+function syncControls(){
+  slider.value=GRIDS.indexOf(state.gridN);
+  chk.checked=state.offset;
+  const dis=state.gridN===1;
+  chk.disabled=dis; sw.classList.toggle('disabled',dis);
+  sw.title = dis ? 'Shifting a window that already covers the whole image has no effect' : '';
+  document.querySelectorAll('.ticks span').forEach(el=>el.classList.toggle('on',+el.dataset.g===state.gridN));
+  document.getElementById('altBtn').classList.toggle('on', !!state.alt);
+}
+function renderAll(){ renderStrip(); lastInfo=renderStage(); renderSide(); }
+
+slider.addEventListener('input',()=>{
+  state.gridN=GRIDS[+slider.value];
+  if(state.gridN===1) state.offset=false;
+  state.sel=null; stopAlt(); syncControls(); renderAll();
+});
+document.querySelectorAll('.ticks span').forEach(el=>el.addEventListener('click',()=>{
+  state.gridN=+el.dataset.g; if(state.gridN===1) state.offset=false;
+  state.sel=null; stopAlt(); syncControls(); renderAll();
+}));
+chk.addEventListener('change',()=>{ state.offset=chk.checked; syncControls(); renderAll(); });
+document.getElementById('clearBtn').addEventListener('click',()=>{ state.sel=null; renderAll(); });
+
+function stopAlt(){ if(state.alt){clearInterval(state.alt); state.alt=null; syncControls();} }
+document.getElementById('altBtn').addEventListener('click',()=>{
+  if(state.alt){ stopAlt(); return; }
+  if(state.gridN===1){ state.gridN=4; }
+  state.alt=setInterval(()=>{ state.offset=!state.offset; syncControls(); renderAll(); },1500);
+  syncControls(); renderAll();
+});
+
+syncControls();
+renderAll();
+</script>
+</body>
+</html>

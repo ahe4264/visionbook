@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label><input id="compareModeInput" type="checkbox" onchange="toggle_compareMode(this.checked)"> Focus balanced split</label>
+    <button id="expandLevelInput" onclick="trigger_expandLevel()">Expand next level</button>
+    <button id="resetViewInput" onclick="trigger_resetView()">Reset</button>
+    <span id="costReadout" style="font:12px/1.35 sans-serif;color:#333;">Cost counted: Theta(n)</span>
+    <span id="expandStatus" style="font:11px/1.35 sans-serif;color:#555;">Frontier: original leaves</span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library choice: svgjs.
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var VIEW_W = 1200;
+    var BASE_H = 300;
+    var expansionLevel = 0;
+    var focusMode = null;
+    var activeCostGroup = null;
+    var panelALabel;
+    var panelBLabel;
+    var panelA;
+    var panelB;
+    var panelACostEllipse;
+    var panelBCostEllipse;
+    var expansionLayer;
+    var costTextA;
+    var costTextB;
+    var costNodesA = [];
+    var costNodesB = [];
+
+    draw.viewbox(0, 0, VIEW_W, BASE_H);
+    draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+    function textLabel(parent, value, x, y, size, italic) {
+      var t = parent.text(value)
+        .font({ family: 'Times New Roman, Times, serif', size: size || 24, anchor: 'middle' })
+        .attr({ 'dominant-baseline': 'central' });
+      if (italic) t.font({ style: 'italic' });
+      t.center(x, y);
+      return t;
+    }
+
+    function boxNode(parent, value, cx, cy, w, h, size) {
+      var g = parent.group();
+      g.rect(w, h).fill('#d9d9d9').stroke('none').center(cx, cy);
+      textLabel(g, value, cx, cy + 1, size || 26, true);
+      g.css('cursor', 'pointer');
+      g.on('mousemove', function (e) { showTooltip('Unsolved subproblem that will be split on a later recursive call.', e); });
+      g.on('mouseleave', hideTooltip);
+      return g;
+    }
+
+    function branch(parent, x1, y1, x2, y2) {
+      return parent.line(x1, y1, x2, y2).stroke({ color: '#000', width: 2.5, linecap: 'butt' });
+    }
+
+    function dottedArrow(parent, x1, y1, x2, y2) {
+      var g = parent.group();
+      g.line(x1, y1, x2 - 19, y2)
+        .stroke({ color: '#000', width: 5.5, dasharray: '3 6', linecap: 'butt' });
+      g.polygon((x2 - 19) + ',' + (y2 - 9) + ' ' + x2 + ',' + y2 + ' ' + (x2 - 19) + ',' + (y2 + 9))
+        .fill('#000');
+      return g;
+    }
+
+    function wireCostEllipse(ellipse, which) {
+      ellipse.css('cursor', 'pointer');
+      ellipse.on('mousemove', function (e) {
+        showTooltip('Click to highlight the nodes counted together as one Theta(n) cost.', e);
+      });
+      ellipse.on('mouseleave', hideTooltip);
+      ellipse.on('click', function () {
+        activeCostGroup = which;
+        applyCostHighlight();
+        if (which === 'a') {
+          showPopup('Panel (a) cost group', 'The shaded oval combines the lopsided split at n with the next split at n-1. Those two pieces of partitioning work are treated as one Theta(n) chunk before comparing the remaining boxes.');
+        } else {
+          showPopup('Panel (b) cost group', 'The shaded oval counts the single balanced split at n. It leaves two equal pending subproblems while costing the same order of work as the grouped work in panel (a).');
+        }
+      });
+    }
+
+    function buildBaseFigure() {
+      draw.clear();
+      panelA = draw.group();
+      panelB = draw.group();
+      expansionLayer = draw.group();
+
+      panelACostEllipse = panelA.ellipse(235, 92)
+        .fill('#d9d9d9')
+        .opacity(0.92)
+        .center(222, 86)
+        .rotate(28, 222, 86);
+      wireCostEllipse(panelACostEllipse, 'a');
+
+      branch(panelA, 130, 58, 25, 112);
+      branch(panelA, 152, 58, 255, 112);
+      branch(panelA, 255, 142, 183, 193);
+      branch(panelA, 278, 142, 356, 193);
+
+      var aTop = textLabel(panelA, 'n', 139, 41, 32, true);
+      var aZero = textLabel(panelA, '0', 18, 142, 30, false);
+      var aMid = textLabel(panelA, 'n-1', 269, 142, 30, true);
+      costNodesA = [aTop, aMid];
+
+      boxNode(panelA, '(n-1)/2 - 1', 178, 220, 177, 58, 26);
+      boxNode(panelA, '(n-1)/2', 350, 220, 140, 58, 26);
+      dottedArrow(panelA, 318, 87, 458, 87);
+      costTextA = textLabel(panelA, '\u0398(n)', 505, 88, 30, true);
+      panelALabel = textLabel(panelA, '(a)', 205, 274, 27, false);
+
+      panelBCostEllipse = panelB.ellipse(100, 52)
+        .fill('#d9d9d9')
+        .opacity(0.92)
+        .center(865, 87);
+      wireCostEllipse(panelBCostEllipse, 'b');
+
+      branch(panelB, 856, 110, 748, 176);
+      branch(panelB, 876, 110, 975, 176);
+
+      var bTop = textLabel(panelB, 'n', 865, 88, 32, true);
+      costNodesB = [bTop];
+
+      boxNode(panelB, '(n-1)/2', 747, 202, 136, 58, 26);
+      boxNode(panelB, '(n-1)/2', 985, 202, 136, 58, 26);
+      dottedArrow(panelB, 915, 88, 1095, 88);
+      costTextB = textLabel(panelB, '\u0398(n)', 1150, 88, 30, true);
+      panelBLabel = textLabel(panelB, '(b)', 866, 274, 27, false);
+
+      applyFocus();
+      applyCostHighlight();
+      drawExpansion();
+    }
+
+    function applyFocus() {
+      if (!panelA || !panelB) return;
+      if (focusMode === 'balanced') {
+        panelA.opacity(0.36);
+        panelB.opacity(1);
+        document.getElementById('costReadout').textContent = 'Balanced: Theta(n), two equal boxes';
+      } else if (focusMode === 'alternating') {
+        panelA.opacity(1);
+        panelB.opacity(0.36);
+        document.getElementById('costReadout').textContent = 'Alternating: grouped work is Theta(n)';
+      } else {
+        panelA.opacity(1);
+        panelB.opacity(1);
+        document.getElementById('costReadout').textContent = 'Cost counted: Theta(n)';
+      }
+    }
+
+    function applyCostHighlight() {
+      if (!panelACostEllipse || !panelBCostEllipse) return;
+      panelACostEllipse.fill(activeCostGroup === 'a' ? '#eeeeee' : '#d9d9d9');
+      panelBCostEllipse.fill(activeCostGroup === 'b' ? '#eeeeee' : '#d9d9d9');
+      panelACostEllipse.stroke(activeCostGroup === 'a' ? { color: '#777', width: 1.3 } : { color: 'none', width: 0 });
+      panelBCostEllipse.stroke(activeCostGroup === 'b' ? { color: '#777', width: 1.3 } : { color: 'none', width: 0 });
+
+      function mark(list, on) {
+        for (var i = 0; i < list.length; i++) {
+          list[i].fill(on ? '#000' : '#111');
+          list[i].font({ weight: on ? 700 : 400 });
+        }
+      }
+      mark(costNodesA, activeCostGroup === 'a');
+      mark(costNodesB, activeCostGroup === 'b');
+    }
+
+    function tinyBox(parent, value, cx, cy, w) {
+      var g = parent.group();
+      g.rect(w, 34).fill('#d9d9d9').stroke('none').center(cx, cy);
+      textLabel(g, value, cx, cy + 1, 15, true);
+      return g;
+    }
+
+    function drawChildPair(parent, rootX, rootY, leftText, rightText, spread, childY, childW) {
+      branch(parent, rootX - 4, rootY, rootX - spread, childY - 20).stroke({ width: 1.5 });
+      branch(parent, rootX + 4, rootY, rootX + spread, childY - 20).stroke({ width: 1.5 });
+      tinyBox(parent, leftText, rootX - spread, childY, childW);
+      tinyBox(parent, rightText, rootX + spread, childY, childW);
+    }
+
+    function drawExpansion() {
+      if (!expansionLayer) return;
+      expansionLayer.clear();
+      var height = BASE_H;
+      var status = 'Frontier: original leaves';
+      if (expansionLevel > 0) {
+        height = 430;
+        panelALabel.center(205, 408);
+        panelBLabel.center(866, 408);
+        drawChildPair(expansionLayer, 178, 250, '0', '(n-3)/2', 43, 318, 78);
+        drawChildPair(expansionLayer, 350, 250, '(n-3)/4', '(n-1)/4', 49, 318, 86);
+        drawChildPair(expansionLayer, 747, 232, '(n-3)/4', '(n-3)/4', 55, 318, 86);
+        drawChildPair(expansionLayer, 985, 232, '(n-3)/4', '(n-3)/4', 55, 318, 86);
+        status = 'Frontier: one more split revealed';
+      } else {
+        panelALabel.center(205, 274);
+        panelBLabel.center(866, 274);
+      }
+
+      if (expansionLevel > 1) {
+        height = 520;
+        panelALabel.center(205, 492);
+        panelBLabel.center(866, 492);
+        var dots = [
+          [221, 393], [301, 393], [399, 393],
+          [692, 393], [802, 393], [930, 393], [1040, 393]
+        ];
+        for (var i = 0; i < dots.length; i++) {
+          branch(expansionLayer, dots[i][0], 335, dots[i][0] - 17, 371).stroke({ width: 1.1 });
+          branch(expansionLayer, dots[i][0], 335, dots[i][0] + 17, 371).stroke({ width: 1.1 });
+          textLabel(expansionLayer, '...', dots[i][0], dots[i][1], 18, false);
+        }
+        status = 'Frontier: two recursive levels revealed';
+      }
+      draw.viewbox(0, 0, VIEW_W, height);
+      document.getElementById('expandStatus').textContent = status;
+      var expandButton = document.getElementById('expandLevelInput');
+      if (expandButton) {
+        expandButton.textContent = expansionLevel >= 2 ? 'Collapse levels' : 'Expand next level';
+      }
+    }
+
+    function toggle_compareMode(on) {
+      focusMode = on ? 'balanced' : 'alternating';
+      applyFocus();
+    }
+
+    function trigger_expandLevel() {
+      expansionLevel = (expansionLevel + 1) % 3;
+      drawExpansion();
+      document.getElementById('costReadout').textContent =
+        expansionLevel === 0 ? 'Cost counted: Theta(n)' :
+          (expansionLevel === 1 ? 'Accumulated: about 2 Theta(n)' : 'Accumulated: about 3 Theta(n)');
+    }
+
+    function trigger_resetView() {
+      expansionLevel = 0;
+      focusMode = null;
+      activeCostGroup = null;
+      var toggle = document.getElementById('compareModeInput');
+      if (toggle) toggle.checked = false;
+      applyFocus();
+      applyCostHighlight();
+      drawExpansion();
+      hideTooltip();
+    }
+
+    buildBaseFigure();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+      font-family: sans-serif;
+    }
+
+    #stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      grid-area: stage;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 28px;
+      color: #111;
+      text-shadow: 0 1px 2px #fff, 0 -1px 2px #fff, 1px 0 2px #fff, -1px 0 2px #fff;
+    }
+
+    .lbl.small {
+      font-size: 20px;
+    }
+
+    .lbl.sans {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 26px;
+      line-height: 1.25;
+      text-align: center;
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    .readout {
+      color: #333;
+      line-height: 1.35;
+      border-top: 1px solid #e1e4e8;
+      padding-top: 6px;
+    }
+
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(9, 1fr);
+      gap: 3px;
+      margin-top: 2px;
+    }
+
+    .swatches span {
+      height: 10px;
+      border-radius: 2px;
+      border: 1px solid rgba(0, 0, 0, 0.18);
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="stage">
+    <canvas id="c"></canvas>
+  </div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <button id="btnProjToggle" style="display:none">3D view</button>
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>latent slice z
+      <input id="sliceSlider" type="range" min="-1" max="1" step="0.01" value="0.25">
+    </label>
+    <label>observed point x
+      <input id="pointSlider" type="range" min="0.05" max="0.95" step="0.01" value="0.66">
+    </label>
+    <button id="btnMarginalize">Animate marginalization</button>
+    <button id="btnPosterior" class="active">Posterior highlight</button>
+    <div class="swatches" aria-hidden="true">
+      <span style="background:#d62728"></span><span style="background:#2ca02c"></span><span style="background:#1f77b4"></span>
+      <span style="background:#111111"></span><span style="background:#8a8f00"></span><span style="background:#d336c5"></span>
+      <span style="background:#17becf"></span><span style="background:#1b2a73"></span><span style="background:#7f1d1d"></span>
+    </div>
+    <div id="readout" class="readout">z = 0.25, posterior band active</div>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    let _rendered = false;
+    window._rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; window._rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const canvas = document.getElementById('c');
+    const _stage = document.getElementById('stage');
+    const _ui = document.getElementById('ui');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    function _applyUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', 'right');
+      document.body.style.setProperty('--ui-size', `${sizePx || 300}px`);
+    }
+
+    function _autoUiLayout() {
+      _applyUiLayout('right', 300);
+    }
+
+    function setUiLayout() {
+      _autoUiLayout();
+    }
+
+    new MutationObserver(() => {
+      clearTimeout(_autoUiLayout._t);
+      _autoUiLayout._t = setTimeout(_autoUiLayout, 0);
+    }).observe(_ui, { childList: true, subtree: true });
+    window.addEventListener('resize', () => { _autoUiLayout(); });
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    const d = 3;
+    let aspect = Math.max(1, canvas.clientWidth) / Math.max(1, canvas.clientHeight);
+    let camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 0.1, 100);
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 0.35, 0);
+
+    const _labels = [];
+    function addLabel(htmlString, position, options = {}) {
+      const el = document.createElement('div');
+      el.className = `lbl ${options.className || ''}`.trim();
+      el.innerHTML = htmlString;
+      _stage.appendChild(el);
+      const rec = { el, position: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(rec);
+      return rec;
+    }
+
+    function _syncLabels() {
+      const rect = canvas.getBoundingClientRect();
+      for (const item of _labels) {
+        const p = item.position.clone().project(camera);
+        const visible = p.z >= -1 && p.z <= 1;
+        item.el.style.display = visible ? 'block' : 'none';
+        item.el.style.left = `${(p.x * 0.5 + 0.5) * rect.width + rect.left - _stage.getBoundingClientRect().left + item.offset[0]}px`;
+        item.el.style.top = `${(-p.y * 0.5 + 0.5) * rect.height + rect.top - _stage.getBoundingClientRect().top + item.offset[1]}px`;
+      }
+    }
+
+    const tooltip = document.getElementById('figTooltip');
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const interactive = [];
+
+    function registerInteractive(object, data) {
+      object.userData.figureInfo = data;
+      interactive.push(object);
+    }
+
+    function showTooltip(text, x, y) {
+      tooltip.textContent = text;
+      tooltip.style.display = 'block';
+      tooltip.style.transform = `translate(${x + 12}px, ${y + 12}px)`;
+    }
+
+    function hideTooltip() {
+      tooltip.style.display = 'none';
+    }
+
+    function setCameraView(opts = {}) {
+      const projection = opts.projection || 'orthographic';
+      const target = opts.target ? new THREE.Vector3(...opts.target) : new THREE.Vector3(0, 0.35, 0);
+      if (projection === 'orthographic') {
+        const az = THREE.MathUtils.degToRad(43);
+        const el = THREE.MathUtils.degToRad(22);
+        const r = 9;
+        camera.position.set(target.x + r * Math.cos(el) * Math.cos(az), target.y + r * Math.sin(el), target.z + r * Math.cos(el) * Math.sin(az));
+        camera.lookAt(target);
+        controls.target.copy(target);
+        const box = new THREE.Box3().setFromObject(scene);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        const maxSize = Math.max(size.x, size.y, size.z, 1);
+        const fill = opts.heightFraction || 0.72;
+        camera.zoom = Math.max(0.55, (2 * d * fill) / maxSize);
+        camera.updateProjectionMatrix();
+        controls.target.copy(center.lerp(target, 0.35));
+      }
+    }
+
+    function resizeRendererToDisplaySize() {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const needResize = canvas.width !== Math.floor(width * renderer.getPixelRatio()) || canvas.height !== Math.floor(height * renderer.getPixelRatio());
+      if (needResize) {
+        renderer.setSize(width, height, false);
+        aspect = width / Math.max(1, height);
+        camera.left = -d * aspect;
+        camera.right = d * aspect;
+        camera.top = d;
+        camera.bottom = -d;
+        camera.updateProjectionMatrix();
+      }
+      return needResize;
+    }
+
+    function _disposeObject(obj) {
+      obj.traverse((child) => {
+        child.geometry?.dispose?.();
+        const mat = child.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose?.());
+        else mat?.dispose?.();
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      resizeRendererToDisplaySize();
+      controls.update();
+      updateAnimation();
+      _syncLabels();
+      renderer.render(scene, camera);
+      window.__markRendered?.();
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // left distribution box -> LineSegments brown wireframe
+    // x1, x2, z axes -> Line with ConeGeometry arrowheads
+    // z-conditioned density slices -> subdivided PlaneGeometry vertex-color meshes
+    // decoder manifold path -> cyan TubeGeometry curve with dashed hidden segment
+    // slice indicators -> colored TubeGeometry loops and teal SphereGeometry markers
+    // right marginal panel -> vertical subdivided PlaneGeometry vertex-color mesh
+    // projected marginal path -> cyan TubeGeometry curve with ConeGeometry arrowhead
+    // marginalization annotation -> grey ArrowHelper and text label
+    // posterior for selected x -> yellow vertical Line plus translucent TubeGeometry bands
+
+    const brown = 0x7a3a1f;
+    const darkBrown = new THREE.Color(0x2a0601);
+    const warmLight = new THREE.Color(0xfff1b8);
+    const peach = new THREE.Color(0xffa278);
+    const teal = 0x9adfdc;
+    const tealDark = 0x2b8f8b;
+    const grey = 0xc8d0d2;
+    const left = new THREE.Group();
+    const right = new THREE.Group();
+    left.position.set(-1.62, 0.12, 0);
+    right.position.set(2.12, -0.2, 0.02);
+    scene.add(left, right);
+
+    const palette = [0xd62728, 0x2ca02c, 0x1f77b4, 0x111111, 0x8a8f00, 0xd336c5, 0x17becf, 0x1b2a73, 0x7f1d1d];
+    const zSlices = [-0.94, -0.70, -0.46, -0.22, 0.02, 0.26, 0.50, 0.74, 0.98];
+    const W = 2.5;
+    const H = 1.7;
+    const D = 2.0;
+    const halfW = W / 2;
+    const halfH = H / 2;
+    const halfD = D / 2;
+
+    function makeLine(points, color = brown, width = 1, dashed = false) {
+      const geom = new THREE.BufferGeometry().setFromPoints(points);
+      const mat = dashed
+        ? new THREE.LineDashedMaterial({ color, linewidth: width, dashSize: 0.09, gapSize: 0.055 })
+        : new THREE.LineBasicMaterial({ color, linewidth: width });
+      const line = new THREE.Line(geom, mat);
+      if (dashed) line.computeLineDistances();
+      return line;
+    }
+
+    function makeTube(points, radius, color, opacity = 1) {
+      const curve = new THREE.CatmullRomCurve3(points);
+      const geom = new THREE.TubeGeometry(curve, 80, radius, 10, false);
+      const mat = new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity });
+      return new THREE.Mesh(geom, mat);
+    }
+
+    function makeArrow(from, to, color, radius = 0.018, headRadius = 0.065, headLength = 0.18) {
+      const dir = to.clone().sub(from);
+      const bodyEnd = to.clone().sub(dir.clone().normalize().multiplyScalar(headLength));
+      const body = makeTube([from, bodyEnd], radius, color, 1);
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(headRadius, headLength, 18),
+        new THREE.MeshBasicMaterial({ color })
+      );
+      cone.position.copy(to);
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+      const group = new THREE.Group();
+      group.add(body, cone);
+      return group;
+    }
+
+    function addBoxEdges(group, w, h, depth, color) {
+      const x = [-w / 2, w / 2];
+      const y = [-h / 2, h / 2];
+      const z = [-depth / 2, depth / 2];
+      const pts = [
+        [x[0], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[0], z[0]], [x[1], y[1], z[0]],
+        [x[1], y[1], z[0]], [x[0], y[1], z[0]], [x[0], y[1], z[0]], [x[0], y[0], z[0]],
+        [x[0], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[0], z[1]], [x[1], y[1], z[1]],
+        [x[1], y[1], z[1]], [x[0], y[1], z[1]], [x[0], y[1], z[1]], [x[0], y[0], z[1]],
+        [x[0], y[0], z[0]], [x[0], y[0], z[1]], [x[1], y[0], z[0]], [x[1], y[0], z[1]],
+        [x[1], y[1], z[0]], [x[1], y[1], z[1]], [x[0], y[1], z[0]], [x[0], y[1], z[1]]
+      ].map((p) => new THREE.Vector3(...p));
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({ color });
+      const seg = new THREE.LineSegments(geom, mat);
+      group.add(seg);
+      return seg;
+    }
+
+    function densityValue(u, v, z, mode = 'joint') {
+      const c1x = 0.35 * Math.sin(2.4 * z) - 0.18 * z;
+      const c1y = 0.32 * Math.cos(2.1 * z) + 0.22 * z;
+      const c2x = -0.35 * Math.cos(1.7 * z) + 0.25 * z;
+      const c2y = -0.36 * Math.sin(2.0 * z) - 0.12 * z;
+      const g1 = Math.exp(-((u - c1x) ** 2 / 0.10 + (v - c1y) ** 2 / 0.065));
+      const g2 = Math.exp(-((u - c2x) ** 2 / 0.18 + (v - c2y) ** 2 / 0.13));
+      const ridge = Math.exp(-((u + 0.45 * Math.sin(2.8 * v + z)) ** 2 / 0.28 + (v - 0.25 * Math.cos(1.3 * z)) ** 2 / 0.26));
+      return mode === 'marginal' ? Math.min(1, 0.75 * g1 + 0.55 * g2 + 0.5 * ridge) : Math.min(1, 0.95 * g1 + 0.35 * g2);
+    }
+
+    function makeDensityPlane(width, height, zValue, verticalAxis = 'y', mode = 'joint') {
+      const segX = 34;
+      const segY = 34;
+      const geom = new THREE.PlaneGeometry(width, height, segX, segY);
+      const colors = [];
+      const pos = geom.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const u = pos.getX(i) / (width / 2);
+        const v = pos.getY(i) / (height / 2);
+        const val = densityValue(u, v, zValue, mode);
+        const c = darkBrown.clone().lerp(peach, Math.min(1, val * 1.15)).lerp(warmLight, Math.max(0, val - 0.55) * 1.8);
+        colors.push(c.r, c.g, c.b);
+      }
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      const mat = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: mode === 'marginal' ? 0.96 : 0.88,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      if (verticalAxis === 'z') mesh.rotation.x = -Math.PI / 2;
+      return mesh;
+    }
+
+    addBoxEdges(left, W, H, D, brown);
+
+    const xArrow = makeArrow(new THREE.Vector3(-halfW, halfH + 0.02, -halfD), new THREE.Vector3(halfW + 0.25, halfH + 0.02, -halfD), brown, 0.007, 0.04, 0.12);
+    const yArrow = makeArrow(new THREE.Vector3(-halfW, -halfH, -halfD), new THREE.Vector3(-halfW, halfH + 0.25, -halfD), brown, 0.007, 0.04, 0.12);
+    const zArrow = makeArrow(new THREE.Vector3(-halfW, -halfH, -halfD), new THREE.Vector3(-halfW, -halfH, halfD + 0.35), brown, 0.007, 0.04, 0.12);
+    left.add(xArrow, yArrow, zArrow);
+
+    const sliceMeshes = [];
+    for (const z of [-0.78, 0.02, 0.72]) {
+      const plane = makeDensityPlane(1.35, 1.25, z, 'y', 'joint');
+      plane.position.set(0, 0, z);
+      left.add(plane);
+      sliceMeshes.push(plane);
+    }
+
+    function manifoldPoint(t, zLift = 0) {
+      const z = THREE.MathUtils.lerp(-0.98, 0.98, t);
+      const x = 0.85 * Math.sin(1.25 * Math.PI * (t - 0.08)) - 0.08;
+      const y = 0.56 * Math.sin(Math.PI * (t + 0.15)) - 0.08 + zLift;
+      return new THREE.Vector3(x, y, z);
+    }
+
+    const curvePts = [];
+    for (let i = 0; i <= 80; i++) curvePts.push(manifoldPoint(i / 80));
+    const frontPts = curvePts.filter((_, i) => i < 34);
+    const dashedPts = curvePts.filter((_, i) => i >= 30 && i < 51);
+    const rearPts = curvePts.filter((_, i) => i >= 47);
+    left.add(makeTube(frontPts, 0.018, teal, 1));
+    left.add(makeLine(dashedPts, teal, 1, true));
+    left.add(makeTube(rearPts, 0.018, teal, 1));
+
+    const movingSlice = makeDensityPlane(1.35, 1.25, 0.25, 'y', 'joint');
+    movingSlice.material.opacity = 0.56;
+    movingSlice.scale.set(1.05, 1.05, 1.05);
+    movingSlice.position.z = 0.25;
+    left.add(movingSlice);
+
+    const coloredLoops = [];
+    for (let i = 0; i < zSlices.length; i++) {
+      const z = zSlices[i];
+      const pts = [];
+      for (let j = 0; j < 60; j++) {
+        const a = (j / 59) * Math.PI * 2;
+        const cx = 0.42 * Math.sin(2.4 * z) - 0.2 * z;
+        const cy = 0.34 * Math.cos(2.1 * z) + 0.18 * z;
+        pts.push(new THREE.Vector3(cx + 0.22 * Math.cos(a), cy + 0.13 * Math.sin(a), z));
+      }
+      const loop = makeTube(pts, 0.0065, palette[i], 0.72);
+      left.add(loop);
+      coloredLoops.push(loop);
+    }
+
+    const markers = [0.13, 0.66].map((t) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.055, 24, 16),
+        new THREE.MeshBasicMaterial({ color: tealDark })
+      );
+      m.position.copy(manifoldPoint(t));
+      left.add(m);
+      return m;
+    });
+
+    const selectedMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.065, 28, 18),
+      new THREE.MeshBasicMaterial({ color: 0xf2c14e })
+    );
+    left.add(selectedMarker);
+
+    const posteriorLine = makeLine([new THREE.Vector3(), new THREE.Vector3()], 0xf2c14e);
+    left.add(posteriorLine);
+    let posteriorBand = null;
+
+    const marginalPanel = makeDensityPlane(1.05, 1.55, 0, 'y', 'marginal');
+    marginalPanel.position.set(0, 0, 0);
+    right.add(marginalPanel);
+    const panelFrameGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.05, 1.55, 0.02));
+    const panelFrame = new THREE.LineSegments(panelFrameGeom, new THREE.LineBasicMaterial({ color: 0x111111 }));
+    right.add(panelFrame);
+
+    function marginalPoint(t) {
+      const x = -0.36 + 0.9 * t + 0.10 * Math.sin(2 * Math.PI * t);
+      const y = -0.58 + 1.18 * Math.sin(0.9 * Math.PI * t) - 0.12 * t;
+      return new THREE.Vector3(x, y, 0.035);
+    }
+
+    const marginalPts = [];
+    for (let i = 0; i <= 72; i++) marginalPts.push(marginalPoint(i / 72));
+    right.add(makeTube(marginalPts, 0.013, teal, 0.95));
+    const marginalArrow = makeArrow(marginalPts[56], marginalPts[63], teal, 0.012, 0.05, 0.14);
+    right.add(marginalArrow);
+
+    const marginalMarkers = [0.08, 0.83].map((t) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045, 24, 16),
+        new THREE.MeshBasicMaterial({ color: tealDark })
+      );
+      m.position.copy(marginalPoint(t));
+      right.add(m);
+      return m;
+    });
+
+    const sweepGroup = new THREE.Group();
+    const sweepArrow = makeArrow(new THREE.Vector3(-0.08, 0.35, 1.1), new THREE.Vector3(0.82, -0.44, 1.08), teal, 0.015, 0.07, 0.18);
+    sweepGroup.add(sweepArrow);
+    left.add(sweepGroup);
+
+    const greyArrow = makeArrow(new THREE.Vector3(-0.4, -1.18, 1.28), new THREE.Vector3(1.2, -1.42, 0.72), grey, 0.018, 0.08, 0.2);
+    scene.add(greyArrow);
+
+    function updateSlice(z) {
+      movingSlice.position.z = z;
+      const old = movingSlice.geometry;
+      const replacement = makeDensityPlane(1.35, 1.25, z, 'y', 'joint');
+      movingSlice.geometry = replacement.geometry;
+      replacement.material.dispose();
+      old.dispose();
+      const t = (z + 0.98) / 1.96;
+      selectedMarker.position.copy(manifoldPoint(THREE.MathUtils.clamp(t, 0, 1)));
+      for (let i = 0; i < coloredLoops.length; i++) {
+        coloredLoops[i].material.opacity = Math.abs(zSlices[i] - z) < 0.13 ? 1 : 0.34;
+      }
+    }
+
+    function updatePosterior(t) {
+      const p = marginalPoint(t);
+      const mappedX = THREE.MathUtils.lerp(-0.8, 0.8, (p.x + 0.5) / 1.0);
+      const mappedY = THREE.MathUtils.lerp(-0.62, 0.62, (p.y + 0.75) / 1.5);
+      const zCenter = THREE.MathUtils.clamp(0.82 * Math.sin(3.1 * t - 1.1), -0.76, 0.76);
+      const uncertainty = 0.2 + 0.28 * Math.abs(Math.cos(2.0 * Math.PI * t));
+      const a = new THREE.Vector3(mappedX, mappedY, Math.max(-halfD, zCenter - uncertainty));
+      const b = new THREE.Vector3(mappedX, mappedY, Math.min(halfD, zCenter + uncertainty));
+      posteriorLine.geometry.dispose();
+      posteriorLine.geometry = new THREE.BufferGeometry().setFromPoints([a, b]);
+      if (posteriorBand) {
+        left.remove(posteriorBand);
+        _disposeObject(posteriorBand);
+      }
+      posteriorBand = makeTube([
+        new THREE.Vector3(mappedX - 0.07, mappedY, a.z),
+        new THREE.Vector3(mappedX, mappedY + 0.06, (a.z + b.z) / 2),
+        new THREE.Vector3(mappedX + 0.07, mappedY, b.z)
+      ], 0.032, 0xf2c14e, 0.35);
+      left.add(posteriorBand);
+      marginalMarkers[1].position.copy(p);
+    }
+
+    const slider = document.getElementById('sliceSlider');
+    const pointSlider = document.getElementById('pointSlider');
+    const readout = document.getElementById('readout');
+    const btnMarginalize = document.getElementById('btnMarginalize');
+    const btnPosterior = document.getElementById('btnPosterior');
+    let marginalizeT = 0;
+    let marginalizing = false;
+    let posteriorActive = true;
+
+    function refreshReadout() {
+      const z = Number(slider.value);
+      const point = Number(pointSlider.value);
+      readout.textContent = `z = ${z.toFixed(2)}, x path position = ${point.toFixed(2)}${marginalizing ? ', marginalizing' : ''}`;
+    }
+
+    slider.addEventListener('input', () => {
+      updateSlice(Number(slider.value));
+      refreshReadout();
+    });
+
+    pointSlider.addEventListener('input', () => {
+      updatePosterior(Number(pointSlider.value));
+      refreshReadout();
+    });
+
+    btnMarginalize.addEventListener('click', () => {
+      marginalizing = !marginalizing;
+      btnMarginalize.classList.toggle('active', marginalizing);
+      btnMarginalize.textContent = marginalizing ? 'Pause marginalization' : 'Animate marginalization';
+      refreshReadout();
+    });
+
+    btnPosterior.addEventListener('click', () => {
+      posteriorActive = !posteriorActive;
+      btnPosterior.classList.toggle('active', posteriorActive);
+      posteriorLine.visible = posteriorActive;
+      if (posteriorBand) posteriorBand.visible = posteriorActive;
+      refreshReadout();
+    });
+
+    let draggingPoint = false;
+    canvas.addEventListener('pointerdown', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects([marginalMarkers[1]], true)[0];
+      if (hit) {
+        draggingPoint = true;
+        controls.enabled = false;
+      }
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+      if (!draggingPoint) return;
+      const rect = canvas.getBoundingClientRect();
+      const localX = THREE.MathUtils.clamp((event.clientX - rect.left) / rect.width, 0.08, 0.92);
+      pointSlider.value = localX.toFixed(2);
+      updatePosterior(Number(pointSlider.value));
+      refreshReadout();
+    });
+
+    window.addEventListener('pointerup', () => {
+      draggingPoint = false;
+      controls.enabled = true;
+    });
+
+    function updateAnimation() {
+      if (!marginalizing) return;
+      marginalizeT = (marginalizeT + 0.006) % 1;
+      const z = THREE.MathUtils.lerp(-0.94, 0.94, marginalizeT);
+      slider.value = z.toFixed(2);
+      updateSlice(z);
+      const collapse = Math.sin(Math.PI * marginalizeT);
+      sweepGroup.position.y = -0.08 * collapse;
+      sweepGroup.scale.setScalar(1 + 0.08 * collapse);
+      marginalPanel.material.opacity = 0.82 + 0.18 * collapse;
+      refreshReadout();
+    }
+
+    registerInteractive(marginalPanel, { tooltip: 'Marginal Pr(x|phi): z has been integrated out.' });
+    registerInteractive(movingSlice, { tooltip: 'Conditional Pr(x|z,phi) for the selected latent slice.' });
+    registerInteractive(posteriorLine, { tooltip: 'Posterior band Pr(z|x,phi): uncertainty in z for this observed x.' });
+
+    canvas.addEventListener('pointermove', (event) => {
+      if (draggingPoint) return;
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects(interactive, true)[0];
+      if (hit?.object) {
+        let obj = hit.object;
+        while (obj && !obj.userData.figureInfo) obj = obj.parent;
+        if (obj?.userData.figureInfo?.tooltip) showTooltip(obj.userData.figureInfo.tooltip, event.clientX, event.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+
+    addLabel('<i>x</i><sub>1</sub>', left.localToWorld(new THREE.Vector3(-0.34, halfH + 0.42, -halfD - 0.1)), { className: 'small' });
+    addLabel('<i>x</i><sub>2</sub>', left.localToWorld(new THREE.Vector3(-halfW - 0.62, 0.0, -halfD - 0.12)), { className: 'small' });
+    addLabel('<i>z</i>', left.localToWorld(new THREE.Vector3(-halfW + 0.15, -halfH - 0.14, 0.45)), { className: 'small' });
+    addLabel('Pr(<b>x</b>, <i>z</i>|&phi;)', left.localToWorld(new THREE.Vector3(0.86, -halfH - 0.24, 0.7)), { className: 'small' });
+    addLabel('<i>x</i><sub>1</sub>', right.localToWorld(new THREE.Vector3(-0.25, 0.95, 0)), { className: 'small' });
+    addLabel('<i>x</i><sub>2</sub>', right.localToWorld(new THREE.Vector3(0.76, -0.2, 0)), { className: 'small' });
+    addLabel('Pr(<b>x</b>|&phi;)', right.localToWorld(new THREE.Vector3(-0.05, -0.96, 0)), { className: 'small' });
+    addLabel('Marginalize over<br>latent variable, <i>z</i>', new THREE.Vector3(0.2, -1.36, 1.0), { className: 'sans' });
+
+    updateSlice(Number(slider.value));
+    updatePosterior(Number(pointSlider.value));
+    refreshReadout();
+    setCameraView({ projection: 'orthographic', axisScreenAngles: { x: 30, z: 30 }, heightFraction: 1.02, target: [0, 0.08, 0] });
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+    animate();
+  </script>
+</body>
+
+</html>

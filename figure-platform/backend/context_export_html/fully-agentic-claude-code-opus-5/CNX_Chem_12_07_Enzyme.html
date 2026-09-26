@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enzyme Active Site: Lock-and-Key vs. Induced Fit</title>
+<style>
+  :root{
+    --ink:#1a1a1a;
+    --enz-line:#111111;
+    --enz-band:#a3c057;
+    --enz-fill:#e8eed4;
+    --sub-band:#c1aeca;
+    --sub-fill:#dfd4e5;
+    --site-tan:#bd9068;
+    --tip-tan:#e2b094;
+    --paper:#ffffff;
+    --panel:#f6f6f2;
+    --line:#d8d8d0;
+    --muted:#5d6166;
+    --accent:#3d6b8e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:#eef0ea;
+    color:var(--ink);
+    font-family:"Helvetica Neue",Helvetica,Arial,"Segoe UI",sans-serif;
+    line-height:1.45;
+    padding:18px 14px 40px;
+  }
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 4px;font-weight:650;letter-spacing:.1px}
+  .sub{font-size:13.5px;color:var(--muted);margin:0 0 16px}
+  .card{
+    background:var(--paper);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;margin-bottom:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);
+  }
+  .controls{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+  .grp{display:flex;align-items:center;gap:8px}
+  .grp>label.lbl{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  .seg{display:inline-flex;border:1px solid #c8ccd2;border-radius:7px;overflow:hidden;background:#fff}
+  .seg button{
+    appearance:none;border:0;background:#fff;padding:7px 13px;font:inherit;font-size:13px;
+    cursor:pointer;color:#333;border-right:1px solid #e2e5e9;
+  }
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff;font-weight:600}
+  .seg button:hover:not([aria-pressed="true"]){background:#eef3f7}
+  input[type=range]{width:290px;accent-color:var(--accent)}
+  .btn{
+    appearance:none;border:1px solid #c8ccd2;background:#fff;border-radius:7px;
+    padding:7px 14px;font:inherit;font-size:13px;cursor:pointer
+  }
+  .btn:hover{background:#eef3f7}
+  .tval{font-variant-numeric:tabular-nums;font-size:13px;color:var(--muted);min-width:46px}
+  svg{display:block;width:100%;height:auto}
+  .figcap{font-size:13px;color:var(--muted);margin-top:8px}
+  .closeups{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.closeups{grid-template-columns:1fr}}
+  .cu h3{font-size:14px;margin:0 0 2px;font-weight:650}
+  .cu p.note{font-size:12.5px;color:var(--muted);margin:0 0 6px;min-height:32px}
+  .readout{display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;font-size:12.5px}
+  .readout div{color:var(--muted)}
+  .readout b{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:650}
+  .keyrow{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:6px}
+  .sw{display:inline-block;width:13px;height:13px;border:1.5px solid #111;vertical-align:-2px;margin-right:5px;border-radius:3px}
+  .expl{font-size:13.5px}
+  .expl b{font-weight:650}
+  .dimmed{opacity:.22;transition:opacity .25s}
+  .undim{opacity:1;transition:opacity .25s}
+  .chk{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Enzyme&ndash;substrate binding: lock-and-key vs. induced fit</h1>
+  <p class="sub">Two models of how an enzyme's active site achieves substrate specificity. Drag <em>Binding progress</em> to dock the substrates &mdash; watch which enzyme changes shape and which does not.</p>
+
+  <div class="card">
+    <div class="controls">
+      <div class="grp">
+        <span class="lbl">Model</span>
+        <span class="seg" id="segModel">
+          <button data-m="both" aria-pressed="true">Both</button>
+          <button data-m="lk" aria-pressed="false">(a) Lock-and-key</button>
+          <button data-m="if" aria-pressed="false">(b) Induced fit</button>
+        </span>
+      </div>
+      <div class="grp">
+        <span class="lbl">Binding&nbsp;progress</span>
+        <input type="range" id="tSlider" min="0" max="1000" value="0">
+        <span class="tval" id="tVal">0&nbsp;%</span>
+      </div>
+      <div class="grp">
+        <button class="btn" id="playBtn">&#9654;&nbsp; Animate binding</button>
+        <button class="btn" id="resetBtn">Reset</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="ghostChk" checked> Show unbound active-site outline (ghost)</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <svg id="mainFig" viewBox="0 0 1000 458" role="img"
+         aria-label="Four diagrams: lock-and-key model with rigid active site, and induced fit model with a flexible active site, each shown before and after substrate binding."></svg>
+    <div class="keyrow">
+      <span><i class="sw" style="background:var(--enz-fill);border-color:var(--enz-band)"></i>Enzyme (protein)</span>
+      <span><i class="sw" style="background:var(--site-tan)"></i>Active-site surface</span>
+      <span><i class="sw" style="background:var(--sub-fill);border-color:var(--sub-band)"></i>Substrate</span>
+      <span><i class="sw" style="background:var(--tip-tan)"></i>Substrate binding group</span>
+    </div>
+    <div class="figcap">The <b>left</b> diagram of each panel is live and follows the slider; the <b>right</b> diagram is the finished enzyme&ndash;substrate complex for reference. At 0&nbsp;% the page reproduces the original figure.</div>
+  </div>
+
+  <div class="card">
+    <div class="closeups">
+      <div class="cu">
+        <h3>(a) Lock-and-key &mdash; active site close-up</h3>
+        <p class="note">The pocket is <b>pre-formed</b>. Its contour never leaves the dashed ghost, so the substrate drops straight in.</p>
+        <svg id="cuLK" viewBox="0 0 520 262"></svg>
+        <div class="readout">
+          <div>Active-site shape change: <b id="roShapeLK">0.0</b> u</div>
+          <div>Residual misfit: <b id="roGapLK">0.0</b> u</div>
+        </div>
+      </div>
+      <div class="cu">
+        <h3>(b) Induced fit &mdash; active site close-up</h3>
+        <p class="note">The site starts as a shallow, floppy dish. The substrate cannot seat until the protein <b>moulds itself</b> around it.</p>
+        <svg id="cuIF" viewBox="0 0 520 262"></svg>
+        <div class="readout">
+          <div>Active-site shape change: <b id="roShapeIF">0.0</b> u</div>
+          <div>Residual misfit: <b id="roGapIF">0.0</b> u</div>
+        </div>
+      </div>
+    </div>
+    <div class="figcap"><b>Shape change</b> = largest vertical displacement of the active-site contour away from its unbound form. <b>Residual misfit</b> = how far short of full depth the substrate would still sit if it were held directly over its pocket. Both are measured from the drawn contours: the substrate's lower surface is tested against the enzyme's current contour at every point, so a substrate physically cannot sink into a site that does not yet match it.</div>
+  </div>
+
+  <div class="card expl">
+    <p style="margin:0 0 8px"><b>Both models explain specificity, but by different means.</b> In the <b>lock-and-key</b> model (Fischer, 1894) the active site is a rigid pocket whose shape, charge and hydrogen-bonding groups already complement the substrate; a molecule of the wrong shape simply cannot enter. The shape-change readout stays at <b>0</b> for every value of the slider.</p>
+    <p style="margin:0"><b>Induced fit</b> (Koshland, 1958) keeps the same requirement for complementarity but places it at the <em>end</em> of binding: the free enzyme's site is open and only roughly matched, and contact with the correct substrate drives a conformational change that closes the protein around it. Notice that the substrate's residual misfit only falls to zero <em>after</em> the shape change happens &mdash; the fit is a consequence of binding, not a precondition for it. The final complex is the same in both panels.</p>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   Geometry.  All enzyme / substrate outlines are computed from
+   parameters below; nothing is a hand-traced constant path.
+   Local frame for one diagram:
+     origin  = centre of the active site, on the enzyme's crest plane
+     +x right, +y DOWN (SVG convention)
+   ============================================================ */
+const G = {
+  crestOut : 45,    // top surface modelled for |x| <= 45
+  pocketOut: 28.5,  // outer wall of each pocket
+  ridgeHalf: 9.5,   // half width of the ridge between the two pockets
+  wallY    : 14.5,  // depth at which the pocket floor begins
+  floorR   : 9.5,   // radius / depth of the pocket floor
+  ridgeTop : 1.2,   // depth of the ridge apex below the crest plane
+  shoulder : 4.0,   // how far the crest falls between |x|=28.5 and |x|=45
+  dishDepth: 11.0,  // induced-fit unbound: depth of the open dish
+  dishHalf : 34.0,
+  bandE    : 13,    // enzyme colour band width (stroke width => half shows)
+  bandS    : 11     // substrate colour band width
+};
+const FLOOR_Y = G.wallY + G.floorR;   // = 24, deepest point of a pocket
+const PC = 19;                        // |x| of each pocket centre
+
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+function smoothstep(a,b,x){ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); }
+const lerp=(a,b,u)=>a+(b-a)*u;
+
+/* ---------- top-surface profiles (ordered left -> right) ---------- */
+function properTop(){
+  const p=[], N=G.crestOut, O=G.pocketOut, R=G.ridgeHalf;
+  // left shoulder, |x| from 45 down to 28.5 : gentle fall outwards
+  for(let i=0;i<=22;i++){ const x=-N+i*(N-O)/22; const d=(-x-O)/(N-O); p.push([x,G.shoulder*d*d]); }
+  // vertical outer wall of the left pocket
+  for(let i=1;i<=10;i++) p.push([-O, G.wallY*i/10]);
+  // rounded (U) floor of the left pocket
+  for(let i=0;i<=96;i++){ const th=Math.PI*(1-i/96);
+    p.push([-PC+G.floorR*Math.cos(th), G.wallY+G.floorR*Math.sin(th)]); }
+  // central ridge, rising from the pocket floor level to a sharp apex
+  for(let i=1;i<=72;i++){ const x=-R+i*(2*R)/72;
+    p.push([x, G.ridgeTop+(G.wallY-G.ridgeTop)*Math.pow(Math.abs(x)/R,0.45)]); }
+  // V floor of the right pocket
+  p.push([PC, FLOOR_Y]);
+  p.push([O, G.wallY]);
+  // vertical outer wall of the right pocket
+  for(let i=1;i<=10;i++) p.push([O, G.wallY*(1-i/10)]);
+  // right shoulder
+  for(let i=1;i<=22;i++){ const x=O+i*(N-O)/22; const d=(x-O)/(N-O); p.push([x,G.shoulder*d*d]); }
+  return p;
+}
+function openTop(){
+  const p=[], N=G.crestOut, H=G.dishHalf;
+  for(let i=0;i<=200;i++){
+    const x=-N+i*(2*N)/200;
+    let y;
+    if(Math.abs(x)<H){
+      const w=0.5+0.5*Math.cos(Math.PI*x/H);            // dish window
+      y = G.dishDepth*w + w*2.3*Math.sin(x*0.34+0.9);   // shallow wavy dish
+    } else {
+      const d=(Math.abs(x)-H)/(N-H); y = G.shoulder*d*d;
+    }
+    p.push([x,y]);
+  }
+  return p;
+}
+
+/* ---------- arc-length resampling so two profiles can be morphed ----------
+   Both profiles are sampled at the SAME list of normalised arc-length
+   fractions, which gives point-for-point correspondence for the morph.  The
+   fraction list is anchored on the sharp vertices of the bound profile, so
+   corners such as the V-shaped pocket apex survive resampling exactly --
+   otherwise a chord would cut the apex and the substrate would appear not to
+   reach the floor of its own pocket.                                      */
+function arcLen(pts){
+  const cum=[0];
+  for(let i=1;i<pts.length;i++)
+    cum.push(cum[i-1]+Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]));
+  return cum;
+}
+function sampleAt(pts,fr){
+  const cum=arcLen(pts), L=cum[cum.length-1], out=[]; let j=0;
+  for(const f of fr){
+    const s=L*clamp(f,0,1);
+    while(j<cum.length-2 && cum[j+1]<s) j++;
+    while(j>0 && cum[j]>s) j--;
+    const seg=cum[j+1]-cum[j], g=seg>1e-9?(s-cum[j])/seg:0;
+    out.push([lerp(pts[j][0],pts[j+1][0],g), lerp(pts[j][1],pts[j+1][1],g)]);
+  }
+  return out;
+}
+function cornerFracs(pts){
+  const cum=arcLen(pts), L=cum[cum.length-1], out=[];
+  for(let i=1;i<pts.length-1;i++){
+    const ax=pts[i][0]-pts[i-1][0], ay=pts[i][1]-pts[i-1][1];
+    const bx=pts[i+1][0]-pts[i][0], by=pts[i+1][1]-pts[i][1];
+    const la=Math.hypot(ax,ay), lb=Math.hypot(bx,by);
+    if(la<1e-9||lb<1e-9) continue;
+    const cosA=(ax*bx+ay*by)/(la*lb);
+    if(cosA < Math.cos(22*Math.PI/180)) out.push(cum[i]/L);
+  }
+  return out;
+}
+const NP=420;
+const FR = (function(){
+  const raw=properTop(), f=[];
+  for(let k=0;k<NP;k++) f.push(k/(NP-1));
+  for(const c of cornerFracs(raw)){          // snap the nearest sample onto each corner
+    let bi=0;
+    for(let i=1;i<f.length;i++) if(Math.abs(f[i]-c)<Math.abs(f[bi]-c)) bi=i;
+    f[bi]=c;
+  }
+  return f.sort((a,b)=>a-b);
+})();
+const PROPER = sampleAt(properTop(),FR);
+const OPEN   = sampleAt(openTop(),FR);
+
+function topProfile(u){                // u=0 open (floppy), u=1 proper
+  if(u>=0.9999) return PROPER;
+  if(u<=0.0001) return OPEN;
+  const o=[]; for(let i=0;i<NP;i++)
+    o.push([lerp(OPEN[i][0],PROPER[i][0],u), lerp(OPEN[i][1],PROPER[i][1],u)]);
+  return o;
+}
+
+/* ---------- Catmull-Rom sampler for the enzyme flanks ---------- */
+function catmull(P,per){
+  const out=[], q=[P[0],...P,P[P.length-1]];
+  for(let i=0;i<q.length-3;i++){
+    const a=q[i],b=q[i+1],c=q[i+2],d=q[i+3];
+    for(let j=0;j<per;j++){
+      const t=j/per,t2=t*t,t3=t2*t;
+      out.push([
+        .5*(2*b[0]+(-a[0]+c[0])*t+(2*a[0]-5*b[0]+4*c[0]-d[0])*t2+(-a[0]+3*b[0]-3*c[0]+d[0])*t3),
+        .5*(2*b[1]+(-a[1]+c[1])*t+(2*a[1]-5*b[1]+4*c[1]-d[1])*t2+(-a[1]+3*b[1]-3*c[1]+d[1])*t3)
+      ]);
+    }
+  }
+  out.push(P[P.length-1]);
+  return out;
+}
+
+/* ---------- full enzyme silhouette ---------- */
+function bodyOutline(top,wobble){
+  const yEdge = top[top.length-1][1];
+  // measured from the source figure: straight flare from the shoulder,
+  // widest point at mid-height, then a broad, nearly flat base.
+  const rCtrl=[[G.crestOut,yEdge],[56,15],[70,32],[84,52],[81,76],[66,92],[38,101],[0,104]];
+  const right=catmull(rCtrl,12);
+  const left =catmull(rCtrl.map(p=>[-p[0],p[1]]),12).reverse();
+  let flank = right.slice(1).concat(left.slice(1,left.length-1));
+  if(wobble>0.01){
+    const M=flank.length, out=[];
+    for(let i=0;i<M;i++){
+      const a=flank[(i-1+M)%M], b=flank[(i+1)%M];
+      let nx=b[1]-a[1], ny=-(b[0]-a[0]);
+      const L=Math.hypot(nx,ny)||1; nx/=L; ny/=L;
+      // outward normal: point away from the body centre (0,60)
+      if(nx*(flank[i][0]-0)+ny*(flank[i][1]-60) < 0){ nx=-nx; ny=-ny; }
+      const e = Math.sin(2*Math.PI*2.6*i/M + 0.7)*wobble*Math.sin(Math.PI*i/M);
+      out.push([flank[i][0]+nx*e, flank[i][1]+ny*e]);
+    }
+    flank=out;
+  }
+  return top.concat(flank);
+}
+
+/* ---------- the tan active-site lining: runs of the profile below the crest ---------- */
+function liningRuns(top){
+  const runs=[]; let cur=null;
+  for(const p of top){
+    if(p[1]>=4.2){ (cur||(cur=[],runs.push(cur),cur)).push(p); }
+    else { cur=null; }
+  }
+  return runs.filter(r=>r.length>2);
+}
+
+/* ---------- surface height sampler (topmost surface at a given x) ---------- */
+function makeSampler(top){
+  // Each profile segment is rasterised exactly onto a fine x-grid; a bin keeps
+  // the *highest* surface (smallest y) found there, which is what a body
+  // descending from above would touch first.
+  const N=G.crestOut, BINS=721, W=2*N/(BINS-1), bin=new Float64Array(BINS).fill(Infinity);
+  for(let i=1;i<top.length;i++){
+    let a=top[i-1], b=top[i];
+    if(a[0]>b[0]){ const s=a; a=b; b=s; }
+    const dx=b[0]-a[0];
+    if(dx<1e-9){                                  // vertical wall
+      const k=Math.round((a[0]+N)/W), y=Math.min(a[1],b[1]);
+      if(k>=0&&k<BINS&&y<bin[k]) bin[k]=y;
+      continue;
+    }
+    const k0=Math.max(0,Math.ceil((a[0]+N)/W)), k1=Math.min(BINS-1,Math.floor((b[0]+N)/W));
+    for(let k=k0;k<=k1;k++){
+      const x=-N+k*W, y=a[1]+(b[1]-a[1])*(x-a[0])/dx;
+      if(y<bin[k]) bin[k]=y;
+    }
+  }
+  for(let i=0;i<BINS;i++) if(!isFinite(bin[i])){
+    let a=i,b=i; while(a>0&&!isFinite(bin[a]))a--; while(b<BINS-1&&!isFinite(bin[b]))b++;
+    bin[i]= isFinite(bin[a])&&isFinite(bin[b]) ? (bin[a]+bin[b])/2 : (isFinite(bin[a])?bin[a]:bin[b]);
+  }
+  return function(x){
+    if(x<-N||x>N) return null;
+    const f=(x+N)/W, i=Math.floor(f), g=f-i;
+    return i>=BINS-1 ? bin[BINS-1] : lerp(bin[i],bin[i+1],g);
+  };
+}
+
+/* ============================================================
+   Substrate shapes.  Local origin = centre of the stem, on the
+   enzyme crest plane, so the bound position is exactly (+/-19, 0).
+   ============================================================ */
+const R=G.ridgeHalf;
+const SUB = {
+  left:{
+    outline:`M 19,-56 C 19,-65 8,-69 -4,-64.5 C -20,-59.5 -31,-45.5 -31,-28.5
+             C -31,-14.5 -25,-4.8 -15.5,-1.5 C -13.5,-0.75 -11.8,-0.2 -10.8,0
+             L -${R},0 L -${R},${G.wallY}
+             A ${G.floorR},${G.floorR} 0 0 0 ${R},${G.wallY}
+             L ${R},0 L 19,0 Z`,
+    tip:`M -${R},12.4 L -${R},${G.wallY} A ${G.floorR},${G.floorR} 0 0 0 ${R},${G.wallY} L ${R},12.4 Z`,
+    // lower boundary, used for the physical seating test
+    bottom(x){
+      if(Math.abs(x)<=8.4) return G.wallY+Math.sqrt(Math.max(0,G.floorR*G.floorR-x*x));
+      if(Math.abs(x)<10.7) return null;        // skip the stem wall itself
+      if(x>=-29 && x<=18)  return 0;
+      return null;
+    },
+    xRange:[-29,18], startDX:-60, bindX:-PC, topY:-69
+  },
+  right:{
+    outline:`M -19,-58 C -19,-69 -6,-76 7,-71.5 C 22.5,-66 32,-52 30,-38
+             C 29,-29 20.5,-26.5 17.5,-21.5 C 15,-17 21,-15 25,-14
+             C 28.5,-13 28.5,-3.2 24,-0.6 L 11,0
+             L ${R},0 L ${R},${G.wallY} L 0,${FLOOR_Y} L -${R},${G.wallY} L -${R},0 L -19,0 Z`,
+    tip:`M -${R},12.4 L -${R},${G.wallY} L 0,${FLOOR_Y} L ${R},${G.wallY} L ${R},12.4 Z`,
+    bottom(x){
+      if(Math.abs(x)<=8.4) return G.wallY+(G.floorR-Math.abs(x));
+      if(Math.abs(x)<10.7) return null;        // skip the stem wall itself
+      if(x>=-18 && x<=28)  return 0;
+      return null;
+    },
+    xRange:[-18,28], startDX:60, bindX:PC, topY:-76
+  }
+};
+const START_DY = -88;
+
+/* deepest descent allowed by the current enzyme contour */
+function restY(side,tx,sample){
+  let best=Infinity, any=false;
+  const s=SUB[side];
+  for(let i=0;i<=120;i++){
+    const xl=lerp(s.xRange[0],s.xRange[1],i/120);
+    const by=s.bottom(xl); if(by===null) continue;
+    const sy=sample(xl+tx); if(sy===null) continue;
+    any=true;
+    const c=sy-by; if(c<best) best=c;
+  }
+  return any?Math.min(best,0):0;
+}
+
+/* ============================================================
+   SVG helpers
+   ============================================================ */
+const SVGNS="http://www.w3.org/2000/svg";
+const d2=(pts,close)=>{
+  let s="M "+pts[0][0].toFixed(2)+","+pts[0][1].toFixed(2);
+  for(let i=1;i<pts.length;i++) s+=" L "+pts[i][0].toFixed(2)+","+pts[i][1].toFixed(2);
+  return s+(close?" Z":"");
+};
+let uid=0;
+function el(tag,attrs,parent){
+  const n=document.createElementNS(SVGNS,tag);
+  for(const k in attrs) if(attrs[k]!==undefined && attrs[k]!==null) n.setAttribute(k,attrs[k]);
+  if(parent) parent.appendChild(n);
+  return n;
+}
+
+/* ---------- one enzyme+substrate diagram ---------- */
+function makeDiagram(parent,cx,cy,opt){
+  const g=el("g",{transform:`translate(${cx},${cy})`},parent);
+  const id="cl"+(uid++);
+
+  // clip = enzyme body
+  const defs=el("defs",{},g);
+  const cp=el("clipPath",{id:id},defs);
+  const clipPath=el("path",{},cp);
+
+  const eFill=el("path",{fill:"var(--enz-fill)",stroke:"none"},g);
+  const eBand=el("path",{fill:"none",stroke:"var(--enz-band)","stroke-width":G.bandE,"clip-path":`url(#${id})`,"stroke-linejoin":"round"},g);
+  const eLine=el("path",{fill:"none",stroke:"var(--site-tan)","stroke-width":G.bandE*0.78,"stroke-linecap":"round","stroke-linejoin":"round","clip-path":`url(#${id})`},g);
+  const LW = opt.lw || 3;
+  const eOut =el("path",{fill:"none",stroke:"var(--enz-line)","stroke-width":LW,"stroke-linejoin":"round"},g);
+
+  // ghost contour of the unbound active site
+  const ghost=el("path",{fill:"none",stroke:"#6f3f96","stroke-width":LW*0.72,"stroke-dasharray":`${LW*1.7} ${LW*1.4}`,opacity:0,"stroke-linecap":"round"},g);
+
+  // substrates
+  function mkSub(side){
+    const sg=el("g",{},g);
+    const cid="cs"+(uid++);
+    const dd=el("defs",{},sg);
+    const cpp=el("clipPath",{id:cid},dd);
+    el("path",{d:SUB[side].outline},cpp);
+    el("path",{d:SUB[side].outline,fill:"var(--sub-fill)"},sg);
+    el("path",{d:SUB[side].outline,fill:"none",stroke:"var(--sub-band)","stroke-width":G.bandS,"clip-path":`url(#${cid})`,"stroke-linejoin":"round"},sg);
+    el("path",{d:SUB[side].tip,fill:"var(--tip-tan)",stroke:"none"},sg);
+    el("path",{d:SUB[side].outline,fill:"none",stroke:"var(--enz-line)","stroke-width":LW,"stroke-linejoin":"round"},sg);
+    return sg;
+  }
+  const sL=mkSub("left"), sR=mkSub("right");
+
+  /* ---- annotation layer ---- */
+  const ann=el("g",{},g);
+  const arrowId="ah"+(uid++);
+  const mdefs=el("defs",{},ann);
+  const mk=el("marker",{id:arrowId,viewBox:"0 0 10 10",refX:8.5,refY:5,markerWidth:5.2,markerHeight:5.2,orient:"auto-start-reverse"},mdefs);
+  el("path",{d:"M 0 0 L 10 5 L 0 10 z",fill:"#111"},mk);
+
+  let approachG=null, cplxG=null;
+  const FS=17;
+  if(opt.approach){
+    approachG=el("g",{},ann);
+    // "Substrates" + leaders
+    // thin leader wedge from caption down to the active site (+ docking arrows)
+    const fadeG=el("g",{},approachG);
+    el("text",{x:0,y:-238,"text-anchor":"middle","font-size":FS,fill:"#111"},fadeG).textContent="Substrates";
+    el("path",{d:"M -22,-230 L -72,-138",stroke:"#111","stroke-width":1.6,fill:"none"},fadeG);
+    el("path",{d:"M 22,-230 L 72,-144",stroke:"#111","stroke-width":1.6,fill:"none"},fadeG);
+    // caption between the substrates
+    const capG=el("g",{},approachG);
+    opt.caption.forEach((ln,i)=>{
+      el("text",{x:0,y:-200+i*25,"text-anchor":"middle","font-size":FS,fill:"#111"},capG).textContent=ln;
+    });
+    el("path",{d:`M 1,-104 L -14,-4`,stroke:"#111","stroke-width":1.6,fill:"none"},fadeG);
+    el("path",{d:`M 3,-104 L 15,-4`,stroke:"#111","stroke-width":1.6,fill:"none"},fadeG);
+    // two curved docking arrows
+    el("path",{d:"M -58,-62 Q -44,-34 -27,-18",stroke:"#111","stroke-width":2.1,fill:"none","marker-end":`url(#${arrowId})`},fadeG);
+    el("path",{d:"M 58,-62 Q 44,-34 27,-18",stroke:"#111","stroke-width":2.1,fill:"none","marker-end":`url(#${arrowId})`},fadeG);
+    approachG.fadeG=fadeG;
+  }
+  if(opt.complex){
+    cplxG=el("g",{},ann);
+    ["Substrate","complex","formed"].forEach((ln,i)=>{
+      el("text",{x:0,y:-198+i*25,"text-anchor":"middle","font-size":FS,fill:"#111"},cplxG).textContent=ln;
+    });
+  }
+  el("text",{x:0,y:143,"text-anchor":"middle","font-size":FS,fill:"#111"},ann).textContent="Enzyme";
+
+  const api={ g, ghost, update(t,model){
+    const u = model==="lk" ? 1 : smoothstep(0.34,0.96,t);
+    const wob = model==="lk" ? 0 : 4.2*(1-u);
+    const top = topProfile(u);
+    const body = bodyOutline(top,wob);
+    const dBody = d2(body,true);
+    clipPath.setAttribute("d",dBody);
+    eFill.setAttribute("d",dBody);
+    eBand.setAttribute("d",dBody);
+    eOut .setAttribute("d",dBody);
+    eLine.setAttribute("d",liningRuns(top).map(r=>d2(r,false)).join(" "));
+
+    const sample=makeSampler(top);
+    const ex=smoothstep(0,0.55,t), ey=smoothstep(0.05,0.78,t);
+    const res={};
+    [["left",sL],["right",sR]].forEach(([side,node])=>{
+      const s=SUB[side];
+      const tx=lerp(s.bindX+s.startDX, s.bindX, ex);
+      const tyFree=lerp(START_DY,0,ey);
+      const ty=Math.min(tyFree, restY(side,tx,sample));
+      node.setAttribute("transform",`translate(${tx.toFixed(2)},${ty.toFixed(2)})`);
+      res[side]=-ty;
+    });
+
+    // ghost of the unbound contour
+    const base = model==="lk" ? PROPER : OPEN;
+    ghost.setAttribute("d",d2(base.filter(p=>Math.abs(p[0])<=33),false));
+    ghost.setAttribute("opacity", showGhost ? 0.8 : 0);
+
+    // label fades
+    if(approachG){
+      approachG.fadeG.setAttribute("opacity", 1-smoothstep(0.06,0.34,t));
+      approachG.setAttribute("opacity", 1-smoothstep(0.40,0.56,t));
+      approachG.setAttribute("visibility", t>0.57 ? "hidden" : "visible");
+    }
+    if(cplxG && opt.live){
+      cplxG.setAttribute("opacity", smoothstep(0.62,0.80,t));
+    }
+    // metrics
+    let shape=0;
+    for(let i=0;i<NP;i++) shape=Math.max(shape,Math.abs(top[i][1]-base[i][1]));
+    // residual misfit: how far short of full depth the substrate would still sit
+    // if it were held directly over its pocket -- i.e. mismatch of shape alone.
+    let misfit=Math.max(-restY("left",SUB.left.bindX,sample),
+                        -restY("right",SUB.right.bindX,sample));
+    if(misfit<0.05) misfit=0;   // below the contour sampling resolution
+    return {shape, misfit, gap:Math.max(res.left,res.right), top, u};
+  }};
+  return api;
+}
+
+/* ============================================================
+   Build the main four-diagram figure (original layout)
+   ============================================================ */
+const main=document.getElementById("mainFig");
+const CY=258;
+const slots=[
+  {cx:112, model:"lk", live:true,  approach:true,  complex:true,  caption:["Active","site is","proper","shape"]},
+  {cx:372, model:"lk", live:false, approach:false, complex:true },
+  {cx:626, model:"if", live:true,  approach:true,  complex:true,  caption:["Active","site","changes","to fit"]},
+  {cx:886, model:"if", live:false, approach:false, complex:true }
+];
+const panelG={lk:el("g",{},main), if:el("g",{},main)};
+const diagrams=slots.map(s=>{
+  const api=makeDiagram(panelG[s.model],s.cx,CY,s);
+  api.slot=s; return api;
+});
+el("text",{x:242,y:438,"text-anchor":"middle","font-size":18,fill:"#111"},panelG.lk)
+  .textContent="(a) Lock-and-key model";
+el("text",{x:756,y:438,"text-anchor":"middle","font-size":18,fill:"#111"},panelG.if)
+  .textContent="(b) Induced fit model";
+
+/* ============================================================
+   Close-up views
+   ============================================================ */
+function makeCloseup(svgId,model){
+  const svg=document.getElementById(svgId);
+  const cid="cu"+(uid++);
+  const defs=el("defs",{},svg);
+  const cr=el("clipPath",{id:cid},defs);
+  const W=520,H=262,SC=2.85,Y0=118;
+  el("rect",{x:0,y:0,width:W,height:H},cr);
+  const outer=el("g",{"clip-path":`url(#${cid})`},svg);
+  el("rect",{x:0,y:0,width:W,height:H,fill:"#fbfbf8"},outer);
+  const g=el("g",{transform:`translate(${W/2},${Y0}) scale(${SC})`},outer);
+  const api=makeDiagram(g,0,0,{model,live:true,approach:false,complex:false,caption:[],lw:1.5});
+  api.g.appendChild(api.ghost);   // reference contour drawn over everything
+  // drop the "Enzyme" caption inherited from the diagram builder (oversized here)
+  api.g.querySelectorAll("text").forEach(n=>n.remove());
+  // depth reference lines
+  const ruler=el("g",{},outer);
+  el("line",{x1:14,y1:Y0,x2:W-14,y2:Y0,stroke:"#b9bfc6","stroke-width":1,"stroke-dasharray":"3 4"},ruler);
+  const halo={"font-size":11,fill:"#6d747c",stroke:"#fbfbf8","stroke-width":3.5,"paint-order":"stroke"};
+  el("text",Object.assign({x:18,y:Y0-6},halo),ruler).textContent="enzyme crest plane";
+  const yf=Y0+FLOOR_Y*SC;
+  el("line",{x1:14,y1:yf,x2:W-14,y2:yf,stroke:"#b9bfc6","stroke-width":1,"stroke-dasharray":"3 4"},ruler);
+  el("text",Object.assign({x:18,y:yf+14},halo),ruler).textContent="fully-bound depth";
+  return api;
+}
+const cuLK=makeCloseup("cuLK","lk");
+const cuIF=makeCloseup("cuIF","if");
+
+/* ============================================================
+   State + interaction
+   ============================================================ */
+let T=0, focus="both", showGhost=true, playing=false, rafId=null, playT0=0;
+const tSlider=document.getElementById("tSlider");
+const tVal=document.getElementById("tVal");
+const ro={shapeLK:document.getElementById("roShapeLK"),gapLK:document.getElementById("roGapLK"),
+          shapeIF:document.getElementById("roShapeIF"),gapIF:document.getElementById("roGapIF")};
+
+function render(){
+  diagrams.forEach(d=>d.update(d.slot.live?T:1, d.slot.model));
+  const a=cuLK.update(T,"lk"), b=cuIF.update(T,"if");
+  ro.shapeLK.textContent=a.shape.toFixed(1);
+  ro.gapLK.textContent  =a.misfit.toFixed(1);
+  ro.shapeIF.textContent=b.shape.toFixed(1);
+  ro.gapIF.textContent  =b.misfit.toFixed(1);
+  tVal.innerHTML=Math.round(T*100)+"&nbsp;%";
+  panelG.lk.setAttribute("class", focus==="if" ? "dimmed":"undim");
+  panelG.if.setAttribute("class", focus==="lk" ? "dimmed":"undim");
+}
+
+tSlider.addEventListener("input",e=>{ stop(); T=+e.target.value/1000; render(); });
+document.getElementById("ghostChk").addEventListener("change",e=>{ showGhost=e.target.checked; render(); });
+document.getElementById("segModel").addEventListener("click",e=>{
+  const b=e.target.closest("button"); if(!b) return;
+  focus=b.dataset.m;
+  [...e.currentTarget.querySelectorAll("button")].forEach(x=>x.setAttribute("aria-pressed",x===b));
+  render();
+});
+function stop(){ playing=false; if(rafId) cancelAnimationFrame(rafId); rafId=null;
+  document.getElementById("playBtn").innerHTML="&#9654;&nbsp; Animate binding"; }
+function tick(ts){
+  if(!playing) return;
+  const dt=(ts-playT0)/3600;
+  T=clamp(dt,0,1); tSlider.value=Math.round(T*1000); render();
+  if(T>=1){ stop(); return; }
+  rafId=requestAnimationFrame(tick);
+}
+document.getElementById("playBtn").addEventListener("click",()=>{
+  if(playing){ stop(); return; }
+  if(T>=0.999){ T=0; tSlider.value=0; }
+  playing=true;
+  document.getElementById("playBtn").innerHTML="&#10073;&#10073;&nbsp; Pause";
+  playT0=performance.now()-T*3600;
+  rafId=requestAnimationFrame(tick);
+});
+document.getElementById("resetBtn").addEventListener("click",()=>{ stop(); T=0; tSlider.value=0; render(); });
+
+// optional deep-link, e.g.  ...html#t=0.5&focus=if
+(function(){
+  const h=new URLSearchParams(location.hash.replace(/^#/,""));
+  if(h.has("t")){ T=clamp(parseFloat(h.get("t"))||0,0,1); tSlider.value=Math.round(T*1000); }
+  if(h.has("focus")){
+    focus=h.get("focus");
+    document.querySelectorAll("#segModel button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.m===focus));
+  }
+  if(h.get("ghost")==="0"){ showGhost=false; document.getElementById("ghostChk").checked=false; }
+})();
+
+render();
+</script>
+</body>
+</html>

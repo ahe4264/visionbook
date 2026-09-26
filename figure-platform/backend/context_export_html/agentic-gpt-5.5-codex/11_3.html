@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 74px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .status-line {
+      font-size: 11px;
+      line-height: 1.35;
+      color: #333;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>h(k) expression<textarea id="hashExprInput" rows="3" spellcheck="false" oninput="update_hash()"></textarea></label>
+    <span class="control-row"><button id="textbookBtn" onclick="trigger_textbook()">Textbook</button><button id="mod9Btn" onclick="trigger_mod9()">k % 9</button><button id="mod3Btn" onclick="trigger_mod3()">k % 3</button></span>
+    <label>probe key<input id="probeInput" type="number" min="1" max="8" step="1" value="5" oninput="update_probe(+this.value)"></label>
+    <span class="control-row"><button onclick="trigger_run()">Run</button><button onclick="trigger_reset()">Reset</button></span>
+    <span id="hashStatus" class="status-line"></span>
+    <span id="chainSummary" class="status-line"></span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', 'right');
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout('right', start);
+      _growDockToFit('right', start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        hideTooltip();
+        hidePopup();
+      }
+    });
+
+    function compileExpr(src, vars) {
+      vars = vars || ['x'];
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser is unavailable');
+      }
+      var parser = new window.exprEval.Parser({ operators: { logical: true, comparison: true } });
+      var expr = parser.parse(src);
+      var names = expr.variables();
+      for (var i = 0; i < names.length; i++) {
+        if (vars.indexOf(names[i]) < 0) throw new Error('Unknown variable ' + names[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var slot = _equationErrorSlot(input);
+      function apply(src) {
+        try {
+          var fn = compileExpr(src, vars);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 1280;
+    var H = 520;
+    draw.viewbox(0, 0, W, H);
+    draw.attr({ role: 'img', 'aria-label': 'Hash table collision resolution by chaining' });
+
+    var SLOTS = 9;
+    var TEXTBOOK_EXPR = '({1:1,2:4,3:7,4:1,5:4,6:8,7:4,8:8}[k])';
+    var keys = [
+      { id: 1, x: 202, y: 218, labelX: 170, labelY: 229 },
+      { id: 4, x: 238, y: 277, labelX: 205, labelY: 286 },
+      { id: 5, x: 345, y: 276, labelX: 312, labelY: 286 },
+      { id: 7, x: 286, y: 313, labelX: 250, labelY: 324 },
+      { id: 2, x: 250, y: 361, labelX: 215, labelY: 374 },
+      { id: 3, x: 383, y: 373, labelX: 350, labelY: 382 },
+      { id: 8, x: 310, y: 385, labelX: 275, labelY: 397 },
+      { id: 6, x: 202, y: 409, labelX: 168, labelY: 423 }
+    ];
+    var insertionOrder = [1, 4, 5, 2, 7, 3, 8, 6];
+    var keyById = {};
+    keys.forEach(function (key) { keyById[key.id] = key; });
+
+    var layout = {
+      tableX: 590,
+      tableY: 46,
+      tableW: 96,
+      tableH: 405,
+      nodeX: 755,
+      nodeW: 140,
+      nodeH: 47,
+      nodeGap: 46
+    };
+    layout.slotH = layout.tableH / SLOTS;
+
+    var root = draw.group();
+    var bgLayer = root.group();
+    var hashLayer = root.group();
+    var tableLayer = root.group();
+    var chainLayer = root.group();
+    var keyLayer = root.group();
+    var labelLayer = root.group();
+
+    var arrowEnd = draw.marker(14, 10, function (add) {
+      add.path('M0,0 L14,5 L0,10 z').fill('#000');
+    }).ref(13, 5).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    var arrowEndSmall = draw.marker(10, 8, function (add) {
+      add.path('M0,0 L10,4 L0,8 z').fill('#000');
+    }).ref(9, 4).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    function serifText(parent, txt, x, y, size, opts) {
+      opts = opts || {};
+      var t = parent.text(txt).move(x, y);
+      t.font({
+        family: 'Times New Roman, Times, serif',
+        size: size,
+        anchor: opts.anchor || 'middle',
+        style: opts.italic ? 'italic' : 'normal',
+        weight: opts.weight || 'normal'
+      });
+      if (opts.halo) {
+        t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': opts.halo, 'stroke-linejoin': 'round' });
+      }
+      return t;
+    }
+
+    function keyLabel(parent, n, x, y, size, anchor) {
+      var g = parent.group();
+      var text = g.text(function (add) {
+        add.tspan('k').font({ style: 'italic' });
+        add.tspan(String(n)).font({ size: size * 0.55 }).dy(size * 0.28).dx(1);
+      });
+      text.font({ family: 'Times New Roman, Times, serif', size: size, anchor: anchor || 'middle' });
+      text.move(x, y);
+      return g;
+    }
+
+    function lineWithArrow(parent, x1, y1, x2, y2, width, marker) {
+      return parent.line(x1, y1, x2, y2)
+        .stroke({ color: '#000', width: width || 2, linecap: 'butt' })
+        .marker('end', marker || arrowEnd);
+    }
+
+    function attachInfo(el, title, body, tip) {
+      el.css('cursor', 'pointer');
+      el.on('mousemove', function (e) { showTooltip(tip || title, e); });
+      el.on('mouseleave', hideTooltip);
+      el.on('click', function () { showPopup(title, body); });
+    }
+
+    function slotCenter(slot) {
+      return layout.tableY + slot * layout.slotH + layout.slotH / 2;
+    }
+
+    function drawStaticKeySpace() {
+      bgLayer.clear();
+      labelLayer.clear();
+      keyLayer.clear();
+
+      bgLayer.ellipse(480, 420).center(242, 276).fill('#9f9f9f').stroke({ color: '#000', width: 1.4 });
+      bgLayer.ellipse(374, 258).center(238, 312).fill('#e6e6e6').stroke({ color: '#000', width: 1.4 });
+
+      serifText(labelLayer, 'U', 242, 82, 30, { italic: true });
+      serifText(labelLayer, '(universe of keys)', 242, 118, 28);
+      serifText(labelLayer, 'K', 105, 246, 30, { italic: true });
+      serifText(labelLayer, '(actual', 103, 290, 28);
+      serifText(labelLayer, 'keys)', 105, 332, 28);
+      serifText(labelLayer, 'T', layout.tableX + layout.tableW / 2, 2, 32, { italic: true });
+
+      keys.forEach(function (key) {
+        var dot = keyLayer.circle(13).center(key.x, key.y).fill('#000');
+        attachInfo(dot, 'Key k' + key.id, 'The hash function sends this stored key to exactly one table slot. Keys with the same slot become one linked list chain.', 'key k' + key.id);
+        keyLabel(labelLayer, key.id, key.labelX, key.labelY, 28);
+      });
+    }
+
+    function drawSlash(parent, x1, y1, x2, y2, width) {
+      parent.line(x1, y1, x2, y2).stroke({ color: '#000', width: width || 2, linecap: 'butt' });
+    }
+
+    function drawTable(groups) {
+      tableLayer.clear();
+      var border = tableLayer.rect(layout.tableW, layout.tableH)
+        .move(layout.tableX, layout.tableY)
+        .fill('none')
+        .stroke({ color: '#000', width: 1.4 });
+      attachInfo(border, 'Hash table T', 'The table contains one slot for each possible hash value. A white slot points to a chain; a shaded slot is empty.', 'hash table T');
+
+      for (var slot = 0; slot < SLOTS; slot++) {
+        var y = layout.tableY + slot * layout.slotH;
+        var filled = groups[slot] && groups[slot].length > 0;
+        var row = tableLayer.rect(layout.tableW, layout.slotH)
+          .move(layout.tableX, y)
+          .fill(filled ? '#e6e6e6' : '#9f9f9f')
+          .stroke({ color: '#000', width: 1.1 });
+        attachInfo(row, 'Slot ' + slot, filled ? 'This slot holds the keys ' + groups[slot].map(function (id) { return 'k' + id; }).join(', ') + '.' : 'No stored key hashes here, so the slot stays empty.', 'slot ' + slot);
+        if (filled) {
+          tableLayer.line(layout.tableX + 47, y + layout.slotH / 2, layout.tableX + layout.tableW, y + layout.slotH / 2)
+            .stroke({ color: '#000', width: 1.6, linecap: 'butt' });
+        } else {
+          drawSlash(tableLayer, layout.tableX + 30, y + layout.slotH * 0.82, layout.tableX + 66, y + layout.slotH * 0.18, 2.2);
+        }
+      }
+    }
+
+    function drawNode(parent, keyId, x, cy, isFirst, isLast, chainLength) {
+      var y = cy - layout.nodeH / 2;
+      var h = layout.nodeH;
+      var leftW = 47;
+      var keyW = 47;
+      var rightW = layout.nodeW - leftW - keyW;
+      var g = parent.group();
+      g.rect(layout.nodeW, h).move(x, y).fill('#e6e6e6').stroke({ color: '#000', width: 1.3 });
+      g.line(x + leftW, y, x + leftW, y + h).stroke({ color: '#000', width: 1.3 });
+      g.line(x + leftW + keyW, y, x + leftW + keyW, y + h).stroke({ color: '#000', width: 1.3 });
+      if (isFirst) {
+        drawSlash(g, x + 14, y + h - 10, x + leftW - 12, y + 12, 2.2);
+      } else {
+        g.line(x + 13, cy + 9, x + leftW - 15, cy + 9).stroke({ color: '#000', width: 1.6, linecap: 'butt' });
+      }
+      if (isLast) {
+        drawSlash(g, x + leftW + keyW + 16, y + h - 10, x + layout.nodeW - 12, y + 12, 2.2);
+      } else {
+        g.line(x + leftW + keyW + 16, cy - 9, x + layout.nodeW - 15, cy - 9).stroke({ color: '#000', width: 1.6, linecap: 'butt' });
+      }
+      keyLabel(g, keyId, x + leftW + keyW / 2 - 10, y + 8, 27);
+      attachInfo(g, 'Node k' + keyId, 'This list node stores one key plus previous and next pointers. Chains get longer when more keys share the same hash value.', 'node k' + keyId + ', chain length ' + chainLength);
+      return g;
+    }
+
+    function drawChains(groups) {
+      chainLayer.clear();
+      for (var slot = 0; slot < SLOTS; slot++) {
+        var chain = groups[slot] || [];
+        if (!chain.length) continue;
+        var cy = slotCenter(slot);
+        var firstX = layout.nodeX;
+        lineWithArrow(chainLayer, layout.tableX + layout.tableW, cy, firstX - 13, cy, 2.0, arrowEnd);
+        for (var i = 0; i < chain.length; i++) {
+          var x = firstX + i * (layout.nodeW + layout.nodeGap);
+          drawNode(chainLayer, chain[i], x, cy, i === 0, i === chain.length - 1, chain.length);
+          if (i < chain.length - 1) {
+            var nx = firstX + (i + 1) * (layout.nodeW + layout.nodeGap);
+            lineWithArrow(chainLayer, x + layout.nodeW, cy - 10, nx - 8, cy - 10, 1.8, arrowEndSmall);
+            lineWithArrow(chainLayer, nx, cy + 10, x + layout.nodeW + 8, cy + 10, 1.8, arrowEndSmall);
+          }
+        }
+      }
+    }
+
+    function drawHashArrows(groups, probeId) {
+      hashLayer.clear();
+      insertionOrder.forEach(function (id) {
+        var key = keyById[id];
+        var targetSlot = null;
+        for (var slot = 0; slot < SLOTS; slot++) {
+          if ((groups[slot] || []).indexOf(id) >= 0) targetSlot = slot;
+        }
+        if (targetSlot === null) return;
+        var cy = slotCenter(targetSlot);
+        var dx = layout.tableX - key.x;
+        var dy = cy - key.y;
+        var len = Math.sqrt(dx * dx + dy * dy) || 1;
+        var startX = key.x + dx / len * 8;
+        var startY = key.y + dy / len * 8;
+        var endX = layout.tableX - 3;
+        var endY = cy;
+        var w = id === probeId ? 2.7 : 1.7;
+        var arrow = lineWithArrow(hashLayer, startX, startY, endX, endY, w, arrowEnd);
+        if (id === probeId) arrow.stroke({ color: '#000', width: 2.7 });
+        attachInfo(arrow, 'h(k' + id + ') = ' + targetSlot, 'The arrow is entirely determined by the hash expression. When two arrows land on one slot, chaining resolves the collision.', 'h(k' + id + ') = ' + targetSlot);
+      });
+    }
+
+    function compileHashExpression(src) {
+      try {
+        return compileExpr(src, ['k']);
+      } catch (exprErr) {
+        var jsExpr = new Function('k', '"use strict"; return (' + src + ');');
+        return function (k) { return jsExpr(k); };
+      }
+    }
+
+    function normalizeSlot(value, keyId) {
+      var n = Number(value);
+      if (!isFinite(n)) throw new Error('h(' + keyId + ') is not a finite number');
+      var slot = Math.trunc(n) % SLOTS;
+      if (slot < 0) slot += SLOTS;
+      return slot;
+    }
+
+    function buildGroups(fn) {
+      var groups = [];
+      for (var i = 0; i < SLOTS; i++) groups.push([]);
+      insertionOrder.forEach(function (id) {
+        groups[normalizeSlot(fn(id), id)].push(id);
+      });
+      return groups;
+    }
+
+    function summarizeGroups(groups, probeId) {
+      var lengths = groups.map(function (g) { return g.length; });
+      var nonEmpty = lengths.filter(function (n) { return n > 0; }).length;
+      var maxLen = Math.max.apply(null, lengths);
+      var probeSlot = null;
+      for (var slot = 0; slot < groups.length; slot++) {
+        if (groups[slot].indexOf(probeId) >= 0) probeSlot = slot;
+      }
+      document.getElementById('hashStatus').textContent = 'h(' + probeId + ') = ' + probeSlot + '; longest chain = ' + maxLen + '.';
+      document.getElementById('chainSummary').textContent = nonEmpty + ' of ' + SLOTS + ' slots used; ' + (SLOTS - nonEmpty) + ' slots remain nil.';
+    }
+
+    var currentGroups = null;
+    var currentExpression = TEXTBOOK_EXPR;
+    var currentProbe = 5;
+
+    function renderCurrent(groups) {
+      drawHashArrows(groups, currentProbe);
+      drawTable(groups);
+      drawChains(groups);
+      drawStaticKeySpace();
+      summarizeGroups(groups, currentProbe);
+    }
+
+    function applyHashSource(src, preserveOnError) {
+      var input = document.getElementById('hashExprInput');
+      var status = document.getElementById('hashStatus');
+      try {
+        var fn = compileHashExpression(src);
+        var groups = buildGroups(fn);
+        currentExpression = src;
+        currentGroups = groups;
+        input.setAttribute('data-eq-valid', 'true');
+        renderCurrent(groups);
+        return true;
+      } catch (err) {
+        input.setAttribute('data-eq-valid', 'false');
+        status.textContent = 'Expression error: ' + err.message;
+        if (!preserveOnError || !currentGroups) throw err;
+        return false;
+      }
+    }
+
+    function update_hash() {
+      applyHashSource(document.getElementById('hashExprInput').value, true);
+    }
+
+    function update_probe(v) {
+      var n = Math.max(1, Math.min(8, Math.trunc(Number(v) || 1)));
+      currentProbe = n;
+      var probe = document.getElementById('probeInput');
+      if (String(probe.value) !== String(n)) probe.value = n;
+      if (currentGroups) renderCurrent(currentGroups);
+    }
+
+    function setSample(src, id) {
+      document.getElementById('hashExprInput').value = src;
+      var buttons = ['textbookBtn', 'mod9Btn', 'mod3Btn'];
+      buttons.forEach(function (buttonId) {
+        var button = document.getElementById(buttonId);
+        if (button) button.classList.toggle('active', buttonId === id);
+      });
+      applyHashSource(src, true);
+    }
+
+    function trigger_textbook() {
+      setSample(TEXTBOOK_EXPR, 'textbookBtn');
+    }
+
+    function trigger_mod9() {
+      setSample('k % 9', 'mod9Btn');
+    }
+
+    function trigger_mod3() {
+      setSample('k % 3', 'mod3Btn');
+    }
+
+    function trigger_run() {
+      update_hash();
+    }
+
+    function trigger_reset() {
+      document.getElementById('probeInput').value = '5';
+      currentProbe = 5;
+      trigger_textbook();
+    }
+
+    function fitSvgToContainer() {
+      var box = container.getBoundingClientRect();
+      var aspect = W / H;
+      var actual = Math.max(0.2, box.width / Math.max(1, box.height));
+      if (actual > aspect) {
+        var viewW = H * actual;
+        draw.viewbox(-(viewW - W) / 2, 0, viewW, H);
+      } else {
+        var viewH = W / actual;
+        draw.viewbox(0, -(viewH - H) / 2, W, viewH);
+      }
+    }
+
+    document.addEventListener('fig-resize', fitSvgToContainer);
+
+    drawStaticKeySpace();
+    document.getElementById('hashExprInput').value = TEXTBOOK_EXPR;
+    setSample(TEXTBOOK_EXPR, 'textbookBtn');
+    fitSvgToContainer();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    #ui .buttonRow {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    #ui .readout {
+      color: #333;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <span class="buttonRow"><button id="bothInput" class="active" onclick="trigger_both()">Both</button><button id="curveInput" onclick="trigger_curve()">Curve</button><button id="circleInput" onclick="trigger_circle()">Circle</button></span>
+    <label>Q position: <output id="qVal">78</output><input id="qInput" type="range" min="18" max="96" step="1" value="78" oninput="document.getElementById('qVal').value=this.value;update_q(+this.value)"></label>
+    <label>P position: <output id="pVal">20</output><input id="pInput" type="range" min="10" max="46" step="1" value="20" oninput="document.getElementById('pVal').value=this.value;update_p(+this.value)"></label>
+    <label><input id="familyInput" type="checkbox" checked onchange="toggle_family(this.checked)"> Secant family</label>
+    <span class="readout">Secant slope: <output id="slopeVal">2.00</output></span>
+    <button onclick="trigger_reset()">Reset</button>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library choice: svgjs.
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 980;
+    var H = 500;
+    draw.viewbox(0, 0, W, H);
+
+    var ink = '#222222';
+    var blue = '#26a6dc';
+    var magenta = '#bd63b5';
+    var lavender = '#ead1e8';
+    var gray = '#bfc1c5';
+    var panelMode = 'both';
+    var showFamily = true;
+    var dragTarget = null;
+
+    var state = {
+      curveP: 0.20,
+      curveQ: 0.78,
+      circleP: 195,
+      circleQ: 342
+    };
+
+    draw.marker(10, 10, function (add) {
+      add.path('M0,0 L10,5 L0,10 Z').fill(ink);
+    }).ref(9, 5).orient('auto').id('arrow-black');
+
+    draw.marker(12, 12, function (add) {
+      add.path('M0,0 L12,6 L0,12 L3,6 Z').fill('#fff').stroke({ color: gray, width: 1.6 });
+    }).ref(10, 6).orient('auto').id('arrow-gray');
+
+    var root = draw.group();
+    var leftPanel = root.group();
+    var rightPanel = root.group();
+
+    function curvePoint(t) {
+      var x = 45 + 360 * t;
+      var y = 430 - 850 * t + 1350 * t * t - 650 * t * t * t;
+      return { x: x, y: y };
+    }
+
+    function curveDerivative(t) {
+      return { x: 360, y: -850 + 2700 * t - 1950 * t * t };
+    }
+
+    function circlePoint(angle) {
+      var c = { x: 710, y: 305 };
+      var r = 122;
+      var a = angle * Math.PI / 180;
+      return { x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a) };
+    }
+
+    function circleDerivative(angle) {
+      var r = 122;
+      var a = angle * Math.PI / 180;
+      return { x: -r * Math.sin(a), y: r * Math.cos(a) };
+    }
+
+    function clamp(v, a, b) {
+      return Math.max(a, Math.min(b, v));
+    }
+
+    function addLineThrough(group, a, b, opts) {
+      var dx = b.x - a.x;
+      var dy = b.y - a.y;
+      var len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      var ux = dx / len;
+      var uy = dy / len;
+      var back = opts.back || 35;
+      var front = opts.front || 260;
+      return group.line(a.x - ux * back, a.y - uy * back, a.x + ux * front, a.y + uy * front)
+        .stroke({ color: opts.color || magenta, width: opts.width || 2.2, opacity: opts.opacity == null ? 1 : opts.opacity });
+    }
+
+    function pathFromSamples(fn, a, b, n) {
+      var d = '';
+      for (var i = 0; i <= n; i++) {
+        var t = a + (b - a) * i / n;
+        var p = fn(t);
+        d += (i ? ' L ' : 'M ') + p.x.toFixed(2) + ' ' + p.y.toFixed(2);
+      }
+      return d;
+    }
+
+    function arcArrow(group, cx, cy, r, startDeg, endDeg) {
+      var start = startDeg * Math.PI / 180;
+      var end = endDeg * Math.PI / 180;
+      var p0 = { x: cx + r * Math.cos(start), y: cy + r * Math.sin(start) };
+      var p1 = { x: cx + r * Math.cos(end), y: cy + r * Math.sin(end) };
+      var large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+      return group.path('M ' + p0.x + ' ' + p0.y + ' A ' + r + ' ' + r + ' 0 ' + large + ' 0 ' + p1.x + ' ' + p1.y)
+        .fill('none')
+        .stroke({ color: gray, width: 2.1 })
+        .attr({ 'marker-end': 'url(#arrow-gray)' });
+    }
+
+    function label(group, text, x, y, size, opts) {
+      opts = opts || {};
+      var t = group.text(text).font({
+        family: opts.family || 'Arial, sans-serif',
+        size: size || 22,
+        anchor: opts.anchor || 'start',
+        leading: '1.05em'
+      }).fill(opts.fill || ink).move(x, y);
+      if (opts.italic) t.font({ family: 'Georgia, serif', style: 'italic' });
+      if (opts.halo) t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': opts.halo, 'stroke-linejoin': 'round' });
+      return t;
+    }
+
+    function point(group, p, name, tooltip, key) {
+      var hit = group.circle(22).center(p.x, p.y).fill('transparent').stroke({ color: 'transparent', width: 1 });
+      var dot = group.circle(10).center(p.x, p.y).fill(blue);
+      hit.css('cursor', 'grab');
+      hit.on('pointerdown', function (e) {
+        dragTarget = key;
+        hit.css('cursor', 'grabbing');
+        if (hit.node.setPointerCapture) hit.node.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      hit.on('pointerup pointercancel', function () {
+        dragTarget = null;
+        hit.css('cursor', 'grab');
+      });
+      hit.on('mousemove', function (e) { showTooltip(tooltip, e); });
+      hit.on('mouseleave', function () { hideTooltip(); });
+      hit.on('click', function () {
+        if (name === 'P') showPopup('Point P', 'P is the fixed point where the tangent line is being defined. Move P to see how the limiting direction changes.');
+        else showPopup('Point Q', 'Q lies on the curve and determines the secant line through P. Move Q toward P and the secant rotates into the tangent direction.');
+      });
+      return { dot: dot, hit: hit };
+    }
+
+    function syncPointHandles(handle, p) {
+      if (!handle) return;
+      handle.dot.center(p.x, p.y);
+      handle.hit.center(p.x, p.y);
+    }
+
+    function svgPoint(evt) {
+      var pt = draw.node.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      return pt.matrixTransform(draw.node.getScreenCTM().inverse());
+    }
+
+    function nearestCurveT(p) {
+      var bestT = 0.2;
+      var bestD = Infinity;
+      for (var i = 0; i <= 220; i++) {
+        var t = 0.08 + (0.94 - 0.08) * i / 220;
+        var c = curvePoint(t);
+        var d = (c.x - p.x) * (c.x - p.x) + (c.y - p.y) * (c.y - p.y);
+        if (d < bestD) { bestD = d; bestT = t; }
+      }
+      return bestT;
+    }
+
+    function nearestCircleAngle(p) {
+      var c = { x: 710, y: 305 };
+      var angle = Math.atan2(p.y - c.y, p.x - c.x) * 180 / Math.PI;
+      if (angle < 0) angle += 360;
+      return angle;
+    }
+
+    function mathSlope(a, b) {
+      var dx = b.x - a.x;
+      if (Math.abs(dx) < 0.001) return 'vertical';
+      return (-(b.y - a.y) / dx).toFixed(2);
+    }
+
+    function updateReadout() {
+      var p, q;
+      if (panelMode === 'circle') {
+        p = circlePoint(state.circleP);
+        q = circlePoint(state.circleQ);
+      } else {
+        p = curvePoint(state.curveP);
+        q = curvePoint(state.curveQ);
+      }
+      var qUi = Math.round((panelMode === 'circle' ? (state.circleQ - state.circleP) / (358 - state.circleP) : state.curveQ) * 100);
+      var pUi = Math.round(panelMode === 'circle' ? (state.circleP - 150) / 2.2 : state.curveP * 100);
+      document.getElementById('slopeVal').value = mathSlope(p, q);
+      document.getElementById('qVal').value = qUi;
+      document.getElementById('pVal').value = pUi;
+      document.getElementById('qInput').value = qUi;
+      document.getElementById('pInput').value = pUi;
+    }
+
+    function drawLeftPanel() {
+      leftPanel.clear();
+      var show = panelMode === 'both' || panelMode === 'curve';
+      leftPanel.opacity(show ? 1 : 0);
+      if (!show) return;
+
+      leftPanel.line(20, 420, 440, 420).stroke({ color: ink, width: 1.6 }).attr({ 'marker-end': 'url(#arrow-black)' });
+      leftPanel.line(54, 456, 54, 44).stroke({ color: ink, width: 1.6 }).attr({ 'marker-end': 'url(#arrow-black)' });
+      label(leftPanel, 'x', 422, 396, 19, { italic: true, family: 'Georgia, serif', halo: 3 });
+      label(leftPanel, 'y', 68, 40, 19, { italic: true, family: 'Georgia, serif', halo: 3 });
+
+      var p = curvePoint(state.curveP);
+      var q = curvePoint(Math.max(state.curveQ, state.curveP + 0.05));
+      var tanEnd = { x: p.x + curveDerivative(state.curveP).x, y: p.y + curveDerivative(state.curveP).y };
+
+      leftPanel.path(pathFromSamples(curvePoint, 0.08, 0.94, 90)).fill('none').stroke({ color: blue, width: 4 });
+
+      var fam = [state.curveP + 0.13, state.curveP + 0.28, state.curveP + 0.48, state.curveQ];
+      fam = fam.map(function (t) { return clamp(t, state.curveP + 0.05, 0.94); });
+      if (showFamily) {
+        var poly = 'M ' + p.x + ' ' + p.y;
+        var t1 = curvePoint(fam[0]);
+        var t3 = curvePoint(fam[3]);
+        poly += ' L ' + (p.x + (tanEnd.x - p.x) * 0.55) + ' ' + (p.y + (tanEnd.y - p.y) * 0.55);
+        poly += ' L ' + (p.x + (t3.x - p.x) * 1.25) + ' ' + (p.y + (t3.y - p.y) * 1.25) + ' Z';
+        leftPanel.path(poly).fill(lavender).opacity(0.75);
+        for (var i = 0; i < fam.length; i++) {
+          addLineThrough(leftPanel, p, curvePoint(fam[i]), {
+            color: magenta,
+            width: i === fam.length - 1 ? 2.3 : 2.1,
+            front: i === fam.length - 1 ? 270 : 230,
+            back: 80
+          });
+        }
+        arcArrow(leftPanel, p.x + 24, p.y + 20, 172, -83, -36);
+        arcArrow(leftPanel, p.x + 25, p.y + 15, 220, -78, -24);
+      }
+      addLineThrough(leftPanel, p, tanEnd, { color: magenta, width: 2.4, front: 250, back: 45 });
+
+      point(leftPanel, p, 'P', 'Drag P along the curve.', 'curveP');
+      point(leftPanel, q, 'Q', 'Drag Q toward P to rotate the secant line.', 'curveQ');
+      label(leftPanel, 'P', p.x - 22, p.y - 28, 24, { italic: true, family: 'Georgia, serif', halo: 4 });
+      label(leftPanel, 'Q', q.x - 16, q.y + 10, 24, { italic: true, family: 'Georgia, serif', halo: 4 });
+      label(leftPanel, 'Tangent\nline', 98, 122, 24, { anchor: 'middle', halo: 4 });
+      label(leftPanel, 'Secant\nline', 430, 292, 23, { halo: 4 });
+      label(leftPanel, '(a)', 260, 465, 25, { italic: true, family: 'Georgia, serif' });
+    }
+
+    function drawRightPanel() {
+      rightPanel.clear();
+      var show = panelMode === 'both' || panelMode === 'circle';
+      rightPanel.opacity(show ? 1 : 0);
+      if (!show) return;
+
+      var center = { x: 710, y: 305 };
+      var p = circlePoint(state.circleP);
+      var q = circlePoint(Math.max(state.circleQ, state.circleP + 8));
+      var tanEnd = { x: p.x + circleDerivative(state.circleP).x, y: p.y + circleDerivative(state.circleP).y };
+
+      rightPanel.circle(244).center(center.x, center.y).fill('none').stroke({ color: blue, width: 4 });
+
+      var angles = [
+        state.circleP + 22,
+        state.circleP + 54,
+        state.circleP + 95,
+        state.circleQ
+      ].map(function (a) { return clamp(a, state.circleP + 8, 356); });
+      if (showFamily) {
+        var poly = 'M ' + p.x + ' ' + p.y;
+        var t3 = circlePoint(angles[3]);
+        poly += ' L ' + (p.x + (tanEnd.x - p.x) * 0.55) + ' ' + (p.y + (tanEnd.y - p.y) * 0.55);
+        poly += ' L ' + (p.x + (t3.x - p.x) * 1.28) + ' ' + (p.y + (t3.y - p.y) * 1.28) + ' Z';
+        rightPanel.path(poly).fill(lavender).opacity(0.75);
+        for (var i = 0; i < angles.length; i++) {
+          addLineThrough(rightPanel, p, circlePoint(angles[i]), {
+            color: magenta,
+            width: i === angles.length - 1 ? 2.3 : 2.1,
+            front: i === angles.length - 1 ? 340 : 280,
+            back: 72
+          });
+        }
+        arcArrow(rightPanel, p.x + 95, p.y + 38, 184, -82, -22);
+        arcArrow(rightPanel, p.x + 96, p.y + 34, 236, -79, -15);
+      }
+      addLineThrough(rightPanel, p, tanEnd, { color: magenta, width: 2.5, front: 280, back: 55 });
+
+      point(rightPanel, p, 'P', 'Drag P around the circle.', 'circleP');
+      point(rightPanel, q, 'Q', 'Drag Q around the circle toward P.', 'circleQ');
+      for (var j = 0; j < 2; j++) {
+        var mid = circlePoint(angles[j]);
+        rightPanel.circle(10).center(mid.x, mid.y).fill(blue);
+      }
+      label(rightPanel, 'P', p.x - 18, p.y - 35, 24, { italic: true, family: 'Georgia, serif', halo: 4 });
+      label(rightPanel, 'Q', q.x - 18, q.y + 12, 24, { italic: true, family: 'Georgia, serif', halo: 4 });
+      label(rightPanel, 'Tangent\nline', 605, 70, 24, { anchor: 'middle', halo: 4 });
+      label(rightPanel, 'Secant\nline', 852, 266, 23, { anchor: 'start', halo: 4 });
+      label(rightPanel, '(b)', 755, 465, 25, { italic: true, family: 'Georgia, serif' });
+    }
+
+    function render() {
+      if (panelMode === 'curve') {
+        draw.viewbox(0, 0, 500, H);
+      } else if (panelMode === 'circle') {
+        draw.viewbox(470, 0, 510, H);
+      } else {
+        draw.viewbox(0, 0, W, H);
+      }
+      root.transform({ scale: 1, translateX: 0, translateY: 0 });
+      drawLeftPanel();
+      drawRightPanel();
+      updateReadout();
+    }
+
+    function setMode(mode) {
+      panelMode = mode;
+      ['both', 'curve', 'circle'].forEach(function (id) {
+        var btn = document.getElementById(id + 'Input');
+        if (btn) btn.classList.toggle('active', id === mode);
+      });
+      render();
+    }
+
+    function update_q(v) {
+      if (panelMode === 'circle') {
+        state.circleQ = clamp(state.circleP + (358 - state.circleP) * v / 100, state.circleP + 8, 356);
+      } else if (panelMode === 'curve') {
+        state.curveQ = clamp(v / 100, state.curveP + 0.05, 0.96);
+      } else {
+        state.curveQ = clamp(v / 100, state.curveP + 0.05, 0.96);
+        state.circleQ = clamp(state.circleP + (358 - state.circleP) * v / 100, state.circleP + 8, 356);
+      }
+      render();
+    }
+
+    function update_p(v) {
+      if (panelMode === 'circle') {
+        state.circleP = clamp(150 + v * 2.2, 165, 235);
+        state.circleQ = clamp(state.circleQ, state.circleP + 8, 356);
+      } else if (panelMode === 'curve') {
+        state.curveP = clamp(v / 100, 0.1, 0.46);
+        state.curveQ = clamp(state.curveQ, state.curveP + 0.05, 0.96);
+      } else {
+        state.curveP = clamp(v / 100, 0.1, 0.46);
+        state.curveQ = clamp(state.curveQ, state.curveP + 0.05, 0.96);
+        state.circleP = clamp(150 + v * 2.2, 165, 235);
+        state.circleQ = clamp(state.circleQ, state.circleP + 8, 356);
+      }
+      render();
+    }
+
+    function toggle_family(on) {
+      showFamily = on;
+      render();
+    }
+
+    function trigger_both() { setMode('both'); }
+    function trigger_curve() { setMode('curve'); }
+    function trigger_circle() { setMode('circle'); }
+    function trigger_reset() {
+      panelMode = 'both';
+      showFamily = true;
+      state.curveP = 0.20;
+      state.curveQ = 0.78;
+      state.circleP = 195;
+      state.circleQ = 342;
+      document.getElementById('familyInput').checked = true;
+      document.getElementById('qInput').value = 78;
+      document.getElementById('pInput').value = 20;
+      setMode('both');
+    }
+
+    draw.on('pointermove', function (e) {
+      if (!dragTarget) return;
+      var p = svgPoint(e);
+      if (dragTarget === 'curveP') {
+        state.curveP = clamp(nearestCurveT(p), 0.1, 0.46);
+        state.curveQ = clamp(state.curveQ, state.curveP + 0.05, 0.96);
+      } else if (dragTarget === 'curveQ') {
+        state.curveQ = clamp(nearestCurveT(p), state.curveP + 0.05, 0.96);
+      } else if (dragTarget === 'circleP') {
+        state.circleP = clamp(nearestCircleAngle(p), 165, 235);
+        state.circleQ = clamp(state.circleQ, state.circleP + 8, 356);
+      } else if (dragTarget === 'circleQ') {
+        state.circleQ = clamp(nearestCircleAngle(p), state.circleP + 8, 356);
+      }
+      render();
+    });
+
+    draw.on('pointerup pointerleave pointercancel', function () {
+      dragTarget = null;
+    });
+
+    root.on('click', function () {
+      showPopup('Tangent as a limit', 'Each magenta secant passes through P and a nearby point Q. As Q moves along the curve toward P, the secant line rotates toward the limiting tangent line.');
+    });
+
+    render();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

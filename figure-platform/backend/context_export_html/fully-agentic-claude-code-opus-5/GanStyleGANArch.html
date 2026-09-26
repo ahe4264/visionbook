@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StyleGAN Architecture</title>
+<style>
+  :root{
+    --ink:#14181c; --muted:#5a6570; --line:#c9d1d8;
+    --bg:#ffffff; --panel:#f6f8fa; --panel-line:#dde4ea;
+    --orange:#d1795a; --orange-lt:#e0947a; --orange-dk:#8e4a33;
+    --teal:#a7dbd3; --teal-dk:#6fb3a9;
+    --slate:#4e6c80; --slate-dk:#385364;
+    --grey:#c4c9cd; --grey-lt:#d6dadd; --grey-dk:#3f454a;
+    --blue:#a9c5d9; --blue-dk:#5e7c91;
+    --accent:#e0a02a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Palatino Linotype","Book Antiqua",Palatino,Georgia,"Times New Roman",serif;}
+  .wrap{max-width:1500px;margin:0 auto;padding:22px 20px 60px;}
+  header h1{font-size:1.45rem;margin:0 0 4px;letter-spacing:.2px}
+  header p{margin:0 0 16px;color:var(--muted);font-size:.95rem;max-width:80ch;line-height:1.45}
+  .controls{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-end;
+    background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;
+    padding:14px 18px;margin-bottom:6px;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
+  .ctl{display:flex;flex-direction:column;gap:6px}
+  .ctl label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+  .ctl input[type=range]{width:230px;accent-color:var(--orange)}
+  .val{font-variant-numeric:tabular-nums;font-size:.85rem;color:var(--ink)}
+  button{font:inherit;font-size:.85rem;padding:8px 15px;border-radius:7px;border:1px solid var(--slate);
+    background:var(--slate);color:#fff;cursor:pointer;transition:.15s}
+  button:hover{background:var(--slate-dk)}
+  button.ghost{background:#fff;color:var(--slate);}
+  button.ghost:hover{background:#eef3f6}
+  button[disabled]{opacity:.5;cursor:default}
+  .narr{min-height:2.6em;margin:10px 2px 4px;padding:10px 14px;border-left:4px solid var(--accent);
+    background:#fffaf0;border-radius:0 8px 8px 0;font-size:.95rem;line-height:1.45}
+  .narr b{color:#9a6a00}
+  .figwrap{border:1px solid var(--panel-line);border-radius:10px;background:#fff;padding:4px 6px;overflow:hidden}
+  svg{display:block;width:100%;height:auto}
+  .fig-txt{font-family:"Palatino Linotype","Book Antiqua",Palatino,Georgia,serif;fill:var(--ink)}
+  .halo{paint-order:stroke fill;stroke:#fff;stroke-width:6px;stroke-linejoin:round}
+  .lit{filter:drop-shadow(0 0 7px rgba(224,160,42,.95)) drop-shadow(0 0 16px rgba(224,160,42,.55))}
+  .dimmed{opacity:.28;transition:opacity .25s}
+  g.node{transition:filter .2s, opacity .25s}
+  h2.sec{font-size:1.02rem;margin:26px 0 4px;letter-spacing:.3px}
+  h2.sec span{color:var(--muted);font-size:.82rem;font-weight:400;letter-spacing:0}
+  .insp{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;
+    background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;padding:14px 16px}
+  .pan{display:flex;flex-direction:column;align-items:center;gap:5px}
+  .pan .cap{font-size:.71rem;color:var(--muted);text-align:center;line-height:1.25;max-width:132px;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  .pan .cap b{color:var(--ink);font-weight:600}
+  .arrowsep{font-size:1.3rem;color:var(--line);align-self:center;padding-bottom:22px}
+  .ycharts{display:flex;flex-wrap:wrap;gap:16px;margin-top:10px}
+  .ycard{background:var(--panel);border:1px solid var(--panel-line);border-radius:10px;padding:10px 12px 6px}
+  .ycard h3{margin:0 0 4px;font-size:.85rem;font-weight:600}
+  .notes{margin-top:22px;font-size:.87rem;color:var(--muted);line-height:1.55;max-width:95ch}
+  .notes code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:#eef2f5;padding:1px 4px;border-radius:3px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin:8px 2px;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  .legend i{display:inline-block;width:13px;height:13px;border:1px solid #333;vertical-align:-2px;margin-right:5px;border-radius:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>The StyleGAN generator: style in, noise in</h1>
+  <p>Latent <b>z</b> is mapped to an intermediate code <b>w</b>, from which three affine transforms produce
+  styles <b>y</b><sub>1</sub>, <b>y</b><sub>2</sub>, <b>y</b><sub>3</sub>. Each style is a per-channel
+  <i>scale and offset</i> applied by adaptive instance normalisation. Independent single-channel noise maps,
+  scaled by &psi;, are broadcast over all 512 channels and added just before each normalisation. Everything
+  drawn below&nbsp;&mdash; noise maps, style vectors, feature maps and the output image&nbsp;&mdash; is actually computed.</p>
+</header>
+
+<div class="controls">
+  <div class="ctl">
+    <label>Pipeline animation</label>
+    <div style="display:flex;gap:8px">
+      <button id="btnRun">&#9654;&nbsp; Trace z &rarr; w &rarr; y &rarr; image</button>
+      <button id="btnStop" class="ghost">Reset</button>
+    </div>
+  </div>
+  <div class="ctl">
+    <label for="psi">Noise scale &psi; &nbsp;<span class="val" id="psiVal">1.00</span></label>
+    <input type="range" id="psi" min="0" max="2.5" step="0.01" value="1">
+    <div class="val" id="psiBreak" style="font-size:.76rem;color:var(--muted)"></div>
+  </div>
+  <div class="ctl">
+    <label for="chan">Inspected channel <span class="val" id="chanVal">c = 0</span></label>
+    <input type="range" id="chan" min="0" max="15" step="1" value="0">
+  </div>
+  <div class="ctl">
+    <label>Resample</label>
+    <div style="display:flex;gap:8px">
+      <button class="ghost" id="btnZ">new latent z</button>
+      <button class="ghost" id="btnN">new noise z<sub>i</sub></button>
+    </div>
+  </div>
+</div>
+
+<div class="narr" id="narr">Hover a block for details, drag &psi; to change how much stochastic detail is injected, or press <b>Trace</b> to walk the whole pipeline.</div>
+
+<div class="figwrap"><svg id="fig" viewBox="0 -70 1780 1222" role="img" aria-label="StyleGAN architecture diagram"></svg></div>
+
+<div class="legend">
+  <span><i style="background:var(--grey)"></i>learned constant 4&times;4&times;512</span>
+  <span><i style="background:var(--orange)"></i>feature map / style vector</span>
+  <span><i style="background:var(--teal)"></i>noise injection (B&middot;&psi;&middot;z, added to every channel)</span>
+  <span><i style="background:var(--slate)"></i>AdaIN &mdash; per-channel scale y<sub>s</sub> and offset y<sub>b</sub></span>
+  <span><i style="background:linear-gradient(90deg,#3f9e94,#fff,#d1795a)"></i>value colour map (&minus; &rarr; +)</span>
+</div>
+
+<h2 class="sec">Inside one channel <span>&mdash; the real tensors at every stage of the synthesis network (channel selected above; 16 of 512 channels are propagated)</span></h2>
+<div class="insp" id="insp"></div>
+
+<h2 class="sec">The style vectors <span>&mdash; y<sub>i</sub> = A<sub>i</sub>w is a 2&times;1&times;512 tensor: one scale and one offset per channel (first 16 shown)</span></h2>
+<div class="ycharts" id="ycharts"></div>
+
+<div class="notes" id="notes"></div>
+
+</div>
+
+<script>
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]);
+  if(parent) parent.appendChild(e); return e;}
+function txt(parent,x,y,s,o={}){const t=el("text",Object.assign({x,y,"class":"fig-txt "+(o.cls||""),
+  "font-size":o.fs||22,"text-anchor":o.anchor||"middle","font-style":o.italic?"italic":"normal",
+  "font-weight":o.bold?"600":"400",fill:o.fill||"#14181c"},o.attrs||{}),parent);
+  t.textContent=s; return t;}
+function clear(g){while(g.firstChild) g.removeChild(g.firstChild);}
+
+/* ============================================================
+   1.  MATH  — everything the figure shows is computed here
+   ============================================================ */
+const D=512;          // full latent / channel width
+const C=16;           // channels actually propagated through the synthesis net (a slice of the 512)
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function gaussArray(n,rng){const out=new Float32Array(n);
+  for(let i=0;i<n;i+=2){const u=Math.max(rng(),1e-9),v=rng(),r=Math.sqrt(-2*Math.log(u));
+    out[i]=r*Math.cos(2*Math.PI*v); if(i+1<n) out[i+1]=r*Math.sin(2*Math.PI*v);}
+  return out;}
+function randMat(rows,cols,rng,scale){const m=new Float32Array(rows*cols);
+  for(let i=0;i<m.length;i++) m[i]=(rng()*2-1)*scale; return m;}
+function matvec(M,x,rows,cols){const y=new Float32Array(rows);
+  for(let r=0;r<rows;r++){let s=0,off=r*cols; for(let c=0;c<cols;c++) s+=M[off+c]*x[c]; y[r]=s;}
+  return y;}
+function standardise(v){let m=0;for(const x of v)m+=x;m/=v.length;
+  let s=0;for(const x of v)s+=(x-m)*(x-m); s=Math.sqrt(s/v.length)||1;
+  const o=new Float32Array(v.length); for(let i=0;i<v.length;i++)o[i]=(v[i]-m)/s; return o;}
+
+/* --- fixed "trained" weights (seeded once) --- */
+const wrng=mulberry32(20240917);
+const sc=1/Math.sqrt(D);
+const Wm=[randMat(D,D,wrng,sc*1.7),randMat(D,D,wrng,sc*1.7),randMat(D,D,wrng,sc*1.7)];
+const bm=[gaussArray(D,wrng),gaussArray(D,wrng),gaussArray(D,wrng)];
+const A=[randMat(2*D,D,wrng,sc*1.6),randMat(2*D,D,wrng,sc*1.6),randMat(2*D,D,wrng,sc*1.6)];
+const constIn=(function(){const t=[];const r=mulberry32(7771);
+  for(let c=0;c<C;c++){const g=gaussArray(16,r);const a=[];
+    for(let i=0;i<4;i++){a.push(Array.from(g.slice(i*4,i*4+4)));} t.push(a);} return t;})();
+const convW=[0,1,2].map(()=>{const r=mulberry32(4242+Math.floor(wrng()*1e6));
+  const k=[];for(let o=0;o<C;o++){const oc=[];for(let i=0;i<C;i++){
+    const g=gaussArray(9,r);oc.push(Array.from(g).map(v=>v/Math.sqrt(C*9)*3));}k.push(oc);}return k;});
+const toRGB=(function(){const r=mulberry32(99123);const m=[];
+  for(let o=0;o<3;o++){const row=[];for(let i=0;i<C;i++) row.push((r()*2-1)*1.4/Math.sqrt(C));m.push(row);}
+  return m;})();
+/* per-level learned noise weights B_i (StyleGAN's scaling factors) */
+const Bnoise=[0.80,1.00,1.30];
+
+/* --- tensor helpers (arrays [c][y][x]) --- */
+function zeros(c,h,w){const t=[];for(let k=0;k<c;k++){const a=[];for(let i=0;i<h;i++)a.push(new Float32Array(w));t.push(a);}return t;}
+function cloneT(t){return t.map(ch=>ch.map(r=>Float32Array.from(r)));}
+function conv3(x,k){const h=x[0].length,w=x[0][0].length,out=zeros(C,h,w);
+  for(let o=0;o<C;o++)for(let y=0;y<h;y++)for(let xx=0;xx<w;xx++){let s=0;
+    for(let i=0;i<C;i++)for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const yy=Math.min(h-1,Math.max(0,y+dy)),xs=Math.min(w-1,Math.max(0,xx+dx));
+      s+=k[o][i][(dy+1)*3+(dx+1)]*x[i][yy][xs];}
+    out[o][y][xx]=s>0?s:0.2*s;}                 // leaky-ReLU
+  return out;}
+function addNoise(x,n,scale){const out=cloneT(x);
+  for(let c=0;c<C;c++)for(let y=0;y<out[0].length;y++)for(let xx=0;xx<out[0][0].length;xx++)
+    out[c][y][xx]+=scale*n[y][xx];              // same map broadcast to EVERY channel
+  return out;}
+function adain(x,ys,yb){const h=x[0].length,w=x[0][0].length,out=zeros(C,h,w);
+  for(let c=0;c<C;c++){let m=0;for(let y=0;y<h;y++)for(let xx=0;xx<w;xx++)m+=x[c][y][xx];m/=h*w;
+    let v=0;for(let y=0;y<h;y++)for(let xx=0;xx<w;xx++)v+=(x[c][y][xx]-m)**2;
+    const s=Math.sqrt(v/(h*w))+1e-6;
+    for(let y=0;y<h;y++)for(let xx=0;xx<w;xx++) out[c][y][xx]=ys[c]*((x[c][y][xx]-m)/s)+yb[c];}
+  return out;}
+function upsample2(x){const h=x[0].length,w=x[0][0].length,out=zeros(C,h*2,w*2);
+  for(let c=0;c<C;c++)for(let y=0;y<h*2;y++)for(let xx=0;xx<w*2;xx++){
+    const fy=(y+0.5)/2-0.5, fx=(xx+0.5)/2-0.5;
+    const y0=Math.max(0,Math.min(h-1,Math.floor(fy))), x0=Math.max(0,Math.min(w-1,Math.floor(fx)));
+    const y1=Math.min(h-1,y0+1), x1=Math.min(w-1,x0+1);
+    const ty=Math.max(0,Math.min(1,fy-y0)), tx=Math.max(0,Math.min(1,fx-x0));
+    out[c][y][xx]=(1-ty)*((1-tx)*x[c][y0][x0]+tx*x[c][y0][x1])+ty*((1-tx)*x[c][y1][x0]+tx*x[c][y1][x1]);}
+  return out;}
+function noiseMap(h,w,rng){const m=[];for(let y=0;y<h;y++){const g=gaussArray(w,rng);m.push(Array.from(g));}return m;}
+
+/* --- state + full forward pass --- */
+const S={psi:1, chan:0, seedZ:11, seedN:5, M:null};
+function forward(){
+  const z=gaussArray(D,mulberry32(S.seedZ*2654435761%4294967296));
+  let h=z;
+  for(let l=0;l<3;l++){const a=matvec(Wm[l],h,D,D);
+    for(let i=0;i<D;i++) a[i]=Math.tanh(a[i]+0.15*bm[l][i]); h=a;}
+  const w=h;
+  const ys=[],yb=[];
+  for(let i=0;i<3;i++){const o=matvec(A[i],w,2*D,D);
+    const rawS=standardise(o.slice(0,D)), rawB=standardise(o.slice(D));
+    const s=new Float32Array(D), b=new Float32Array(D);
+    for(let c=0;c<D;c++){s[c]=1+0.75*rawS[c]; b[c]=0.85*rawB[c];}
+    ys.push(s); yb.push(b);}
+
+  const nr=mulberry32(S.seedN*40503%4294967296);
+  const n=[noiseMap(4,4,nr),noiseMap(4,4,nr),noiseMap(8,8,nr)];
+  const psi=Bnoise.map(b=>b*S.psi);
+
+  /* synthesis */
+  const h0=constIn.map(ch=>ch.map(r=>Float32Array.from(r)));       // learned constant 4x4x512
+  const h0n=addNoise(h0,n[0],psi[0]);                              // + psi1 * z1
+  const h1=adain(h0n,ys[0],yb[0]);                                 // AdaIN with y1  -> 4x4 block
+  const t=conv3(h1,convW[0]);
+  const tn=addNoise(t,n[1],psi[1]);                                // + psi2 * z2   (4x4 noise)
+  const h2s=adain(tn,ys[1],yb[1]);
+  const h2=upsample2(h2s);                                         // -> 8x8x512
+  const u=conv3(h2,convW[1]);
+  const un=addNoise(u,n[2],psi[2]);                                // + psi3 * z3   (8x8 noise)
+  const h3=adain(un,ys[2],yb[2]);                                  // -> 8x8x512
+  const fin=conv3(h3,convW[2]);
+  const img=[];
+  for(let y=0;y<8;y++){const row=[];for(let x=0;x<8;x++){
+    const v=[0,1,2].map(o=>{let s=0;for(let i=0;i<C;i++)s+=toRGB[o][i]*fin[i][y][x];return 1/(1+Math.exp(-s));});
+    const L=v[0];                                                  // luminance drives the warm ramp
+    const cl=q=>Math.max(0,Math.min(1,q));
+    row.push([cl(0.24+0.72*L), cl((0.14+0.66*L)*(0.93+0.09*v[1])), cl((0.10+0.50*L)*(0.84+0.22*v[2]))]);}
+    img.push(row);}
+  return {z,w,ys,yb,n,psi,h0,h0n,h1,t,tn,h2s,h2,u,un,h3,img};
+}
+
+/* colour maps */
+function divColor(v,m){const t=Math.max(-1,Math.min(1,v/(m||1)));
+  const a=Math.abs(t);
+  if(t>=0) return `rgb(${Math.round(255-(255-209)*a)},${Math.round(255-(255-121)*a)},${Math.round(255-(255-90)*a)})`;
+  return `rgb(${Math.round(255-(255-63)*a)},${Math.round(255-(255-158)*a)},${Math.round(255-(255-148)*a)})`;}
+function maxabs(arr){let m=1e-6;const walk=v=>{if(typeof v==="number"){m=Math.max(m,Math.abs(v));}
+  else for(const x of v) walk(x);}; walk(arr); return m;}
+
+/* ============================================================
+   2.  GEOMETRY  — one oblique projection for every solid
+   ============================================================ */
+const EZ={x:0.58,y:-0.52};                 // screen direction of the depth axis (unit per depth-px)
+const UNIT=24;                             // screen px per spatial unit (height)
+const DEP=12;                              // depth px per spatial unit
+const LEAN=0.12;                           // slight lean of flat sheets (matches the source figure)
+const CHW=190;                             // screen width of the 512-channel axis
+const BASE=600;                            // shared bottom baseline of the pipeline solids
+
+function boxFaces(x0,y0,w,h,d){
+  const dx=EZ.x*d, dy=EZ.y*d;
+  const A=[x0,y0],B=[x0+w,y0],Cc=[x0+w,y0-h],Dd=[x0,y0-h];
+  const off=p=>[p[0]+dx,p[1]+dy];
+  return {front:`M${A} L${B} L${Cc} L${Dd} Z`,
+          top:`M${Dd} L${Cc} L${off(Cc)} L${off(Dd)} Z`,
+          right:`M${B} L${Cc} L${off(Cc)} L${off(B)} Z`};
+}
+function drawBox(parent,x0,y0,w,h,d,cols,sw){
+  const f=boxFaces(x0,y0,w,h,d), g=el("g",{},parent);
+  const st={stroke:"#15191d","stroke-width":sw||1.7,"stroke-linejoin":"round"};
+  el("path",Object.assign({d:f.top,fill:cols.top},st),g);
+  el("path",Object.assign({d:f.right,fill:cols.right},st),g);
+  el("path",Object.assign({d:f.front,fill:cols.front},st),g);
+  return g;
+}
+/* rounded "lens" slab, as in the source figure */
+function drawSlab(parent,cx,ybot,w,h,d,cols){
+  const g=el("g",{},parent), dx=EZ.x*d, dy=EZ.y*d, x0=cx-w/2, y0=ybot-h;
+  const st={stroke:"#15191d","stroke-width":1.7};
+  el("rect",Object.assign({x:x0+dx,y:y0+dy,width:w,height:h,rx:w/2,ry:w/2,fill:cols.back},st),g);
+  el("path",Object.assign({d:`M${x0+w/2},${y0} L${x0+w/2+dx},${y0+dy} L${x0+w/2+dx},${y0+h+dy} L${x0+w/2},${y0+h} Z`,
+      fill:cols.back,stroke:"none"},{}),g);
+  el("rect",Object.assign({x:x0,y:y0,width:w,height:h,rx:w/2,ry:w/2,fill:cols.front},st),g);
+  return g;
+}
+/* generic quad, sampled into cols x rows cells whose colour comes from the model */
+function quadGrid(parent,o,u,v,cols,rows,colorFn,opt={}){
+  const g=el("g",{},parent);
+  const P=(a,b)=>[o[0]+u[0]*a+v[0]*b, o[1]+u[1]*a+v[1]*b];
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const a0=c/cols,a1=(c+1)/cols,b0=1-(r+1)/rows,b1=1-r/rows;
+    const p=[P(a0,b0),P(a1,b0),P(a1,b1),P(a0,b1)];
+    el("path",{d:`M${p[0]} L${p[1]} L${p[2]} L${p[3]} Z`,fill:colorFn(c,r),
+      stroke:opt.grid||"none","stroke-width":opt.gw||0.5,"shape-rendering":"crispEdges"},g);
+  }
+  el("path",{d:`M${P(0,0)} L${P(1,0)} L${P(1,1)} L${P(0,1)} Z`,fill:"none",
+    stroke:opt.stroke||"#15191d","stroke-width":opt.sw||1.7,"stroke-linejoin":"round"},g);
+  return g;
+}
+function bracePath(x,y0,y1,w){
+  const m=(y0+y1)/2, q=Math.min(w*1.4,(y1-y0)/4);
+  return `M ${x} ${y0}
+    C ${x-w*0.45} ${y0} ${x-w*0.55} ${y0+q*0.55} ${x-w*0.55} ${y0+q}
+    L ${x-w*0.55} ${m-q*0.85}
+    C ${x-w*0.55} ${m-q*0.30} ${x-w*0.72} ${m} ${x-w} ${m}
+    C ${x-w*0.72} ${m} ${x-w*0.55} ${m+q*0.30} ${x-w*0.55} ${m+q*0.85}
+    L ${x-w*0.55} ${y1-q}
+    C ${x-w*0.55} ${y1-q*0.55} ${x-w*0.45} ${y1} ${x} ${y1}`;
+}
+
+/* ============================================================
+   3.  BUILD THE FIGURE
+   ============================================================ */
+const svg=document.getElementById("fig");
+const defs=el("defs",{},svg);
+function marker(id,color,scale){
+  const m=el("marker",{id,viewBox:"0 0 10 10",refX:8.5,refY:5,markerWidth:scale||6,markerHeight:scale||6,
+    orient:"auto-start-reverse",markerUnits:"strokeWidth"},defs);
+  el("path",{d:"M0,0.8 L9.6,5 L0,9.2 L2.3,5 Z",fill:color},m);}
+marker("arrNoise","#9fb6c4",5.5); marker("arrStyle","#4a6478",5.5); marker("arrInk","#15191d",6);
+
+const gStatic=el("g",{},svg);
+const gDyn=el("g",{},svg);
+const gFx=el("g",{},svg);      // pulses on top
+
+/* ---- layout constants ---- */
+const L={
+  b1:{x:452,H:4}, b2:{x:756,H:4}, b3:{x:1060,H:8}, b4:{x:1408,H:8},
+  slabA:{teal:684,blue:722}, slabB:{teal:988,blue:1026}, slabC:{teal:1324,blue:1368},
+  imgX:1650, noiseBot:300, feedY:980
+};
+const inj=[
+  {teal:L.slabA.teal, blue:L.slabA.blue, H:4, nW:4},
+  {teal:L.slabB.teal, blue:L.slabB.blue, H:4, nW:4},
+  {teal:L.slabC.teal, blue:L.slabC.blue, H:8, nW:8}
+];
+/* a noise sheet is a plane: base edge along the depth axis (nW columns),
+   side edge along the slightly-leaning height axis (H rows).
+   Its origin is chosen so the sheet's centroid sits over the injection slab. */
+function sheetGeom(I){
+  const h=I.H*UNIT, dep=I.nW*DEP;
+  const u=[EZ.x*dep, EZ.y*dep], v=[LEAN*h, -h];
+  const x0=I.teal-(u[0]+v[0])/2;
+  return {o:[x0,L.noiseBot], u, v, h, topY:L.noiseBot+v[1]+Math.min(0,u[1]), cx:I.teal};
+}
+
+const COL={
+  grey:{front:"#c4c9cd",top:"#d8dcdf",right:"#3f454a"},
+  orange:{front:"#d1795a",top:"#e2957a",right:"#8e4a33"},
+  blueBar:{front:"#a9c5d9",top:"#c2d7e6",right:"#5e7c91"},
+  teal:{front:"#a7dbd3",back:"#6fb3a9"},
+  slate:{front:"#4e6c80",back:"#31485a"}
+};
+
+/* ---------- static skeleton ---------- */
+(function buildStatic(){
+  /* braces + row labels */
+  const braces=[
+    {y0:-58,y1:284,lab:["Noise"],ly:[140]},
+    {y0:304,y1:626,lab:["Main","generative","pipeline"],ly:[430,470,510]},
+    {y0:700,y1:1110,lab:["Style"],ly:[908]}
+  ];
+  braces.forEach(b=>{
+    el("path",{d:bracePath(238,b.y0,b.y1,30),fill:"none",stroke:"#15191d","stroke-width":2.2,
+      "stroke-linecap":"round"},gStatic);
+    b.lab.forEach((s,i)=>txt(gStatic,196,b.ly[i],s,{fs:34,anchor:"end"}));
+  });
+
+  /* pipeline solids */
+  const boxes=[
+    {k:"b1",cols:COL.grey,lab:"4×4×512"},
+    {k:"b2",cols:COL.orange,lab:"4×4×512"},
+    {k:"b3",cols:COL.orange,lab:"8×8×512"},
+    {k:"b4",cols:COL.orange,lab:"8×8×512"}
+  ];
+  boxes.forEach(b=>{
+    const cfg=L[b.k], h=cfg.H*UNIT, d=cfg.H*DEP;
+    const g=el("g",{class:"node",id:"g_"+b.k},gStatic);
+    drawBox(g,cfg.x,BASE,CHW,h,d,b.cols);
+    txt(gStatic,cfg.x+CHW/2+EZ.x*d/2,BASE-h+EZ.y*d-16,b.lab,{fs:25});
+    const tip=el("title",{},g); tip.textContent=
+      b.k==="b1"?"Learned constant input, 4×4×512 — the generator starts from a fixed tensor, not from z."
+      :`Feature map ${b.lab} after noise injection and AdaIN.`;
+  });
+
+  /* injection slabs */
+  inj.forEach((I,i)=>{
+    const h=I.H*UNIT+18, ybot=BASE+ (I.H===8?12:9);
+    const gt=el("g",{class:"node",id:"g_teal"+i},gStatic);
+    drawSlab(gt,I.teal,ybot,I.H===8?32:26,h,I.H===8?12:10,COL.teal);
+    el("title",{},gt).textContent="Noise injection B·ψ·z — one 1-channel map, broadcast to all 512 channels.";
+    const gb=el("g",{class:"node",id:"g_blue"+i},gStatic);
+    drawSlab(gb,I.blue,ybot,I.H===8?32:26,h,I.H===8?12:10,COL.slate);
+    el("title",{},gb).textContent="AdaIN: normalise each channel, then scale by y_s and shift by y_b.";
+  });
+
+  /* noise sheets, arrows and their labels */
+  inj.forEach((I,i)=>{
+    const G=sheetGeom(I), topY=G.topY, cx=G.cx;
+    txt(gStatic,cx,topY-58,`${I.nW}×${I.nW}×1`,{fs:25});
+    txt(gStatic,cx,topY-28,`Noise  z${"₁₂₃"[i]} ⊗ ψ${"₁₂₃"[i]}`,{fs:25});
+    const slabTop=BASE+(I.H===8?12:9)-(I.H*UNIT+18);
+    el("path",{id:"p_noise"+i,d:`M${cx},${L.noiseBot+6} V${slabTop-14}`,fill:"none",
+      stroke:"#9fb6c4","stroke-width":3.2,"marker-end":"url(#arrNoise)"},gStatic);
+  });
+  txt(gStatic,688,372,"Noise added to",{fs:25,cls:"halo"});
+  txt(gStatic,688,402,"every channel",{fs:25,cls:"halo"});
+
+  /* style column */
+  inj.forEach((I,i)=>{
+    const cx=I.blue, barW=180, barY=800, barH=26, d=14;
+    txt(gStatic,cx,barY-14,`Style, y${"₁₂₃"[i]}`,{fs:25});
+    txt(gStatic,cx+6,barY+barH+34,"Linear transform",{fs:25});
+    txt(gStatic,cx+6,barY+barH+64,"2 × 1 × 512",{fs:25});
+    const slabBot=BASE+(I.H===8?12:9)+6;
+    el("path",{id:"p_style"+i,d:`M${cx},${barY-34} V${slabBot+8}`,fill:"none",
+      stroke:"#4a6478","stroke-width":3.2,"marker-end":"url(#arrStyle)"},gStatic);
+    el("path",{id:"p_feed"+i,d:`M652,${L.feedY} H${cx} V${barY+barH+10}`,fill:"none",
+      stroke:"#4a6478","stroke-width":3.0,"marker-end":"url(#arrStyle)"},gStatic);
+  });
+  txt(gStatic,706,702,"Per-channel",{fs:25,cls:"halo"});
+  txt(gStatic,706,732,"scale and offset",{fs:25,cls:"halo"});
+
+  /* z / w bars, labels, FC arrow */
+  txt(gStatic,370,1028,"1×1×512",{fs:25});
+  txt(gStatic,370,1072,"Latent",{fs:25});
+  txt(gStatic,370,1102,"variable  z",{fs:25});
+  txt(gStatic,566,1028,"1×1×512",{fs:25});
+  txt(gStatic,566,1072,"Intermediate",{fs:25});
+  txt(gStatic,566,1102,"variable  w",{fs:25});
+  txt(gStatic,392,900,"Fully connected",{fs:25});
+  txt(gStatic,392,930,"network",{fs:25});
+  el("path",{d:"M430,942 C452,952 462,958 470,966",fill:"none",stroke:"#15191d","stroke-width":2.2,
+    "marker-end":"url(#arrInk)"},gStatic);
+  el("path",{id:"p_zw",d:"M456,980 H478",fill:"none",stroke:"none"},gStatic);
+})();
+
+/* ---------- dynamic (data-driven) layers ---------- */
+const dyn={};
+["b2","b3","b4"].forEach(k=>dyn["ov_"+k]=el("g",{},gDyn));
+[0,1,2].forEach(i=>{dyn["sheet"+i]=el("g",{},gDyn); dyn["ybar"+i]=el("g",{},gDyn);});
+dyn.zbar=el("g",{},gDyn); dyn.wbar=el("g",{},gDyn); dyn.img=el("g",{class:"node",id:"g_img"},gDyn);
+
+function drawFlatBar(parent,x0,ytop,w,h,d,cols,rows,colorFn,label){
+  const g=el("g",{},parent);
+  const f=boxFaces(x0,ytop+h,w,h,d);
+  const st={stroke:"#15191d","stroke-width":1.7,"stroke-linejoin":"round"};
+  el("path",Object.assign({d:f.top,fill:cols.top},st),g);
+  el("path",Object.assign({d:f.right,fill:cols.right},st),g);
+  quadGrid(g,[x0,ytop+h],[w,0],[0,-h],cols2Count(cols,w),rows,colorFn,{});
+  return g;
+}
+function cols2Count(){return 64;}
+
+function renderFigureData(M){
+  /* --- z and w bars: the front face is 1 row x 512 channels of real values --- */
+  const barW=176,barH=26,d=14;
+  clear(dyn.zbar); clear(dyn.wbar);
+  const mz=maxabs(Array.from(M.z)), mw=maxabs(Array.from(M.w));
+  const mk=(parent,x0,vals,m,cols)=>{
+    const f=boxFaces(x0,980+barH/2,barW,barH,d);
+    const st={stroke:"#15191d","stroke-width":1.7,"stroke-linejoin":"round"};
+    el("path",Object.assign({d:f.top,fill:cols.top},st),parent);
+    el("path",Object.assign({d:f.right,fill:cols.right},st),parent);
+    quadGrid(parent,[x0,980+barH/2],[barW,0],[0,-barH],64,1,
+      (c)=>divColor(vals[Math.floor(c*D/64)],m),{});
+  };
+  mk(dyn.zbar,282,M.z,mz,COL.blueBar);
+  mk(dyn.wbar,478,M.w,mw,COL.orange);
+  el("title",{},dyn.zbar).textContent="z ~ N(0,I), 512 values (64 sampled columns shown).";
+  el("title",{},dyn.wbar).textContent="w = f(z): the intermediate latent, 512 values.";
+
+  /* --- style bars: front face = 2 rows (scale, offset) x 512 channels --- */
+  [0,1,2].forEach(i=>{
+    clear(dyn["ybar"+i]);
+    const cx=inj[i].blue, barw=180, ytop=800, bh=26, dd=14, x0=cx-barw/2;
+    const f=boxFaces(x0,ytop+bh,barw,bh,dd);
+    const st={stroke:"#15191d","stroke-width":1.7,"stroke-linejoin":"round"};
+    el("path",Object.assign({d:f.top,fill:COL.orange.top},st),dyn["ybar"+i]);
+    el("path",Object.assign({d:f.right,fill:COL.orange.right},st),dyn["ybar"+i]);
+    const ms=maxabs(Array.from(M.ys[i]).map(v=>v-1)), mb=maxabs(Array.from(M.yb[i]));
+    quadGrid(dyn["ybar"+i],[x0,ytop+bh],[barw,0],[0,-bh],64,2,(c,r)=>{
+      const ch=Math.floor(c*D/64);
+      return r===0?divColor(M.ys[i][ch]-1,ms):divColor(M.yb[i][ch],mb);},{});
+    el("title",{},dyn["ybar"+i]).textContent=
+      `y${i+1} = A${i+1}w  — top row: per-channel scale y_s (deviation from 1), bottom row: per-channel offset y_b.`;
+  });
+
+  /* --- noise sheets: the actual noise maps, scaled by psi --- */
+  inj.forEach((I,i)=>{
+    clear(dyn["sheet"+i]);
+    const G=sheetGeom(I);
+    const o=G.o, u=G.u, v=G.v;
+    const mm=maxabs(M.n[i])*Math.max(M.psi[i],1e-3);
+    const fade=Math.min(1,0.18+0.82*Math.min(1,M.psi[i]/1.3));
+    const g=quadGrid(dyn["sheet"+i],o,u,v,I.nW,I.nW,
+      (c,r)=>{const val=M.n[i][r][c]*M.psi[i];
+        const base=divColor(val, mm||1);
+        return M.psi[i]<0.01?"#eef4f3":base;},{grid:"rgba(0,0,0,.18)"});
+    g.setAttribute("opacity",(0.25+0.75*fade).toFixed(3));
+    el("title",{},dyn["sheet"+i]).textContent=
+      `Noise map z${i+1} (${I.nW}×${I.nW}×1), multiplied by ψ${i+1} = B${i+1}·ψ = ${M.psi[i].toFixed(2)}`;
+    const arrow=document.getElementById("p_noise"+i);
+    arrow.setAttribute("stroke-width",(1.2+2.6*Math.min(1.4,M.psi[i])).toFixed(2));
+    arrow.setAttribute("opacity",(0.25+0.75*Math.min(1,M.psi[i]/1.2)).toFixed(2));
+  });
+
+  /* --- noise "grain" overlay on the feature blocks it perturbs --- */
+  const ovSpec=[{k:"b2",H:4,stage:M.h1},{k:"b3",H:8,stage:M.h2},{k:"b4",H:8,stage:M.h3}];
+  ovSpec.forEach((sp,idx)=>{
+    const g=dyn["ov_"+sp.k]; clear(g);
+    const cfg=L[sp.k], h=cfg.H*UNIT;
+    const amp=Math.min(1,M.psi[idx]/1.8);
+    if(amp<0.02) return;
+    /* the front face of a block is (512 channels) x (spatial rows).  The injected noise is
+       CONSTANT along the channel axis, so its trace on this face is a set of horizontal bands:
+       one value per spatial row, identical for all 512 channels. */
+    const n=M.n[idx], mm=maxabs(n)||1;
+    quadGrid(g,[cfg.x,BASE],[CHW,0],[0,-h],1,sp.H,(c,r)=>{
+      const v=n[r%n.length][0]/mm;
+      return `rgba(${v>0?255:8},${v>0?255:40},${v>0?245:48},${(Math.abs(v)*0.26*amp).toFixed(3)})`;
+    },{stroke:"none",sw:0});
+    g.setAttribute("pointer-events","none");
+  });
+
+  /* --- the generated 8x8 image --- */
+  clear(dyn.img);
+  const ih=8*UNIT, o=[L.imgX,BASE], u=[70,-8], v=[LEAN*ih,-ih];
+  quadGrid(dyn.img,o,u,v,8,8,(c,r)=>{
+    const p=M.img[r][c];
+    return `rgb(${Math.round(p[0]*255)},${Math.round(p[1]*255)},${Math.round(p[2]*255)})`;},{});
+  el("title",{},dyn.img).textContent="Output image: the final 8×8×512 feature map projected to RGB.";
+}
+
+/* ============================================================
+   4.  INSPECTOR  (real tensors, stage by stage)
+   ============================================================ */
+function grid(elm,data,cell,m,ttl){
+  const h=data.length,w=data[0].length;
+  const s=el("svg",{width:w*cell,height:h*cell,viewBox:`0 0 ${w*cell} ${h*cell}`},elm);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)
+    el("rect",{x:x*cell,y:y*cell,width:cell,height:cell,fill:divColor(data[y][x],m),
+      stroke:"rgba(0,0,0,.12)","stroke-width":.5},s);
+  el("rect",{x:.5,y:.5,width:w*cell-1,height:h*cell-1,fill:"none",stroke:"#2b3238","stroke-width":1.4},s);
+  if(ttl) el("title",{},s).textContent=ttl;
+  return s;
+}
+function panel(host,caption,build){
+  const d=document.createElement("div"); d.className="pan";
+  const holder=document.createElement("div"); d.appendChild(holder);
+  const cap=document.createElement("div"); cap.className="cap"; cap.innerHTML=caption; d.appendChild(cap);
+  host.appendChild(d); build(holder); return d;}
+function sep(host,sym){const s=document.createElement("div");s.className="arrowsep";s.textContent=sym||"→";host.appendChild(s);}
+
+function renderInspector(M){
+  const host=document.getElementById("insp"); host.innerHTML="";
+  const c=S.chan;
+  const g4=22,g8=13;
+  const mScale=Math.max(maxabs(M.h0[c]),maxabs(M.h1[c]),maxabs(M.h3[c]),1);
+  panel(host,`<b>h<sub>0</sub></b><br>learned constant<br>4&times;4, ch ${c}`,
+    h=>grid(h,M.h0[c],g4,maxabs(M.h0[c]),"Learned constant input"));
+  sep(host,"+");
+  panel(host,`<b>&psi;<sub>1</sub>z<sub>1</sub></b> = ${M.psi[0].toFixed(2)}&middot;z<sub>1</sub><br>same map for all 512 ch`,
+    h=>grid(h,M.n[0].map(r=>r.map(v=>v*M.psi[0])),g4,Math.max(maxabs(M.n[0]),1e-3),"Noise 1 after scaling"));
+  sep(host);
+  panel(host,`<b>AdaIN(&middot;, y<sub>1</sub>)</b><br>y<sub>s</sub>=${M.ys[0][c].toFixed(2)}, y<sub>b</sub>=${M.yb[0][c].toFixed(2)}`,
+    h=>grid(h,M.h1[c],g4,maxabs(M.h1[c]),"After style 1"));
+  sep(host,"+");
+  panel(host,`<b>&psi;<sub>2</sub>z<sub>2</sub></b> = ${M.psi[1].toFixed(2)}&middot;z<sub>2</sub><br>after conv, still 4&times;4`,
+    h=>grid(h,M.n[1].map(r=>r.map(v=>v*M.psi[1])),g4,Math.max(maxabs(M.n[1]),1e-3),"Noise 2 after scaling"));
+  sep(host);
+  panel(host,`<b>AdaIN(&middot;, y<sub>2</sub>)</b><br>y<sub>s</sub>=${M.ys[1][c].toFixed(2)}, y<sub>b</sub>=${M.yb[1][c].toFixed(2)}<br>&uarr; upsample to 8&times;8`,
+    h=>grid(h,M.h2[c],g8,maxabs(M.h2[c]),"After style 2, upsampled"));
+  sep(host,"+");
+  panel(host,`<b>&psi;<sub>3</sub>z<sub>3</sub></b> = ${M.psi[2].toFixed(2)}&middot;z<sub>3</sub><br>8&times;8&times;1`,
+    h=>grid(h,M.n[2].map(r=>r.map(v=>v*M.psi[2])),g8,Math.max(maxabs(M.n[2]),1e-3),"Noise 3 after scaling"));
+  sep(host);
+  panel(host,`<b>AdaIN(&middot;, y<sub>3</sub>)</b><br>y<sub>s</sub>=${M.ys[2][c].toFixed(2)}, y<sub>b</sub>=${M.yb[2][c].toFixed(2)}`,
+    h=>grid(h,M.h3[c],g8,maxabs(M.h3[c]),"After style 3"));
+  sep(host,"⇒");
+  panel(host,`<b>RGB output</b><br>8&times;8 image`,h=>{
+    const s=el("svg",{width:8*13,height:8*13,viewBox:"0 0 104 104"},h);
+    for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=M.img[y][x];
+      el("rect",{x:x*13,y:y*13,width:13,height:13,
+        fill:`rgb(${Math.round(p[0]*255)},${Math.round(p[1]*255)},${Math.round(p[2]*255)})`},s);}
+    el("rect",{x:.5,y:.5,width:103,height:103,fill:"none",stroke:"#2b3238","stroke-width":1.4},s);});
+}
+
+function renderYCharts(M){
+  const host=document.getElementById("ycharts"); host.innerHTML="";
+  for(let i=0;i<3;i++){
+    const card=document.createElement("div"); card.className="ycard";
+    const h3=document.createElement("h3");
+    h3.innerHTML=`y<sub>${i+1}</sub> &nbsp;<span style="font-weight:400;color:#5a6570;font-size:.8em">
+      applied at the ${i<2?"4&times;4":"8&times;8"} block</span>`;
+    card.appendChild(h3); host.appendChild(card);
+    const W=430,H=150,pad=26,bw=(W-2*pad)/16;
+    const s=el("svg",{width:W,height:H,viewBox:`0 0 ${W} ${H}`},card);
+    const midS=52, midB=124, amp=30;
+    const ms=Math.max(0.3,maxabs(Array.from(M.ys[i]).slice(0,16).map(v=>v-1)));
+    const mb=Math.max(0.3,maxabs(Array.from(M.yb[i]).slice(0,16)));
+    el("line",{x1:pad,y1:midS,x2:W-pad,y2:midS,stroke:"#aab4bd","stroke-width":1},s);
+    el("line",{x1:pad,y1:midB,x2:W-pad,y2:midB,stroke:"#aab4bd","stroke-width":1},s);
+    for(let c=0;c<16;c++){
+      const x=pad+c*bw+1.5, wd=bw-3;
+      const hs=(M.ys[i][c]-1)/ms*amp, hb=M.yb[i][c]/mb*amp;
+      const on=(c===S.chan);
+      el("rect",{x,y:hs>=0?midS-hs:midS,width:wd,height:Math.abs(hs),
+        fill:on?"#e0a02a":"#d1795a",stroke:on?"#8a6000":"none","stroke-width":1.2},s);
+      el("rect",{x,y:hb>=0?midB-hb:midB,width:wd,height:Math.abs(hb),
+        fill:on?"#e0a02a":"#4e6c80",stroke:on?"#8a6000":"none","stroke-width":1.2},s);
+    }
+    const lab=(y,t)=>{const e=el("text",{x:4,y,"font-size":10,fill:"#5a6570",
+      "font-family":"system-ui,sans-serif"},s); e.textContent=t;};
+    lab(midS-38,"scale yₛ (1 ±)"); lab(midB-38,"offset yᵇ (0 ±)");
+    const e=el("text",{x:W-pad,y:H-4,"font-size":10,fill:"#5a6570","text-anchor":"end",
+      "font-family":"system-ui,sans-serif"},s); e.textContent="channel 0 … 15  (of 512)";
+  }
+}
+
+/* ============================================================
+   5.  ANIMATION
+   ============================================================ */
+const NODES=["g_b1","g_b2","g_b3","g_b4","g_teal0","g_teal1","g_teal2",
+             "g_blue0","g_blue1","g_blue2","g_img"];
+let timers=[], pulses=[];
+function litOff(){NODES.forEach(id=>{const n=document.getElementById(id); if(n)n.classList.remove("lit");});
+  [dyn.zbar,dyn.wbar,dyn.ybar0,dyn.ybar1,dyn.ybar2,dyn.sheet0,dyn.sheet1,dyn.sheet2]
+    .forEach(g=>g&&g.classList.remove("lit"));}
+function lit(...gs){gs.forEach(g=>{const n=typeof g==="string"?document.getElementById(g):g; if(n)n.classList.add("lit");});}
+function pulse(pathId,dur,color){
+  const p=document.getElementById(pathId); if(!p) return;
+  const len=p.getTotalLength(), dot=el("circle",{r:7,fill:color||"#e0a02a",
+    stroke:"#fff","stroke-width":2},gFx);
+  pulses.push(dot);
+  const t0=performance.now();
+  (function step(now){const k=Math.min(1,(now-t0)/dur);
+    const pt=p.getPointAtLength(k*len);
+    dot.setAttribute("cx",pt.x); dot.setAttribute("cy",pt.y);
+    dot.setAttribute("opacity",(k<0.9?1:(1-k)*10).toFixed(2));
+    if(k<1) requestAnimationFrame(step); else dot.remove();})(t0);
+}
+function stopAnim(){timers.forEach(clearTimeout); timers=[]; pulses.forEach(p=>p.remove()); pulses=[];
+  litOff(); document.getElementById("btnRun").disabled=false;
+  setNarr("Hover a block for details, drag <b>&psi;</b> to change how much stochastic detail is injected, or press <b>Trace</b> to walk the whole pipeline.");}
+function setNarr(h){document.getElementById("narr").innerHTML=h;}
+function at(t,fn){timers.push(setTimeout(fn,t));}
+
+function runAnim(){
+  stopAnim(); document.getElementById("btnRun").disabled=true;
+  const M=S.M;
+  at(0,()=>{litOff(); lit(dyn.zbar);
+    setNarr("<b>1.</b> Draw a latent <b>z</b> ∼ N(0, I), shape 1×1×512. The colour strip on the bar is the actual sampled vector.");});
+  at(1500,()=>{litOff(); lit(dyn.zbar,dyn.wbar); pulse("p_zw",600);
+    setNarr("<b>2.</b> A fully connected mapping network f turns z into the intermediate latent <b>w</b> (1×1×512). "+
+      "Disentangling here is what lets a single w control style consistently.");});
+  at(3000,()=>{litOff(); lit(dyn.wbar); [0,1,2].forEach(i=>pulse("p_feed"+i,1100));
+    setNarr("<b>3.</b> The <i>same</i> w is broadcast to three linear (affine) transforms A₁, A₂, A₃ — one per resolution level.");});
+  at(4500,()=>{litOff(); lit(dyn.ybar0,dyn.ybar1,dyn.ybar2);
+    setNarr("<b>4.</b> Each transform outputs a style <b>yᵢ = Aᵢw</b> of shape 2×1×512: the top row of each bar is the per-channel "+
+      "scale yₛ, the bottom row the per-channel offset yᵇ.");});
+  at(6200,()=>{litOff(); lit("g_b1");
+    setNarr("<b>5.</b> Synthesis does not start from z at all: it starts from a <i>learned constant</i> 4×4×512 tensor.");});
+  const levels=[
+    {t:7600,teal:"g_teal0",blue:"g_blue0",box:"g_b2",bar:()=>dyn.ybar0,sheet:()=>dyn.sheet0,np:"p_noise0",sp:"p_style0",
+     msg:"<b>6.</b> Level 1 (4×4). A single-channel 4×4 noise map, scaled by ψ₁, is added to <i>every one</i> of the 512 channels — "+
+         "this is where per-pixel stochastic detail enters. Then AdaIN normalises each channel and rewrites it with y₁'s scale and offset."},
+    {t:10200,teal:"g_teal1",blue:"g_blue1",box:"g_b3",bar:()=>dyn.ybar1,sheet:()=>dyn.sheet1,np:"p_noise1",sp:"p_style1",
+     msg:"<b>7.</b> Level 2 (4×4 → upsample to 8×8). New independent noise ψ₂z₂, new style y₂. "+
+         "Because the style is re-applied after every normalisation, y₁ cannot leak past this point — that is what makes styles <i>localised</i> to a scale."},
+    {t:12800,teal:"g_teal2",blue:"g_blue2",box:"g_b4",bar:()=>dyn.ybar2,sheet:()=>dyn.sheet2,np:"p_noise2",sp:"p_style2",
+     msg:"<b>8.</b> Level 3 (8×8). The noise map is now 8×8×1 — finer grain, finer detail. Style y₃ controls the finest attributes."}
+  ];
+  levels.forEach(L2=>{
+    at(L2.t,()=>{litOff(); lit(L2.sheet(),L2.teal); pulse(L2.np,700,"#7fc4bb"); setNarr(L2.msg);});
+    at(L2.t+1000,()=>{litOff(); lit(L2.bar(),L2.blue); pulse(L2.sp,700,"#4e6c80");});
+    at(L2.t+1800,()=>{litOff(); lit(L2.box);});
+  });
+  at(15400,()=>{litOff(); lit("g_img");
+    setNarr("<b>9.</b> The final 8×8×512 feature map is projected to RGB. "+
+      "Change ψ and only fine stochastic texture moves; resample <b>z</b> and the whole identity of the image changes.");});
+  at(17600,()=>{litOff(); document.getElementById("btnRun").disabled=false;});
+}
+
+/* ============================================================
+   6.  WIRE-UP
+   ============================================================ */
+function update(recompute=true){
+  if(recompute) S.M=forward();
+  const M=S.M;
+  document.getElementById("psiVal").textContent=S.psi.toFixed(2);
+  document.getElementById("psiBreak").innerHTML=
+    `&psi;<sub>1</sub>=${M.psi[0].toFixed(2)} &nbsp; &psi;<sub>2</sub>=${M.psi[1].toFixed(2)} &nbsp; &psi;<sub>3</sub>=${M.psi[2].toFixed(2)}
+     &nbsp;<span style="opacity:.7">(&psi;<sub>i</sub> = B<sub>i</sub>&middot;&psi;)</span>`;
+  document.getElementById("chanVal").textContent="c = "+S.chan;
+  renderFigureData(M); renderInspector(M); renderYCharts(M);
+}
+document.getElementById("psi").addEventListener("input",e=>{S.psi=+e.target.value; update();
+  if(S.psi<0.02) setNarr("<b>&psi; = 0.</b> No noise at all: every channel is a smooth, deterministic function of w. The image loses its fine stochastic texture and looks flat and 'painted'.");
+  else if(S.psi>1.9) setNarr("<b>Large &psi;.</b> Noise now dominates the activations: AdaIN still forces each channel back to the style's scale and offset, so the global look survives, but the fine detail turns to grain.");
+  else setNarr("Noise scale <b>&psi;</b> = "+S.psi.toFixed(2)+". The same single-channel map is broadcast to all 512 channels at each level; the per-level weights B<sub>i</sub> (0.80, 1.00, 1.30) are learned, so finer levels get more noise.");});
+document.getElementById("chan").addEventListener("input",e=>{S.chan=+e.target.value; update(false);});
+document.getElementById("btnZ").addEventListener("click",()=>{S.seedZ=Math.floor(Math.random()*1e6)+1; update();
+  setNarr("New latent <b>z</b>. w, all three styles yᵢ and the whole image change — z controls <i>content and style</i>, not texture.");});
+document.getElementById("btnN").addEventListener("click",()=>{S.seedN=Math.floor(Math.random()*1e6)+1; update();
+  setNarr("New noise maps <b>zᵢ</b>. The styles yᵢ are untouched, so the overall look is preserved and only the fine stochastic detail is reshuffled — StyleGAN's separation of style from noise.");});
+document.getElementById("btnRun").addEventListener("click",runAnim);
+document.getElementById("btnStop").addEventListener("click",stopAnim);
+
+document.getElementById("notes").innerHTML=
+  `<b>What is actually computed.</b> <code>z</code> is a 512-d Gaussian sample; the mapping network is three real
+   512&times;512 fully connected layers with tanh; each <code>A<sub>i</sub></code> is a real 1024&times;512 affine map
+   producing <code>y<sub>i</sub> = (y<sub>s</sub>, y<sub>b</sub>)</code>, rendered as the two rows of the style bars.
+   Synthesis propagates 16 of the 512 channels (so the per-channel statistics stay inspectable) through real
+   3&times;3 convolutions, bilinear 2&times; upsampling, additive broadcast noise, and true adaptive instance
+   normalisation <code>AdaIN(x, y) = y<sub>s</sub>&middot;(x &minus; &mu;<sub>c</sub>)/&sigma;<sub>c</sub> + y<sub>b</sub></code>,
+   with the per-channel mean and standard deviation taken over the spatial grid. The output thumbnail is the final
+   feature map pushed through a learned 16&rarr;3 projection. All weights are fixed random draws from a fixed seed
+   (the network is untrained), so the picture is abstract &mdash; but every number, every colour strip and every
+   grid cell in this page is a genuine forward pass, not a decoration.
+   <br><br><b>The geometry.</b> Every solid is drawn with one oblique projection: the screen depth axis is the fixed
+   vector (0.58, &minus;0.52) px per depth unit, box height is 24&nbsp;px per spatial row and box depth 12&nbsp;px per
+   spatial column, so the 8&times;8 blocks are exactly twice as tall and twice as deep as the 4&times;4 blocks, and the
+   512-channel axis has the same screen length everywhere.`;
+
+update();
+</script>
+</body>
+</html>

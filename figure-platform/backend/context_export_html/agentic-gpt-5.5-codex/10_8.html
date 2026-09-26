@@ -1,0 +1,612 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+    #ui:hover, #ui:focus-within { opacity: 1; }
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    #ui button:hover { background: #e0e0e0; }
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+    #ui input[type=range] { width: 86px; }
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 300px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+    body[data-ui-layout="right"] #ui { border-left: 1px solid #dcdfe3; }
+    body[data-ui-layout="bottom"] #ui { border-top: 1px solid #dcdfe3; }
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label { text-shadow: none; }
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] { width: 100%; }
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <label>target list <select id="targetInput"><option value="L1">L1</option><option value="L2">L2</option></select></label>
+    <button onclick="trigger_allocate()">Allocate</button>
+    <button onclick="trigger_free()">Free</button>
+    <button onclick="trigger_reset()">Reset</button>
+    <span id="opStatus" style="font-size:11px;line-height:1.35;color:#333"></span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) _errOverlay.style.display = 'flex'; }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none' || !event) return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return { width: Math.max(0, container.clientWidth - padX), height: Math.max(0, container.clientHeight - padY) };
+    }
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', { detail: { width: rect.width, height: rect.height } }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+    function setUiLayout(mode, sizePx) { _autoUiLayout(); }
+    function _applyUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', 'right');
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout('right', start);
+      _growDockToFit('right', start);
+    }
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var VB_W = 1260;
+    var VB_H = 400;
+    draw.viewbox(0, 0, VB_W, VB_H);
+    draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+    var tableX = 420;
+    var tableY = 104;
+    var colW = 82;
+    var rowH = 82;
+    var totalW = colW * 10;
+    var totalH = rowH * 3;
+    var rowNames = ['next', 'key', 'prev'];
+    var colors = {
+      free: '#000000',
+      L2: '#a6a6a6',
+      L1: '#e8e8e8',
+      highlight: '#f3c13a',
+      hover: '#3aa6d8',
+      arrow: '#c46a00'
+    };
+    var listLabels = {
+      free: 'free',
+      L1: 'L\u2081',
+      L2: 'L\u2082'
+    };
+    var trace = null;
+    var hoverLayer = null;
+    var changedCells = [];
+    var changedHeads = [];
+    var pulseTimer = 0;
+    var state = makeInitialState();
+
+    function makeInitialState() {
+      return {
+        heads: { free: 10, L1: 3, L2: 9 },
+        records: {
+          1: { owner: 'L2', next: 5, key: 1, prev: 7 },
+          2: { owner: 'L1', next: null, key: 2, prev: 6 },
+          3: { owner: 'L1', next: 6, key: 3, prev: null },
+          4: { owner: 'free', next: 8, key: null, prev: null },
+          5: { owner: 'L2', next: null, key: 5, prev: 1 },
+          6: { owner: 'L1', next: 2, key: 6, prev: 3 },
+          7: { owner: 'L2', next: 1, key: 7, prev: 9 },
+          8: { owner: 'free', next: null, key: null, prev: null },
+          9: { owner: 'L2', next: 7, key: 9, prev: null },
+          10: { owner: 'free', next: 4, key: null, prev: null }
+        }
+      };
+    }
+
+    function resetState() {
+      state = makeInitialState();
+      trace = null;
+      changedCells = [];
+      changedHeads = [];
+      render();
+      setStatus('reset to Figure 10.8');
+    }
+
+    function colX(index) { return tableX + (index - 1) * colW; }
+    function cellY(row) { return tableY + rowNames.indexOf(row) * rowH; }
+    function cellCenter(index, row) {
+      return { x: colX(index) + colW / 2, y: cellY(row) + rowH / 2 };
+    }
+
+    function chainFor(name) {
+      var out = [];
+      var seen = {};
+      var idx = state.heads[name];
+      while (idx != null && !seen[idx] && state.records[idx]) {
+        out.push(idx);
+        seen[idx] = true;
+        idx = state.records[idx].next;
+      }
+      return out;
+    }
+
+    function nilText(v) { return v == null ? 'nil' : String(v); }
+
+    function subscript(n) {
+      var map = { '0': '\u2080', '1': '\u2081', '2': '\u2082', '3': '\u2083', '4': '\u2084', '5': '\u2085', '6': '\u2086', '7': '\u2087', '8': '\u2088', '9': '\u2089' };
+      return String(n).split('').map(function (ch) { return map[ch] || ch; }).join('');
+    }
+
+    function addText(parent, text, x, y, opts) {
+      opts = opts || {};
+      var t = parent.text(text).font({
+        family: opts.family || 'Times New Roman, Times, serif',
+        size: opts.size || 44,
+        style: opts.style || 'normal',
+        weight: opts.weight || 'normal',
+        anchor: opts.anchor || 'middle'
+      }).attr({
+        x: x,
+        y: y,
+        'dominant-baseline': 'middle',
+        'text-anchor': opts.anchor || 'middle',
+        fill: opts.fill || '#000'
+      });
+      if (opts.stroke) t.attr({ 'paint-order': 'stroke', stroke: opts.stroke, 'stroke-width': opts.strokeWidth || 3, 'stroke-linejoin': 'round' });
+      return t;
+    }
+
+    function addSlash(parent, x, y, w, h, stroke) {
+      return parent.line(x + w * 0.35, y + h * 0.72, x + w * 0.67, y + h * 0.28).stroke({ color: stroke || '#000', width: 3.5, linecap: 'round' });
+    }
+
+    function interactive(el, tip, info, clickHandler) {
+      el.css('cursor', 'pointer');
+      el.on('mouseenter', function (e) { paintHover(info); showTooltip(tip, e); });
+      el.on('mousemove', function (e) { showTooltip(tip, e); });
+      el.on('mouseleave', function () { clearHover(); hideTooltip(); });
+      if (clickHandler) el.on('click', clickHandler);
+    }
+
+    function setStatus(text) {
+      var node = document.getElementById('opStatus');
+      if (node) node.textContent = text;
+    }
+
+    function render() {
+      draw.clear();
+      draw.rect(VB_W, VB_H).fill('#ffffff');
+      drawPanel();
+      drawColumnLabels();
+      drawRowLabels();
+      drawHeads();
+      drawCells();
+      drawTrace();
+      drawPulses();
+      hoverLayer = draw.group();
+    }
+
+    function drawPanel() {
+      draw.rect(totalW + 8, totalH + 8).move(tableX - 4, tableY - 4).fill('#000');
+    }
+
+    function drawColumnLabels() {
+      for (var i = 1; i <= 10; i++) addText(draw, String(i), colX(i) + colW / 2, 65, { size: 43 });
+    }
+
+    function drawRowLabels() {
+      addText(draw, 'next', tableX - 58, tableY + rowH / 2, { size: 55, style: 'italic', anchor: 'end' });
+      addText(draw, 'key', tableX - 58, tableY + rowH * 1.5, { size: 55, style: 'italic', anchor: 'end' });
+      addText(draw, 'prev', tableX - 58, tableY + rowH * 2.5, { size: 55, style: 'italic', anchor: 'end' });
+    }
+
+    function drawHeads() {
+      drawHead('free', 132, 22, 84, state.heads.free, colors.free, '#fff');
+      addText(draw, 'free', 110, 64, { size: 53, style: 'italic', anchor: 'end' });
+      drawHead('L2', 132, 146, 82, state.heads.L2, colors.L2, '#000');
+      addText(draw, 'L\u2082', 86, 188, { size: 51, style: 'italic', anchor: 'middle' });
+      drawHead('L1', 132, 268, 82, state.heads.L1, colors.L1, '#000');
+      addText(draw, 'L\u2081', 86, 310, { size: 51, style: 'italic', anchor: 'middle' });
+    }
+
+    function drawHead(name, x, y, size, value, fill, textFill) {
+      var g = draw.group();
+      g.rect(size, size).move(x, y).fill(fill).stroke({ color: '#000', width: 3 });
+      addText(g, value == null ? '' : String(value), x + size / 2, y + size / 2 + 1, { size: 50, weight: 'bold', fill: textFill });
+      if (changedHeads.indexOf(name) >= 0) g.rect(size + 10, size + 10).move(x - 5, y - 5).fill('none').stroke({ color: colors.highlight, width: 5 });
+      interactive(g, listLabels[name] + ' head points to index ' + nilText(value) + '. Click to trace this chain.', { kind: 'head', name: name, index: value }, function () {
+        trace = name;
+        render();
+        showPopup(listLabels[name] + ' chain', 'Following next fields from the head visits indices ' + chainFor(name).join(' -> ') + '. The lists share the same array positions, so order is determined by links rather than by adjacent columns.');
+        setStatus('tracing ' + listLabels[name]);
+      });
+    }
+
+    function drawCells() {
+      for (var i = 1; i <= 10; i++) {
+        var rec = state.records[i];
+        var x = colX(i);
+        if (rec.owner !== 'free') {
+          for (var r = 0; r < rowNames.length; r++) {
+            draw.rect(colW, rowH).move(x, tableY + r * rowH).fill(colors[rec.owner]).stroke({ color: '#000', width: 7 });
+          }
+        } else {
+          draw.line(x + 8, tableY + rowH, x + colW - 8, tableY + rowH).stroke({ color: '#fff', width: 4, dasharray: '4 8', linecap: 'butt' });
+          draw.line(x + 8, tableY + rowH * 2, x + colW - 8, tableY + rowH * 2).stroke({ color: '#fff', width: 4, dasharray: '4 8', linecap: 'butt' });
+        }
+        drawCellEntry(i, 'next', rec.next);
+        if (rec.owner !== 'free') {
+          drawCellEntry(i, 'key', rec.key);
+          drawCellEntry(i, 'prev', rec.prev);
+        }
+      }
+      draw.rect(totalW + 8, totalH + 8).move(tableX - 4, tableY - 4).fill('none').stroke({ color: '#000', width: 7 });
+    }
+
+    function drawCellEntry(index, row, value) {
+      var rec = state.records[index];
+      var x = colX(index);
+      var y = cellY(row);
+      var g = draw.group();
+      g.rect(colW, rowH).move(x, y).fill({ color: '#fff', opacity: 0 });
+      var fill = rec.owner === 'free' ? '#fff' : '#000';
+      if (row === 'key') {
+        addText(g, 'k' + subscript(value), x + colW / 2, y + rowH / 2 + 2, { size: 46, style: 'italic', fill: fill });
+      } else if (value == null) {
+        addSlash(g, x, y, colW, rowH, fill);
+      } else {
+        addText(g, String(value), x + colW / 2, y + rowH / 2 + 2, { size: 50, fill: fill });
+      }
+      var tip = row === 'key'
+        ? 'key[' + index + '] stores k' + value + ' for ' + listLabels[rec.owner] + '.'
+        : row + '[' + index + '] = ' + nilText(value) + (value == null ? ', the end of this chain.' : ', so it refers to index ' + value + '.');
+      interactive(g, tip, { kind: 'cell', index: index, row: row, target: value, owner: rec.owner });
+    }
+
+    function drawTrace() {
+      if (!trace) return;
+      var chain = chainFor(trace);
+      var overlay = draw.group();
+      for (var i = 0; i < chain.length; i++) {
+        var idx = chain[i];
+        overlay.rect(colW - 10, totalH - 10).move(colX(idx) + 5, tableY + 5).fill('none').stroke({ color: colors.highlight, width: 5 });
+        addText(overlay, String(i + 1), colX(idx) + colW - 18, tableY + 18, { size: 22, fill: '#3b2b00', stroke: '#fff', strokeWidth: 4 });
+      }
+      for (var a = 0; a < chain.length - 1; a++) drawArrow(cellCenter(chain[a], 'next'), cellCenter(chain[a + 1], 'next'), a, draw);
+    }
+
+    function drawArrow(from, to, offset, parent) {
+      var target = parent || draw;
+      var yLift = tableY - 10 - (offset % 3) * 13;
+      var path = 'M ' + from.x + ' ' + (from.y - 27) + ' C ' + from.x + ' ' + yLift + ' ' + to.x + ' ' + yLift + ' ' + to.x + ' ' + (to.y - 28);
+      target.path(path).fill('none').stroke({ color: colors.arrow, width: 3, linecap: 'round' });
+      var angle = Math.PI / 2;
+      var tip = { x: to.x, y: to.y - 28 };
+      target.polygon([
+        [tip.x, tip.y],
+        [tip.x - 7 * Math.cos(angle - 0.55), tip.y - 7 * Math.sin(angle - 0.55)],
+        [tip.x - 7 * Math.cos(angle + 0.55), tip.y - 7 * Math.sin(angle + 0.55)]
+      ]).fill(colors.arrow);
+    }
+
+    function drawPulses() {
+      var p = draw.group();
+      for (var i = 0; i < changedCells.length; i++) {
+        var item = changedCells[i];
+        var rect = p.rect(colW - 8, rowH - 8).move(colX(item.index) + 4, cellY(item.row) + 4).fill({ color: '#fff2a8', opacity: 0.45 }).stroke({ color: colors.highlight, width: 4 });
+        rect.animate(900).opacity(0);
+      }
+    }
+
+    function paintHover(info) {
+      if (!hoverLayer) return;
+      hoverLayer.clear();
+      if (!info) return;
+      if (info.kind === 'head' && info.index != null) {
+        hoverLayer.rect(colW - 12, totalH - 12).move(colX(info.index) + 6, tableY + 6).fill('none').stroke({ color: colors.hover, width: 4 });
+        return;
+      }
+      if (info.kind === 'cell') {
+        hoverLayer.rect(colW - 12, rowH - 12).move(colX(info.index) + 6, cellY(info.row) + 6).fill('none').stroke({ color: colors.hover, width: 3 });
+        if (info.row === 'key') {
+          var chain = chainFor(info.owner);
+          for (var i = 0; i < chain.length; i++) hoverLayer.rect(colW - 18, totalH - 18).move(colX(chain[i]) + 9, tableY + 9).fill('none').stroke({ color: colors.hover, width: 2, dasharray: '7 7' });
+        } else if (info.target != null) {
+          hoverLayer.rect(colW - 10, totalH - 10).move(colX(info.target) + 5, tableY + 5).fill('none').stroke({ color: colors.hover, width: 4 });
+          drawArrow(cellCenter(info.index, info.row), cellCenter(info.target, 'next'), 1, hoverLayer);
+        } else {
+          addText(hoverLayer, 'nil', colX(info.index) + colW / 2, tableY + totalH + 22, { size: 27, style: 'italic', fill: colors.hover, stroke: '#fff', strokeWidth: 5 });
+        }
+      }
+    }
+
+    function clearHover() {
+      if (hoverLayer) hoverLayer.clear();
+    }
+
+    function markCell(index, row) { changedCells.push({ index: index, row: row }); }
+    function markHead(name) { changedHeads.push(name); }
+
+    function schedulePulseClear() {
+      clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(function () {
+        changedCells = [];
+        changedHeads = [];
+        render();
+      }, 1200);
+    }
+
+    function selectedList() {
+      var input = document.getElementById('targetInput');
+      return input ? input.value : 'L1';
+    }
+
+    function trigger_allocate() {
+      var list = selectedList();
+      var idx = state.heads.free;
+      if (idx == null) {
+        setStatus('free list is empty');
+        return;
+      }
+      changedCells = [];
+      changedHeads = [];
+      var oldFreeNext = state.records[idx].next;
+      var oldHead = state.heads[list];
+      state.heads.free = oldFreeNext;
+      state.records[idx].owner = list;
+      state.records[idx].key = idx;
+      state.records[idx].next = oldHead;
+      state.records[idx].prev = null;
+      state.heads[list] = idx;
+      if (oldHead != null) {
+        state.records[oldHead].prev = idx;
+        markCell(oldHead, 'prev');
+      }
+      markHead('free');
+      markHead(list);
+      markCell(idx, 'next');
+      markCell(idx, 'key');
+      markCell(idx, 'prev');
+      trace = list;
+      render();
+      schedulePulseClear();
+      setStatus('allocated index ' + idx + ' to ' + listLabels[list]);
+      showPopup('Allocate', 'The first free slot is spliced out of the free chain and inserted at the head of ' + listLabels[list] + '. The record stays in the same array column; only its next, key, and prev entries change.');
+    }
+
+    function trigger_free() {
+      var list = selectedList();
+      var idx = state.heads[list];
+      if (idx == null) {
+        setStatus(listLabels[list] + ' is empty');
+        return;
+      }
+      changedCells = [];
+      changedHeads = [];
+      var next = state.records[idx].next;
+      var oldFree = state.heads.free;
+      state.heads[list] = next;
+      if (next != null) {
+        state.records[next].prev = null;
+        markCell(next, 'prev');
+      }
+      state.heads.free = idx;
+      state.records[idx].owner = 'free';
+      state.records[idx].next = oldFree;
+      state.records[idx].key = null;
+      state.records[idx].prev = null;
+      markHead('free');
+      markHead(list);
+      markCell(idx, 'next');
+      markCell(idx, 'key');
+      markCell(idx, 'prev');
+      trace = 'free';
+      render();
+      schedulePulseClear();
+      setStatus('freed index ' + idx + ' from ' + listLabels[list]);
+      showPopup('Free', 'The selected list head is removed and pushed onto the front of the free chain. A free slot needs only next, so the key and prev rows become unused.');
+    }
+
+    function trigger_reset() { resetState(); }
+
+    window.trigger_allocate = trigger_allocate;
+    window.trigger_free = trigger_free;
+    window.trigger_reset = trigger_reset;
+
+    render();
+    setStatus('click a head, hover a cell, or reuse a slot');
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+</html>

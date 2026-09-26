@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capacity and Smoothness</title>
+<style>
+  :root{
+    --ink:#111315;
+    --muted:#5c6570;
+    --line:#d9dee3;
+    --bg:#ffffff;
+    --panel:#f6f8f9;
+    --true:#141618;
+    --fit:#92d2c8;
+    --fit-dark:#3f9b8c;
+    --data:#d9805f;
+    --accent:#2f6f8f;
+    --warn:#c4553a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Avenir Next","Nunito Sans","Segoe UI",Helvetica,Arial,sans-serif;}
+  body{padding:22px 16px 60px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-size:21px;font-weight:600;margin:0 0 4px;letter-spacing:.01em}
+  .sub{font-size:14px;color:var(--muted);margin:0 0 22px;max-width:860px;line-height:1.5}
+  .figure{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 10px;}
+  .cell{position:relative;border-radius:8px;padding:2px;cursor:pointer;
+        transition:background .15s ease, box-shadow .15s ease;}
+  .cell:hover{background:var(--panel)}
+  .cell.sel{background:#f4fafd;box-shadow:inset 0 0 0 1.5px #9cc6da}
+  .cell.static{cursor:default}
+  .cell.static:hover{background:transparent}
+  .cell svg{display:block;width:100%;height:auto}
+
+  .explore{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);
+           gap:26px;margin-top:26px;padding-top:22px;border-top:1px solid var(--line);}
+  #focusWrap svg{display:block;width:100%;height:auto}
+
+  .ctl{font-size:13.5px}
+  .ctl h2{font-size:15px;margin:0 0 10px;font-weight:600}
+  .row{display:flex;align-items:center;gap:10px;margin:10px 0}
+  input[type=range]{flex:1;accent-color:var(--accent);height:22px}
+  .dval{font-variant-numeric:tabular-nums;font-weight:600;min-width:74px;font-size:14px}
+  .ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
+         margin:-6px 2px 12px;font-variant-numeric:tabular-nums}
+  .ticks span{cursor:pointer;padding:1px 4px;border-radius:4px}
+  .ticks span:hover{background:var(--panel);color:var(--ink)}
+  button{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line);
+         background:#fff;border-radius:7px;cursor:pointer;color:var(--ink)}
+  button:hover{background:var(--panel)}
+  button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btns{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 16px}
+  .stats{border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-top:6px}
+  .stat{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+        padding:7px 11px;border-bottom:1px solid var(--line);font-size:13px}
+  .stat:last-child{border-bottom:none}
+  .stat .k{color:var(--muted)}
+  .stat .v{font-variant-numeric:tabular-nums;font-weight:600}
+  .note{font-size:12.8px;line-height:1.55;color:var(--muted);margin-top:14px;
+        border-left:3px solid var(--fit);padding-left:11px;min-height:66px}
+  .note b{color:var(--ink);font-weight:600}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);margin:14px 0 2px}
+  .legend i{display:inline-block;vertical-align:middle;margin-right:6px}
+  .sw-line{width:20px;height:3px;border-radius:2px}
+  .sw-dot{width:11px;height:11px;border-radius:50%}
+  .method{font-size:11.8px;line-height:1.55;color:var(--muted);margin-top:24px;
+          padding-top:14px;border-top:1px solid var(--line);max-width:1000px}
+  .method code{font-family:"SF Mono",Consolas,monospace;font-size:11.4px;background:var(--panel);
+    padding:1px 4px;border-radius:3px}
+  .mini{margin-top:16px}
+  .mini svg{display:block;width:100%;height:auto}
+  @media (max-width:880px){
+    .figure{grid-template-columns:repeat(2,1fr)}
+    .explore{grid-template-columns:1fr}
+  }
+  @media (max-width:560px){ .figure{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Model capacity and the smoothness of the fitted function</h1>
+  <p class="sub">A shallow network with one hidden layer is fitted to the same six training points in every
+  panel. Every fit passes through all six points, yet what happens <em>between</em> them depends sharply on how
+  many hidden units the network has: few units force wild excursions, many units give a smooth curve that
+  tracks the true function.</p>
+
+  <div class="figure" id="figure"></div>
+
+  <div class="explore">
+    <div id="focusWrap"></div>
+    <div class="ctl">
+      <h2>Hidden units</h2>
+      <div class="row">
+        <input type="range" id="slider" min="6" max="50" step="1" value="6">
+        <span class="dval" id="dval">D = 6</span>
+      </div>
+      <div class="ticks" id="ticks"></div>
+      <div class="btns">
+        <button id="play">▶ Animate 6 → 50</button>
+        <button id="cmp">Compare 6 vs 50</button>
+        <button id="knots">Show joints</button>
+        <button id="truth" class="on">Show true function</button>
+      </div>
+
+      <div class="legend">
+        <span><i class="sw-line" style="background:var(--true)"></i>true function</span>
+        <span><i class="sw-line" style="background:var(--fit)"></i>network fit</span>
+        <span><i class="sw-dot" style="background:var(--data)"></i>training data</span>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="k">Parameters in output layer</span><span class="v" id="sPar">7</span></div>
+        <div class="stat"><span class="k">Training points fitted</span><span class="v" id="sFit">6 / 6</span></div>
+        <div class="stat"><span class="k">Training error (RMS)</span><span class="v" id="sTrain">0.000</span></div>
+        <div class="stat"><span class="k">Error vs. true function (RMS)</span><span class="v" id="sTest">—</span></div>
+        <div class="stat"><span class="k">Total bending Σ|Δslope|</span><span class="v" id="sRough">—</span></div>
+        <div class="stat"><span class="k">Largest |y| on [0,1]</span><span class="v" id="sMax">—</span></div>
+      </div>
+
+      <div class="mini" id="miniWrap"></div>
+      <div class="note" id="note"></div>
+    </div>
+  </div>
+
+  <p class="method" id="method"></p>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  MODEL
+ *  Shallow network, one hidden layer, scalar in / scalar out:
+ *      y(x) = phi0 + sum_d phi_d * ReLU( theta_d0 + theta_d1 * x )
+ *  The hidden layer (theta) is frozen at its random initialisation, so
+ *  each hidden unit contributes a hinge with a fixed "joint" position
+ *  k_d = -theta_d0/theta_d1 and a fixed orientation s_d = sign(theta_d1).
+ *  The output weights phi are then the minimum-norm solution of the
+ *  linear system that makes the network pass through every training
+ *  point -- the solution gradient descent converges to from a small
+ *  initialisation.  Everything below is solved, not drawn by hand.
+ * ------------------------------------------------------------------ */
+
+/* --- true underlying function (2-harmonic Fourier) --- */
+const TC = [-0.12872, -0.02989, 0.60617, -0.11305, -0.02348];
+function trueF(x){
+  const t = 2*Math.PI*x;
+  return TC[0] + TC[1]*Math.cos(t) + TC[2]*Math.sin(t)
+               + TC[3]*Math.cos(2*t) + TC[4]*Math.sin(2*t);
+}
+
+/* --- six training points (true function + noise), clustered at the two ends --- */
+const DATA = [[0.03,-0.07],[0.12,0.18],[0.19,0.47],[0.81,-0.67],[0.91,-0.43],[0.97,-0.48]];
+
+/* --- frozen hidden layer: 50 units drawn once from a seeded generator.
+       A network with D units uses the first D of them, so raising D
+       really does mean "add another hidden unit". --- */
+const SEED = 9332, NMAX = 50;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;};}
+const UNITS = (function(){const r=mulberry32(SEED),u=[];
+  for(let i=0;i<NMAX;i++) u.push({k:-0.15+1.3*r(), s:r()<0.5?-1:1});
+  return u;})();
+
+function hinge(u,x){ return Math.max(0, u.s*(x-u.k)); }
+
+/* --- linear solve (Gaussian elimination with partial pivoting) --- */
+function solve(A,b){
+  const n=b.length, M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let p=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+    [M[c],M[p]]=[M[p],M[c]];
+    for(let r=0;r<n;r++){ if(r===c) continue;
+      const f=M[r][c]/M[c][c];
+      for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k];
+    }
+  }
+  return M.map((r,i)=>r[n]/r[i]);
+}
+
+/* --- minimum-norm output weights that interpolate all six points --- */
+const phiCache = new Map();
+function phiFor(D){
+  if(phiCache.has(D)) return phiCache.get(D);
+  const m = DATA.length;
+  const B = DATA.map(([x])=>{const row=[1];
+    for(let d=0;d<D;d++) row.push(hinge(UNITS[d],x));
+    return row;});
+  const G = Array.from({length:m},()=>new Array(m).fill(0));
+  for(let i=0;i<m;i++) for(let j=0;j<m;j++){
+    let s=0; for(let t=0;t<=D;t++) s+=B[i][t]*B[j][t];
+    G[i][j]=s + (i===j?1e-9:0);
+  }
+  const a = solve(G, DATA.map(d=>d[1]));
+  const phi = new Array(D+1).fill(0);
+  for(let t=0;t<=D;t++){ let s=0; for(let i=0;i<m;i++) s+=a[i]*B[i][t]; phi[t]=s; }
+  phiCache.set(D,phi);
+  return phi;
+}
+function netF(D,x){
+  const phi=phiFor(D); let s=phi[0];
+  for(let d=0;d<D;d++) s+=phi[d+1]*hinge(UNITS[d],x);
+  return s;
+}
+/* joints of the piecewise-linear network function that lie inside [0,1] */
+function jointsFor(D){
+  const ks=[];
+  for(let d=0;d<D;d++){const k=UNITS[d].k; if(k>0 && k<1) ks.push(k);}
+  return ks.sort((a,b)=>a-b);
+}
+/* exact vertex list of the piecewise-linear curve */
+function polyFor(D){
+  const xs=[0,...jointsFor(D),1];
+  return xs.map(x=>[x,netF(D,x)]);
+}
+
+/* --- metrics --- */
+const statCache = new Map();
+function statsFor(D){
+  if(statCache.has(D)) return statCache.get(D);
+  let tr=0; for(const [x,y] of DATA) tr += (netF(D,x)-y)**2;
+  const N=800; let te=0, mx=0;
+  for(let i=0;i<=N;i++){ const x=i/N, v=netF(D,x);
+    te += (v-trueF(x))**2; mx=Math.max(mx,Math.abs(v)); }
+  const p=polyFor(D); let rough=0, prev=null;
+  for(let i=0;i<p.length-1;i++){
+    const sl=(p[i+1][1]-p[i][1])/(p[i+1][0]-p[i][0]);
+    if(prev!==null) rough += Math.abs(sl-prev);
+    prev=sl;
+  }
+  const o={train:Math.sqrt(tr/DATA.length), test:Math.sqrt(te/(N+1)), rough, max:mx};
+  statCache.set(D,o); return o;
+}
+
+/* ------------------------------------------------------------------ *
+ *  DRAWING
+ * ------------------------------------------------------------------ */
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]);
+  if(parent) parent.appendChild(e);
+  return e;
+}
+
+/* Axis frame shared by every plot. Returns scale helpers. */
+function frame(svg, g, geom, opts){
+  const {x0,x1,y0,y1} = geom;          // pixel bounds of the plot area
+  const yLo=opts.yLo, yHi=opts.yHi;
+  const X = x => x0 + x*(x1-x0);
+  const Y = y => y1 - (y-yLo)/(yHi-yLo)*(y1-y0);
+  const fs = opts.fs || 12.5;
+  const lw = opts.lw || 2.6;
+
+  // spines (left + bottom only, as in the reference figure)
+  el("path",{d:`M${X(0)} ${Y(yHi)} L${X(0)} ${Y(yLo)} L${X(1)} ${Y(yLo)}`,
+             fill:"none",stroke:"#111315","stroke-width":lw,
+             "stroke-linecap":"square"},g);
+
+  // x ticks
+  for(const t of [0,0.5,1]){
+    el("path",{d:`M${X(t)} ${Y(yLo)} L${X(t)} ${Y(yLo)+6}`,stroke:"#111315",
+               "stroke-width":lw,fill:"none"},g);
+    const tx = el("text",{x:X(t),y:Y(yLo)+6+fs+2,"text-anchor":"middle",
+      "font-size":fs,fill:"#111315"},g);
+    tx.textContent = t.toFixed(1);
+  }
+  // y ticks
+  for(const t of opts.yTicks){
+    el("path",{d:`M${X(0)} ${Y(t)} L${X(0)-6} ${Y(t)}`,stroke:"#111315",
+               "stroke-width":lw,fill:"none"},g);
+    const ty = el("text",{x:X(0)-10,y:Y(t)+fs*0.36,"text-anchor":"end",
+      "font-size":fs,fill:"#111315"},g);
+    ty.textContent = t.toFixed(1);
+  }
+  return {X,Y};
+}
+
+function axisLabels(g, geom, opts){
+  const {x0,x1,y0,y1}=geom;
+  if(opts.xLabel){
+    const t=el("text",{x:(x0+x1)/2,y:opts.xLabelY,"text-anchor":"middle",
+      "font-size":opts.fsL,fill:"#111315"},g);
+    t.textContent="Input, ";
+    const i=el("tspan",{"font-style":"italic"},t); i.textContent="x";
+  }
+  if(opts.yLabel){
+    const t=el("text",{x:opts.yLabelX,y:(y0+y1)/2,"text-anchor":"middle",
+      "font-size":opts.fsL,fill:"#111315",
+      transform:`rotate(-90 ${opts.yLabelX} ${(y0+y1)/2})`},g);
+    t.textContent="Output, ";
+    const i=el("tspan",{"font-style":"italic"},t); i.textContent="y";
+  }
+}
+
+function pathFromPts(pts,S){
+  return pts.map((p,i)=>(i?"L":"M")+S.X(p[0]).toFixed(2)+" "+S.Y(p[1]).toFixed(2)).join(" ");
+}
+function sampleTrue(S,n){
+  const pts=[]; for(let i=0;i<=n;i++){const x=i/n; pts.push([x,trueF(x)]);}
+  return pathFromPts(pts,S);
+}
+
+/* ---------------- small panels ---------------- */
+const PANELS = [6,7,8,10,50];
+const LETTERS = ["a","b","c","d","e","f"];
+const PW=262, PH=222;                 // viewBox of a small panel
+const GEO = {x0:52,x1:250,y0:34,y1:178};
+
+function buildPanel(idx){
+  const isTruthPanel = (idx===0);
+  const D = isTruthPanel ? null : PANELS[idx-1];
+  const cell=document.createElement("div");
+  cell.className="cell"+(isTruthPanel?" static":"");
+  cell.dataset.idx=idx;
+  const svg=el("svg",{viewBox:`0 0 ${PW} ${PH}`,role:"img"},cell);
+  const bottomRow = idx>=3;
+  const leftCol   = (idx%3)===0;
+
+  const clipId="clip"+idx;
+  const cp=el("clipPath",{id:clipId},el("defs",{},svg));
+  el("rect",{x:GEO.x0,y:GEO.y0-2,width:GEO.x1-GEO.x0,height:GEO.y1-GEO.y0+2},cp);
+
+  const g=el("g",{},svg);
+  const S=frame(svg,g,GEO,{yLo:-1,yHi:1,yTicks:[1,0,-1],fs:12.5,lw:2.6});
+
+  axisLabels(g,GEO,{xLabel:bottomRow,xLabelY:PH-6,yLabel:leftCol,yLabelX:16,fsL:14.5});
+
+  // panel letter
+  const L=el("text",{x:3,y:18,"font-size":15.5,fill:"#111315"},g);
+  L.textContent=LETTERS[idx]+")";
+
+  // title
+  const T=el("text",{x:(GEO.x0+GEO.x1)/2,y:19,"text-anchor":"middle",
+    "font-size":15,fill:"#111315"},g);
+  T.textContent = isTruthPanel ? "true function + data" : D+" hidden units";
+  if(isTruthPanel) T.setAttribute("fill","#5c6570");
+
+  const inner=el("g",{"clip-path":`url(#${clipId})`},g);
+
+  // fitted curve (behind the true curve for panel a there is none)
+  if(!isTruthPanel){
+    el("path",{d:pathFromPts(polyFor(D),S),fill:"none",stroke:"#92d2c8",
+      "stroke-width":3.6,"stroke-linejoin":"round","stroke-linecap":"round"},inner);
+  }
+  // true function
+  el("path",{d:sampleTrue(S,400),fill:"none",stroke:"#141618",
+    "stroke-width":3.2,"stroke-linejoin":"round"},inner);
+  // data
+  for(const [x,y] of DATA)
+    el("circle",{cx:S.X(x),cy:S.Y(y),r:5.4,fill:"#d9805f"},inner);
+
+  return cell;
+}
+
+const figure=document.getElementById("figure");
+for(let i=0;i<6;i++) figure.appendChild(buildPanel(i));
+
+/* ---------------- focus panel ---------------- */
+const FW=600, FH=404;
+const FGEO={x0:82,x1:578,y0:44,y1:340};
+const focusWrap=document.getElementById("focusWrap");
+const fsvg=el("svg",{viewBox:`0 0 ${FW} ${FH}`,role:"img"},focusWrap);
+const fdefs=el("defs",{},fsvg);
+const fcp=el("clipPath",{id:"fclip"},fdefs);
+el("rect",{x:FGEO.x0,y:FGEO.y0-4,width:FGEO.x1-FGEO.x0,height:FGEO.y1-FGEO.y0+4},fcp);
+const fstatic=el("g",{},fsvg);
+const FS=frame(fsvg,fstatic,FGEO,{yLo:-1,yHi:1,yTicks:[1,0.5,0,-0.5,-1],fs:14,lw:3});
+axisLabels(fstatic,FGEO,{xLabel:true,xLabelY:FH-8,yLabel:true,yLabelX:26,fsL:17});
+
+// shaded "no data here" gap
+const gapLo=0.22, gapHi=0.78;
+el("rect",{x:FS.X(gapLo),y:FGEO.y0,width:FS.X(gapHi)-FS.X(gapLo),
+  height:FGEO.y1-FGEO.y0,fill:"#f2b93f",opacity:.075},fstatic);
+const gapLbl=el("text",{x:(FS.X(gapLo)+FS.X(gapHi))/2,y:FGEO.y0+16,
+  "text-anchor":"middle","font-size":12.5,fill:"#9a8033",
+  stroke:"#ffffff","stroke-width":4,"paint-order":"stroke"},fstatic);
+gapLbl.textContent="no training data in this region";
+
+const fTitle=el("text",{x:FGEO.x0,y:26,"font-size":17,fill:"#111315"},fstatic);
+const finner=el("g",{"clip-path":"url(#fclip)"},fsvg);
+
+const pTrue=el("path",{fill:"none",stroke:"#141618","stroke-width":3.2,
+  "stroke-linejoin":"round",d:sampleTrue(FS,600)},finner);
+const pCmp =el("path",{fill:"none",stroke:"#c4553a","stroke-width":3.2,
+  "stroke-linejoin":"round","stroke-linecap":"round",d:"",opacity:0},finner);
+const pFit =el("path",{fill:"none",stroke:"#92d2c8","stroke-width":4.4,
+  "stroke-linejoin":"round","stroke-linecap":"round",d:""},finner);
+const gJoint=el("g",{},finner);
+const gDots =el("g",{},finner);
+for(const [x,y] of DATA)
+  el("circle",{cx:FS.X(x),cy:FS.Y(y),r:7,fill:"#d9805f"},gDots);
+const cmpLbl=el("text",{x:0,y:0,"font-size":13,fill:"#5c6570",opacity:0,
+  stroke:"#ffffff","stroke-width":4,"paint-order":"stroke"},fsvg);
+fsvg.appendChild(gapLbl);   // keep the gap caption legible on top of the curves
+
+/* ---------------- mini error-vs-D plot ---------------- */
+const miniWrap=document.getElementById("miniWrap");
+const MW=340, MH=118, MG={x0:48,x1:332,y0:22,y1:92};
+const msvg=el("svg",{viewBox:`0 0 ${MW} ${MH}`,role:"img"},miniWrap);
+const mg=el("g",{},msvg);
+(function(){
+  const lo=Math.log10(0.03), hi=Math.log10(3);
+  const MX=d=>MG.x0+(d-6)/(50-6)*(MG.x1-MG.x0);
+  const MY=v=>MG.y1-(Math.log10(v)-lo)/(hi-lo)*(MG.y1-MG.y0);
+  window.__MX=MX; window.__MY=MY;
+  el("path",{d:`M${MG.x0} ${MG.y0} L${MG.x0} ${MG.y1} L${MG.x1} ${MG.y1}`,
+    fill:"none",stroke:"#9aa4ae","stroke-width":1.4},mg);
+  for(const v of [0.1,1]){
+    el("path",{d:`M${MG.x0} ${MY(v)} L${MG.x1} ${MY(v)}`,stroke:"#e6eaee",
+      "stroke-width":1,fill:"none"},mg);
+    const t=el("text",{x:MG.x0-6,y:MY(v)+4,"text-anchor":"end","font-size":10,
+      fill:"#5c6570"},mg); t.textContent=v===1?"1":"0.1";
+  }
+  for(const d of [6,10,20,30,40,50]){
+    const t=el("text",{x:MX(d),y:MG.y1+13,"text-anchor":"middle","font-size":10,
+      fill:"#5c6570"},mg); t.textContent=d;
+  }
+  const cap=el("text",{x:MG.x0,y:12,"font-size":11.5,fill:"#5c6570"},mg);
+  cap.textContent="Error vs. true function (log scale) against hidden units";
+  const xl=el("text",{x:(MG.x0+MG.x1)/2,y:MH-2,"text-anchor":"middle","font-size":10,
+    fill:"#5c6570"},mg); xl.textContent="hidden units, D";
+  const pts=[]; for(let d=6;d<=50;d++) pts.push(`${d===6?"M":"L"}${MX(d).toFixed(1)} ${MY(statsFor(d).test).toFixed(1)}`);
+  el("path",{d:pts.join(" "),fill:"none",stroke:"#3f9b8c","stroke-width":1.8},mg);
+  for(const d of PANELS)
+    el("circle",{cx:MX(d),cy:MY(statsFor(d).test),r:2.8,fill:"#3f9b8c"},mg);
+})();
+const mMark=el("circle",{r:4.6,fill:"#fff",stroke:"#c4553a","stroke-width":2.4},mg);
+
+/* ------------------------------------------------------------------ *
+ *  STATE + INTERACTION
+ * ------------------------------------------------------------------ */
+let D=6, showKnots=false, showTruth=true, compare=false;
+let morphFrom=null, morphT=1, animId=null;
+
+const slider=document.getElementById("slider");
+const dval=document.getElementById("dval");
+const note=document.getElementById("note");
+
+/* tick shortcuts under the slider */
+const ticks=document.getElementById("ticks");
+PANELS.forEach(d=>{
+  const s=document.createElement("span"); s.textContent=d;
+  s.onclick=()=>setD(d,true); ticks.appendChild(s);
+});
+
+function samples(d,n){
+  const a=new Float64Array(n+1);
+  for(let i=0;i<=n;i++) a[i]=netF(d,i/n);
+  return a;
+}
+const NSAMP=480;
+function pathFromSamples(a){
+  let s="";
+  for(let i=0;i<a.length;i++)
+    s+=(i?"L":"M")+FS.X(i/(a.length-1)).toFixed(2)+" "+FS.Y(a[i]).toFixed(2);
+  return s;
+}
+
+function renderFocus(){
+  fTitle.textContent = compare
+    ? "6 hidden units (red) vs. 50 hidden units (teal) — same six points"
+    : D+" hidden unit"+(D===1?"":"s");
+
+  pTrue.setAttribute("opacity", showTruth?1:0);
+
+  if(compare){
+    pCmp.setAttribute("d", pathFromSamples(samples(6,NSAMP)));
+    pCmp.setAttribute("opacity",1);
+    pFit.setAttribute("d", pathFromSamples(samples(50,NSAMP)));
+  }else{
+    pCmp.setAttribute("opacity",0);
+    if(morphT<1 && morphFrom){
+      const a=morphFrom, b=samples(D,NSAMP), t=morphT, out=new Float64Array(a.length);
+      for(let i=0;i<a.length;i++) out[i]=a[i]+(b[i]-a[i])*t;
+      pFit.setAttribute("d", pathFromSamples(out));
+    }else{
+      pFit.setAttribute("d", pathFromPts(polyFor(D),FS));
+    }
+  }
+
+  // joints
+  gJoint.textContent="";
+  if(showKnots && !compare){
+    const ks=jointsFor(D), lines = ks.length<=14;
+    for(const k of ks){
+      if(lines) el("path",{d:`M${FS.X(k)} ${FGEO.y0} L${FS.X(k)} ${FGEO.y1}`,stroke:"#3f9b8c",
+        "stroke-width":1,"stroke-dasharray":"3 4",opacity:.4},gJoint);
+      el("circle",{cx:FS.X(k),cy:FS.Y(netF(D,k)),r:lines?3.4:2.6,fill:"#fff",
+        stroke:"#3f9b8c","stroke-width":lines?2:1.4},gJoint);
+    }
+    const t=el("text",{x:FGEO.x1-6,y:FGEO.y0+16,"text-anchor":"end","font-size":12.5,
+      fill:"#3f9b8c",stroke:"#fff","stroke-width":4,"paint-order":"stroke"},gJoint);
+    t.textContent=ks.length+" joint"+(ks.length===1?"":"s")+" inside [0,1]";
+  }
+
+  if(compare){
+    cmpLbl.setAttribute("opacity",1);
+    cmpLbl.setAttribute("x",FGEO.x0+8);
+    cmpLbl.setAttribute("y",FGEO.y1-10);
+    cmpLbl.textContent="both curves pass through all six points";
+  } else cmpLbl.setAttribute("opacity",0);
+
+  // stats — in compare mode show "D = 6 → D = 50"
+  const st=statsFor(D), A=statsFor(6), B=statsFor(50);
+  const two=(a,b)=>a+" → "+b;
+  const nFit=d=>DATA.filter(([x,y])=>Math.abs(netF(d,x)-y)<1e-6).length;
+  document.getElementById("sPar").textContent =
+    compare ? two(7,51) : (D+1)+"  (D + 1)";
+  document.getElementById("sFit").textContent =
+    compare ? (nFit(6)===6&&nFit(50)===6 ? "6 / 6 (both)" : nFit(6)+" / 6 → "+nFit(50)+" / 6")
+            : nFit(D)+" / 6";
+  const f3=v=>v<5e-4?"0.000":v.toFixed(3);
+  document.getElementById("sTrain").textContent =
+    compare ? two(f3(A.train),f3(B.train)) : f3(st.train);
+  document.getElementById("sTest").textContent =
+    compare ? two(A.test.toFixed(3),B.test.toFixed(3)) : st.test.toFixed(3);
+  document.getElementById("sRough").textContent =
+    compare ? two(A.rough.toFixed(1),B.rough.toFixed(1)) : st.rough.toFixed(1);
+  const fm=v=>v.toFixed(2)+(v>1?" (off the axes)":"");
+  document.getElementById("sMax").textContent =
+    compare ? two(A.max.toFixed(2),B.max.toFixed(2)) : fm(st.max);
+
+  mMark.setAttribute("cx", window.__MX(D));
+  mMark.setAttribute("cy", window.__MY(st.test));
+
+  // selection highlight on the grid
+  document.querySelectorAll(".cell").forEach(c=>{
+    const i=+c.dataset.idx;
+    const on = !compare && i>0 && PANELS[i-1]===D;
+    c.classList.toggle("sel",on);
+  });
+
+  note.innerHTML = noteFor();
+}
+
+function noteFor(){
+  if(compare) return "<b>Both networks fit the data perfectly.</b> The six-unit network has barely "+
+    "enough hinges to reach every point, so it lurches far outside the plotted range to get there. "+
+    "The fifty-unit network has hinges to spare and uses the smallest weights that still interpolate, "+
+    "which produces a gentle curve close to the truth. More capacity here means <em>smoother</em>, not rougher.";
+  const st=statsFor(D);
+  if(D<=6) return "<b>D = 6.</b> Seven output weights against six constraints leaves almost no freedom: "+
+    "the fit is forced, it swings to |y| = "+st.max.toFixed(1)+" in the data gap and leaves the panel entirely.";
+  if(D<=7) return "<b>D = 7.</b> One extra hidden unit, one extra degree of freedom. The excursion in the "+
+    "gap shrinks, but the curve still overshoots the true peak and plunges below the axis.";
+  if(D<=9) return "<b>D = "+D+".</b> The overshoot is now modest. The fit still bends sharply between the "+
+    "two clusters of data, because only a handful of joints are available there.";
+  if(D<=14) return "<b>D = "+D+".</b> With joints to spare, the minimum-norm fit starts to look like the "+
+    "true function even where there is no data to pin it down.";
+  if(D<=30) return "<b>D = "+D+".</b> Far more parameters than data points, yet the curve is getting "+
+    "<em>smoother</em>. The extra hidden units are spent on spreading the bending out, not on wiggling.";
+  return "<b>D = "+D+".</b> Fifty hidden units, fifty-one output weights, six data points — massively "+
+    "over-parameterised, and the smoothest, most accurate fit of all. Capacity buys smooth interpolation, "+
+    "not overfitting.";
+}
+
+function setD(d,fromClick){
+  d=Math.max(6,Math.min(50,Math.round(d)));
+  if(compare){ compare=false; document.getElementById("cmp").classList.remove("on"); }
+  if(d===D && !fromClick){ renderFocus(); return; }
+  morphFrom=samples(D,NSAMP); morphT=0;
+  D=d;
+  slider.value=D; dval.textContent="D = "+D;
+  const t0=performance.now(), dur=fromClick?320:170;
+  cancelAnimationFrame(animId);
+  (function step(){
+    const e=Math.min(1,(performance.now()-t0)/dur);
+    morphT = e<1 ? (e<0.5?2*e*e:1-Math.pow(-2*e+2,2)/2) : 1;
+    renderFocus();
+    if(e<1) animId=requestAnimationFrame(step); else {morphFrom=null;morphT=1;renderFocus();}
+  })();
+}
+
+slider.addEventListener("input",()=>setD(+slider.value));
+
+document.querySelectorAll(".cell").forEach(c=>{
+  c.addEventListener("click",()=>{
+    const i=+c.dataset.idx;
+    if(i===0){ showTruth=true; document.getElementById("truth").classList.add("on");
+               compare=false; document.getElementById("cmp").classList.remove("on");
+               renderFocus(); return; }
+    setD(PANELS[i-1],true);
+    focusWrap.scrollIntoView({behavior:"smooth",block:"nearest"});
+  });
+});
+
+const cmpBtn=document.getElementById("cmp");
+cmpBtn.onclick=()=>{ compare=!compare; cmpBtn.classList.toggle("on",compare); renderFocus(); };
+const knotBtn=document.getElementById("knots");
+knotBtn.onclick=()=>{ showKnots=!showKnots; knotBtn.classList.toggle("on",showKnots); renderFocus(); };
+const truthBtn=document.getElementById("truth");
+truthBtn.onclick=()=>{ showTruth=!showTruth; truthBtn.classList.toggle("on",showTruth); renderFocus(); };
+
+/* play: walk through the five panel values */
+const playBtn=document.getElementById("play");
+let playing=false, playTimer=null;
+playBtn.onclick=()=>{
+  if(playing){ playing=false; clearTimeout(playTimer); playBtn.textContent="▶ Animate 6 → 50"; return; }
+  playing=true; playBtn.textContent="■ Stop";
+  if(compare){ compare=false; cmpBtn.classList.remove("on"); }
+  let i=0;
+  (function next(){
+    if(!playing) return;
+    setD(PANELS[i],true);
+    i=(i+1)%PANELS.length;
+    playTimer=setTimeout(next, i===0?1500:900);
+  })();
+};
+
+document.getElementById("method").innerHTML =
+  "<b>How the curves are computed.</b> Each network is "+
+  "<code>y = φ₀ + Σ<sub>d</sub> φ<sub>d</sub> ReLU(θ<sub>d0</sub> + θ<sub>d1</sub>x)</code>. "+
+  "The hidden layer θ is frozen at a single random initialisation, so hidden unit <i>d</i> supplies a hinge "+
+  "with a fixed joint at <code>x = −θ<sub>d0</sub>/θ<sub>d1</sub></code>; a network with D units uses the "+
+  "first D hinges of that fixed list, so increasing D genuinely adds units to the same network. "+
+  "The output weights φ are then solved for exactly: among all φ that make the network pass through all six "+
+  "training points, the page takes the minimum-norm solution "+
+  "<code>φ = Bᵀ(BBᵀ)<sup>−1</sup>y</code> — the solution gradient descent from a small initialisation "+
+  "converges to. Nothing is drawn by hand: every curve is the resulting piecewise-linear function, plotted "+
+  "through its exact joints, and every number in the table is measured from it. "+
+  "The true function is <code>−0.129 − 0.030cos2πx + 0.606sin2πx − 0.113cos4πx − 0.023sin4πx</code> and the "+
+  "six training points are that function plus noise, deliberately clustered at the two ends so that the "+
+  "middle of the range is unconstrained.";
+
+renderFocus();
+</script>
+</body>
+</html>

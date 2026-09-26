@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinhole Camera and Sensor</title>
+<style>
+  :root{
+    --bg:#f4f5f3; --panel:#ffffff; --ink:#15181a; --muted:#5d6a70;
+    --line:#d3d9dc; --accent:#0a72b5; --cyan:#2bb8ec; --orange:#ef6c12;
+    --serif: Georgia, "Times New Roman", Times, serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1640px;margin:0 auto;padding:16px 18px 40px}
+  header h1{font-family:var(--serif);font-size:24px;margin:0 0 4px;font-weight:600;letter-spacing:.2px}
+  header p{margin:0 0 14px;color:var(--muted);font-size:14px;max-width:1000px;line-height:1.45}
+  .main{display:flex;gap:18px;align-items:flex-start}
+  .figpane{flex:1 1 auto;min-width:0;background:#fff;border:1px solid var(--line);
+    border-radius:10px;padding:8px 8px 4px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  canvas{width:100%;height:auto;display:block;touch-action:none;cursor:default}
+  .hint{font-size:12.5px;color:var(--muted);padding:6px 6px 8px}
+  .hint b{color:var(--accent)}
+  aside{flex:0 0 358px;display:flex;flex-direction:column;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .card h2{margin:0 0 10px;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .ctl{margin-bottom:12px}
+  .ctl:last-child{margin-bottom:2px}
+  .ctl label{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:4px}
+  .ctl label .v{font-family:var(--serif);font-size:14px;color:var(--accent);font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .modes{display:flex;flex-direction:column;gap:5px}
+  .modes label{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.3;cursor:pointer;
+    padding:5px 7px;border-radius:6px;border:1px solid transparent}
+  .modes label:hover{background:#f2f7fa}
+  .modes label.on{background:#eaf4fa;border-color:#b7dcef}
+  .modes input{margin-top:2px}
+  .modes .sub{display:block;color:var(--muted);font-size:11.5px}
+  table.ro{width:100%;border-collapse:collapse;font-size:13px}
+  table.ro td{padding:2.5px 0;vertical-align:baseline}
+  table.ro td.k{color:var(--muted);white-space:nowrap;padding-right:8px}
+  table.ro td.n{font-family:var(--serif);text-align:right;white-space:nowrap;font-size:14px}
+  .em{background:#fff6ec;outline:2px solid #ffd9b5;border-radius:4px}
+  .kmat{display:flex;align-items:center;gap:8px;justify-content:center;margin:2px 0 4px;font-family:var(--serif)}
+  .kmat .lbl{font-size:19px;font-style:italic}
+  .brk{width:9px;align-self:stretch;border:2px solid var(--ink);border-right:none}
+  .brk.r{border:2px solid var(--ink);border-left:none}
+  .kgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px 12px;padding:5px 3px;font-size:14.5px;text-align:right}
+  .kgrid span{min-width:44px}
+  .kgrid .z{color:#9aa5aa}
+  .note{font-size:11.5px;color:var(--muted);line-height:1.45;margin-top:8px}
+  .eq{font-family:var(--serif);font-size:13.5px;line-height:1.7;color:#22292d}
+  .eq i{font-style:italic}
+  .sn{color:var(--orange);font-weight:700}
+  .cy{color:#0f93c6;font-weight:700}
+  .warn{color:#b3341a;font-size:12px;margin-top:6px}
+  @media (max-width:1180px){ .main{flex-direction:column} aside{flex:1 1 auto;width:100%;
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))} }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>From a 3D scene point to a pixel: the pinhole camera and its sensor</h1>
+  <p>A scene point <b>P</b> = (X<sub>c</sub>, Y<sub>c</sub>, Z<sub>c</sub>) is projected through the camera centre onto the virtual image
+  plane at <i>Z<sub>c</sub></i> = <i>f</i>, and lands inverted on the physical sensor at <i>Z<sub>c</sub></i> = &minus;<i>f</i>, where it is
+  sampled by an <i>M</i>&times;<i>N</i> grid of finite-sized pixels. Everything drawn here is computed from the real projection equations.</p>
+</header>
+
+<div class="main">
+  <div class="figpane">
+    <canvas id="cv" width="1180" height="756"></canvas>
+    <div class="hint">Drag the point <b>P</b> anywhere in the figure (it moves in the plane <i>Z</i><sub>c</sub> = const).
+      Use <b>depth</b> to push it along the optical axis. The <span class="cy">cyan</span> dot is the exact projection;
+      the <span class="sn">orange</span> cell is the pixel it is quantised into.
+      Indices (<i>n</i>, <i>m</i>) are defined on the virtual image plane, so the stored image is upright;
+      on the physical sensor the very same pixels sit rotated by 180&deg;, which is why the picture on the
+      grid is inverted.</div>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h2>Scene point P</h2>
+      <div class="ctl"><label><span>X<sub>c</sub></span> <span class="v" id="vPx"></span></label>
+        <input type="range" id="sPx" min="-45" max="45" step="0.5"></div>
+      <div class="ctl"><label><span>Y<sub>c</sub></span> <span class="v" id="vPy"></span></label>
+        <input type="range" id="sPy" min="-40" max="40" step="0.5"></div>
+      <div class="ctl"><label><span>depth Z<sub>c</sub></span> <span class="v" id="vPz"></span></label>
+        <input type="range" id="sPz" min="45" max="110" step="0.5"></div>
+    </div>
+
+    <div class="card">
+      <h2>Camera &amp; sensor</h2>
+      <div class="ctl"><label><span>focal length <i>f</i></span> <span class="v" id="vf"></span></label>
+        <input type="range" id="sf" min="15" max="50" step="0.5"></div>
+      <div class="ctl"><label><span>sensor width <i>w</i></span> <span class="v" id="vw"></span></label>
+        <input type="range" id="sw" min="18" max="48" step="0.5"></div>
+      <div class="ctl"><label><span>resolution <i>N</i> columns</span> <span class="v" id="vN"></span></label>
+        <input type="range" id="sN" min="4" max="40" step="1"></div>
+      <table class="ro" style="margin-top:6px">
+        <tr><td class="k">sensor size</td><td class="n" id="roSize"></td></tr>
+        <tr><td class="k">pixel size <i>s</i></td><td class="n" id="roPix"></td></tr>
+        <tr><td class="k">field of view (h &times; v)</td><td class="n" id="roFov"></td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Coordinate readout</h2>
+      <div class="modes" id="modes">
+        <label data-m="mm"><input type="radio" name="mode" value="mm" checked><span>Image-plane (<i>x</i>, <i>y</i>) in mm
+          <span class="sub">metric, measured from the principal point</span></span></label>
+        <label data-m="cen"><input type="radio" name="mode" value="cen"><span>Sensor-centred, in pixel units
+          <span class="sub">divide by the pixel size &mdash; still centred</span></span></label>
+        <label data-m="px"><input type="radio" name="mode" value="px"><span>Image pixel indices (<i>n</i>, <i>m</i>)
+          <span class="sub">shifted by the principal point offset (o<sub>x</sub>, o<sub>y</sub>)</span></span></label>
+      </div>
+      <div class="eq" id="eqBox" style="margin-top:10px"></div>
+      <div class="warn" id="warnBox" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>Intrinsic matrix K</h2>
+      <div class="kmat">
+        <span class="lbl">K =</span>
+        <div class="brk"></div>
+        <div class="kgrid" id="kgrid"></div>
+        <div class="brk r"></div>
+      </div>
+      <table class="ro">
+        <tr><td class="k">f<sub>x</sub> = f<sub>y</sub> = <i>f</i>/<i>s</i></td><td class="n" id="roFx"></td></tr>
+        <tr><td class="k">principal point (o<sub>x</sub>, o<sub>y</sub>)</td><td class="n" id="roPP"></td></tr>
+      </table>
+      <div class="note">K maps a camera-frame ray to pixel indices:
+        [<i>n</i>&nbsp;<i>m</i>&nbsp;1]<sup>T</sup> &sim; K&nbsp;[X<sub>c</sub>&nbsp;&minus;Y<sub>c</sub>&nbsp;Z<sub>c</sub>]<sup>T</sup>
+        (the minus sign is the usual flip between <i>y</i>-up in the camera frame and <i>m</i>-down in the image).
+        Enlarging <i>f</i> narrows the field of view; shrinking the pixels raises f<sub>x</sub> and the sampling density,
+        without changing the underlying geometry.</div>
+    </div>
+  </aside>
+</div>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Geometry: everything is in millimetres, in the camera frame
+ *  Xc : right-ish (drawn obliquely), Yc : up, Zc : optical axis
+ * ------------------------------------------------------------------ */
+const SERIF = 'Georgia, "Times New Roman", Times, serif';
+const CW = 1180, CH = 756;
+
+const st = {
+  f: 30,          // focal length (mm)
+  w: 40,          // sensor width (mm)
+  N: 16,          // sensor columns
+  Px: -28, Py: 26, Pz: 90,
+  mode: 'mm'
+};
+const Zh = 90;                       // depth of the scene billboard (mm)
+
+const M   = () => Math.max(3, Math.round(st.N * 0.75));   // rows (4:3, square pixels)
+const psz = () => st.w / st.N;                            // pixel size (mm)
+const sh  = () => psz() * M();                            // sensor height (mm)
+const ox  = () => st.N / 2;                               // principal point, pixels
+const oy  = () => M()   / 2;
+
+/* ---- oblique axonometric projection (linear, so straight rays stay straight) ---- */
+const S = 5.2, OXs = 400, OYs = 390, KX = 0.60, KY = -0.55;
+function pr(X, Y, Z){ return [OXs + S*(Z + KX*X), OYs + S*(-Y + KY*X)]; }
+function unpr(sx, sy, Z){                       // inverse at a fixed depth Z
+  const X = (((sx - OXs)/S) - Z)/KX;
+  const Y = KY*X - (sy - OYs)/S;
+  return [X, Y];
+}
+const OBL = Math.atan2(KY, KX);                 // screen angle of the Xc direction
+
+/* ---- the scene billboard (a little house), in the plane Zc = Zh ---- */
+const WALL = {x0:-28, x1:32, y0:-26, y1:26};
+const ROOF = [[-28,26],[-6,40],[32,40],[32,26]];
+const WINS = [[-22,2,-8,20],[4,6,18,24],[-22,-20,-8,-6],[6,-16,22,-2]];
+const COL = {roof:'#f0332e', wall:'#b6eeae', win:'#ffd429', wallEdge:'#7fbf78'};
+
+function inPoly(x, y, poly){
+  let c = false;
+  for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+    const [xi,yi] = poly[i], [xj,yj] = poly[j];
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi) + xi)) c = !c;
+  }
+  return c;
+}
+function sceneColor(X, Y){
+  if(inPoly(X, Y, ROOF)) return COL.roof;
+  if(X>=WALL.x0 && X<=WALL.x1 && Y>=WALL.y0 && Y<=WALL.y1){
+    for(const q of WINS) if(X>=q[0] && Y>=q[1] && X<=q[2] && Y<=q[3]) return COL.win;
+    return COL.wall;
+  }
+  return null;
+}
+
+/* ---- the projection chain ---- */
+function project(){
+  const f = st.f, p = psz();
+  const Z = Math.max(1e-6, st.Pz);
+  const x = f*st.Px/Z, y = f*st.Py/Z;           // mm on the virtual image plane
+  const n = x/p + ox(), m = oy() - y/p;         // continuous pixel indices
+  const ni = Math.floor(n), mi = Math.floor(m);
+  const inside = ni>=0 && ni<st.N && mi>=0 && mi<M();
+  return {x, y, n, m, ni, mi, inside};
+}
+
+/* ------------------------------------------------------------------ *
+ *  Canvas helpers
+ * ------------------------------------------------------------------ */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+function line(a, b, col, lw, dash){
+  ctx.save(); ctx.beginPath();
+  ctx.setLineDash(dash || []);
+  ctx.strokeStyle = col; ctx.lineWidth = lw || 1;
+  ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.restore();
+}
+function poly(pts, fill, stroke, lw){
+  ctx.beginPath();
+  pts.forEach((q,i)=> i ? ctx.lineTo(q[0],q[1]) : ctx.moveTo(q[0],q[1]));
+  ctx.closePath();
+  if(fill){ ctx.fillStyle = fill; ctx.fill(); }
+  if(stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = lw||1; ctx.stroke(); }
+}
+function head(x, y, ang, sz, col){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-sz, sz*0.38); ctx.lineTo(-sz*0.78,0); ctx.lineTo(-sz, -sz*0.38);
+  ctx.closePath(); ctx.fillStyle = col; ctx.fill(); ctx.restore();
+}
+function arrow(a, b, col, lw, sz, dash){
+  const ang = Math.atan2(b[1]-a[1], b[0]-a[0]);
+  const s = sz || 11;
+  line(a, [b[0]-Math.cos(ang)*s*0.7, b[1]-Math.sin(ang)*s*0.7], col, lw||1.6, dash);
+  head(b[0], b[1], ang, s, col);
+}
+function darrow(a, b, col, lw, sz){           // double headed
+  const ang = Math.atan2(b[1]-a[1], b[0]-a[0]); const s = sz||11;
+  line([a[0]+Math.cos(ang)*s*0.7, a[1]+Math.sin(ang)*s*0.7],
+       [b[0]-Math.cos(ang)*s*0.7, b[1]-Math.sin(ang)*s*0.7], col, lw||1.6);
+  head(b[0], b[1], ang, s, col); head(a[0], a[1], ang+Math.PI, s, col);
+}
+function txt(s, x, y, size, opt){
+  opt = opt || {};
+  ctx.save();
+  ctx.font = (opt.style||'') + ' ' + size + 'px ' + SERIF;
+  ctx.fillStyle = opt.col || '#15181a';
+  ctx.textAlign = opt.align || 'left';
+  ctx.textBaseline = opt.base || 'alphabetic';
+  if(opt.rot){ ctx.translate(x,y); ctx.rotate(opt.rot); x = 0; y = 0; }
+  if(opt.halo){ ctx.strokeStyle = '#fff'; ctx.lineWidth = 3.4; ctx.lineJoin = 'round';
+                ctx.strokeText(s, x, y); }
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
+function txtSub(main, sub, x, y, size, opt){   // e.g. X_c
+  opt = opt || {};
+  ctx.save();
+  ctx.font = (opt.style||'') + ' ' + size + 'px ' + SERIF;
+  ctx.fillStyle = opt.col || '#15181a';
+  ctx.textBaseline = 'alphabetic';
+  let x0 = x;
+  const wm = ctx.measureText(main).width;
+  const ws = (function(){ ctx.save(); ctx.font = (size*0.66)+'px '+SERIF;
+                          const v = ctx.measureText(sub).width; ctx.restore(); return v; })();
+  if(opt.align === 'center') x0 = x - (wm+ws)/2;
+  if(opt.align === 'right')  x0 = x - (wm+ws);
+  ctx.textAlign = 'left';
+  ctx.fillText(main, x0, y);
+  ctx.font = (size*0.66)+'px '+SERIF;
+  ctx.fillText(sub, x0+wm+0.5, y + size*0.20);
+  ctx.restore();
+}
+function chip(s, x, y, col, align){            // small boxed readout
+  ctx.save();
+  ctx.font = '13.5px ' + SERIF;
+  const w = ctx.measureText(s).width + 12, h = 20;
+  let x0 = x; if(align==='center') x0 = x-w/2; if(align==='right') x0 = x-w;
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.strokeStyle = col; ctx.lineWidth = 1.1;
+  const r = 5;
+  ctx.beginPath();
+  ctx.moveTo(x0+r, y); ctx.arcTo(x0+w, y, x0+w, y+h, r); ctx.arcTo(x0+w, y+h, x0, y+h, r);
+  ctx.arcTo(x0, y+h, x0, y, r); ctx.arcTo(x0, y, x0+w, y, r); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = col; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.fillText(s, x0+6, y+h/2+0.5);
+  ctx.restore();
+}
+function dot(q, r, fill, stroke, lw){
+  ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, 6.2832);
+  ctx.fillStyle = fill; ctx.fill();
+  if(stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = lw||1.4; ctx.stroke(); }
+}
+
+/* sensor helpers: image coords (mm) -> 3D point on the physical sensor */
+const sens3 = (x, y) => [-x, -y, -st.f];
+const pxCorner = (i, j) => { const p = psz(); return pr(-(i-ox())*p, -(oy()-j)*p, -st.f); };
+
+/* ------------------------------------------------------------------ *
+ *  Sub-pixel zoom: the image grid (n right, m down) around the hit
+ * ------------------------------------------------------------------ */
+function zoomInset(pj){
+  const IX = 938, IY = 490, IW = 212, IH = 204;
+  const N = st.N, Mr = M(), p = psz(), f = st.f;
+  const Kx = Math.min(5, N), Ky = Math.min(5, Mr);
+
+  ctx.save();
+  ctx.fillStyle = '#fbfcfc'; ctx.strokeStyle = '#d3d9dc'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  const r = 8;
+  ctx.moveTo(IX+r,IY); ctx.arcTo(IX+IW,IY,IX+IW,IY+IH,r); ctx.arcTo(IX+IW,IY+IH,IX,IY+IH,r);
+  ctx.arcTo(IX,IY+IH,IX,IY,r); ctx.arcTo(IX,IY,IX+IW,IY,r); ctx.closePath();
+  ctx.fill(); ctx.stroke(); ctx.restore();
+
+  txt('Zoom on the orange pixel', IX+12, IY+18, 13.5, {col:'#41525a'});
+  txt('n across, m down;  1 cell = ' + p.toFixed(3) + ' mm', IX+12, IY+33, 11,
+      {col:'#7c878c', style:'italic'});
+
+  const cs = Math.min(130/Kx, 130/Ky);
+  const gx = IX + 40, gy = IY + 54;
+  const nc = Math.max(0, Math.min(N-1, Math.floor(pj.n)));
+  const mc = Math.max(0, Math.min(Mr-1, Math.floor(pj.m)));
+  const i0 = Math.max(0, Math.min(N-Kx, nc - (Kx>>1)));
+  const j0 = Math.max(0, Math.min(Mr-Ky, mc - (Ky>>1)));
+
+  for(let j=0;j<Ky;j++) for(let i=0;i<Kx;i++){
+    const ii = i0+i, jj = j0+j;
+    const xc = (ii+0.5-ox())*p, yc = (oy()-jj-0.5)*p;
+    const c = sceneColor(xc*Zh/f, yc*Zh/f) || '#ffffff';
+    ctx.fillStyle = c; ctx.fillRect(gx+i*cs, gy+j*cs, cs, cs);
+    ctx.strokeStyle = '#9fb4be'; ctx.lineWidth = 0.9;
+    ctx.strokeRect(gx+i*cs, gy+j*cs, cs, cs);
+  }
+  /* index labels */
+  for(let i=0;i<Kx;i++) txt(String(i0+i), gx+(i+0.5)*cs, gy-5, 10.5, {col:'#7c878c', align:'center'});
+  for(let j=0;j<Ky;j++) txt(String(j0+j), gx-6, gy+(j+0.5)*cs+4, 10.5, {col:'#7c878c', align:'right'});
+
+  /* the snapped cell + the exact hit inside it */
+  ctx.save();
+  ctx.beginPath(); ctx.rect(gx-1, gy-1, Kx*cs+2, Ky*cs+2); ctx.clip();
+  if(pj.inside){
+    const cx = gx + (pj.ni - i0)*cs, cy = gy + (pj.mi - j0)*cs;
+    ctx.fillStyle = 'rgba(239,108,18,0.28)'; ctx.fillRect(cx, cy, cs, cs);
+    ctx.strokeStyle = '#ef6c12'; ctx.lineWidth = 2.4; ctx.strokeRect(cx, cy, cs, cs);
+    const hx2 = gx + (pj.n - i0)*cs, hy2 = gy + (pj.m - j0)*cs;
+    line([hx2,hy2], [cx+cs/2, cy+cs/2], '#ef6c12', 1.3, [3,3]);
+    dot([cx+cs/2, cy+cs/2], 3.4, '#ef6c12', '#7a3405', 1.1);
+    dot([hx2,hy2], 5.0, '#2bb8ec', '#0d3c52', 1.4);
+  } else {
+    const hx2 = gx + (pj.n - i0)*cs, hy2 = gy + (pj.m - j0)*cs;
+    dot([hx2,hy2], 5.0, '#2bb8ec', '#0d3c52', 1.4);
+  }
+  ctx.restore();
+
+  const err = pj.inside ? Math.hypot(pj.n-(pj.ni+0.5), pj.m-(pj.mi+0.5))*p : NaN;
+  txt(pj.inside ? 'quantisation error  Δ = ' + err.toFixed(3) + ' mm'
+                : 'the hit lies outside the sensor',
+      IX+12, IY+IH-9, 11.5, {col: pj.inside ? '#b3500c' : '#b3341a'});
+}
+
+/* ------------------------------------------------------------------ *
+ *  Drawing
+ * ------------------------------------------------------------------ */
+function draw(){
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if(cv.width !== CW*dpr){ cv.width = CW*dpr; cv.height = CH*dpr; }
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,CW,CH);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,CW,CH);
+
+  const f = st.f, p = psz(), N = st.N, Mr = M(), h = sh(), W = st.w;
+  const pj = project();
+  const O = pr(0,0,0);
+
+  /* ---------- 1. scene billboard ---------- */
+  const q4 = (x0,y0,x1,y1) => [pr(x0,y0,Zh), pr(x1,y0,Zh), pr(x1,y1,Zh), pr(x0,y1,Zh)];
+  poly(q4(WALL.x0,WALL.y0,WALL.x1,WALL.y1), COL.wall, null);
+  poly(ROOF.map(q=>pr(q[0],q[1],Zh)), COL.roof, null);
+  WINS.forEach(q => poly(q4(q[0],q[1],q[2],q[3]), COL.win, null));
+  poly(q4(WALL.x0,WALL.y0,WALL.x1,WALL.y1), null, 'rgba(90,120,90,.35)', 1);
+
+  /* ---------- 2. virtual image plane (same physical size as the sensor) ---------- */
+  const vp = [pr(-W/2,-h/2,f), pr(W/2,-h/2,f), pr(W/2,h/2,f), pr(-W/2,h/2,f)];
+  poly(vp, 'rgba(216,226,230,0.78)', '#6d8189', 1.6);
+
+  /* optional faint pixel grid on the virtual plane */
+  ctx.save(); ctx.globalAlpha = 0.34;
+  for(let i=0;i<=N;i++){ const x=(i-ox())*p; line(pr(x,-h/2,f), pr(x,h/2,f), '#9fb2ba', 0.6); }
+  for(let j=0;j<=Mr;j++){ const y=(oy()-j)*p; line(pr(-W/2,y,f), pr(W/2,y,f), '#9fb2ba', 0.6); }
+  ctx.restore();
+
+  /* local x / y axes on the virtual image plane */
+  const gA = '#12b312', aLen = Math.min(W,h)*0.46;
+  arrow(pr(-aLen*0.75,0,f), pr(aLen,0,f), gA, 2.2, 11);
+  arrow(pr(0,-aLen*0.75,f), pr(0,aLen,f), gA, 2.2, 11);
+  (function(){                                   // right-angle tick at the principal point
+    const a = 0.16*aLen;
+    const c0 = pr(a,0,f), c1 = pr(a,a,f), c2 = pr(0,a,f);
+    line(c0,c1,'#3a4245',1.2); line(c1,c2,'#3a4245',1.2);
+  })();
+  txt('x', pr(aLen,0,f)[0]+7, pr(aLen,0,f)[1]+7, 23, {style:'italic'});
+  txt('y', pr(0,aLen,f)[0]-19, pr(0,aLen,f)[1]-3, 23, {style:'italic'});
+  txt('Virtual image plane', vp[0][0]+16, vp[0][1]+30, 17, {rot:OBL, col:'#3a4245'});
+
+  /* ---------- 3. physical sensor: M x N pixel grid at Zc = -f ---------- */
+  /* rasterise the scene onto the grid: each pixel samples the ray through its centre */
+  for(let j=0;j<Mr;j++) for(let i=0;i<N;i++){
+    const xc = (i+0.5-ox())*p, yc = (oy()-j-0.5)*p;
+    const c = sceneColor(xc*Zh/f, yc*Zh/f);
+    if(!c) continue;
+    poly([pxCorner(i,j), pxCorner(i+1,j), pxCorner(i+1,j+1), pxCorner(i,j+1)], c, null);
+  }
+  ctx.save(); ctx.lineWidth = 0.8; ctx.strokeStyle = '#7f9fad';
+  ctx.beginPath();
+  for(let i=0;i<=N;i++){ const a=pxCorner(i,0), b=pxCorner(i,Mr); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); }
+  for(let j=0;j<=Mr;j++){ const a=pxCorner(0,j), b=pxCorner(N,j); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); }
+  ctx.stroke(); ctx.restore();
+  poly([pxCorner(0,0),pxCorner(N,0),pxCorner(N,Mr),pxCorner(0,Mr)], null, '#4d6a78', 1.6);
+
+  /* sensor extent annotations: N pixels (top edge), M pixels (left edge), w (bottom edge) */
+  const cTL = pr(-W/2, h/2,-f), cTR = pr(W/2, h/2,-f), cBL = pr(-W/2,-h/2,-f), cBR = pr(W/2,-h/2,-f);
+  /* screen positions: +X is up-right, so "top edge" of the drawn grid is the y = +h/2 edge */
+  const upTop = [(cTR[0]-cTL[0]), (cTR[1]-cTL[1])];
+  const L = Math.hypot(upTop[0],upTop[1]);
+  txt('N pixels', (cTL[0]+cTR[0])/2 - 6, (cTL[1]+cTR[1])/2 - 12, 18, {rot:OBL, align:'center', style:'italic'});
+  txt('M pixels', cTL[0]-16, (cTL[1]+cBL[1])/2, 18, {rot:-Math.PI/2, align:'center', style:'italic'});
+  txt('Image plane / sensor', cTL[0]-30, cTL[1]-Math.max(46, L*0.42)-28, 19);
+  /* w dimension under the bottom edge */
+  const off = [-10, 26];
+  const wA = [cBL[0]+off[0], cBL[1]+off[1]], wB = [cBR[0]+off[0], cBR[1]+off[1]];
+  darrow(wA, wB, '#15181a', 2.0, 12);
+  txt('w', (wA[0]+wB[0])/2 - 4, (wA[1]+wB[1])/2 + 22, 21, {style:'italic', align:'center'});
+
+  /* ---------- 4. camera axes ---------- */
+  const axCol = '#15181a';
+  line(pr(0,0,-f), O, axCol, 2.0);                      // short stub behind the centre
+  arrow(O, pr(0,0,128), axCol, 2.0, 14);                  // Zc : optical axis
+  txtSub('Z','c', pr(0,0,128)[0]-4, pr(0,0,128)[1]+34, 25, {});
+  arrow(pr(0,-9,0), pr(0,50,0), axCol, 2.0, 14);          // Yc
+  txtSub('Y','c', pr(0,50,0)[0]+9, pr(0,50,0)[1]-8, 25, {});
+  arrow(O, pr(26,0,0), axCol, 2.0, 14);                   // Xc
+  txtSub('X','c', pr(26,0,0)[0]-30, pr(26,0,0)[1]-12, 25, {});
+  txt('Optical /',        1156, 300, 21, {align:'right', col:'#15181a'});
+  txt('principal axis',   1156, 328, 21, {align:'right', col:'#15181a'});
+
+  /* ---------- 5. focal length dimension ---------- */
+  const yDim = 672, pp = pr(0,0,-f);
+  line([pp[0], pp[1]+8], [pp[0], yDim+10], '#8b969b', 1);
+  line([O[0], O[1]+8],  [O[0],  yDim+10], '#8b969b', 1);
+  darrow([pp[0], yDim], [O[0], yDim], '#15181a', 2.0, 12);
+  txt('f', (pp[0]+O[0])/2, yDim+34, 25, {style:'italic', align:'center'});
+
+  /* ---------- 6. the ray P -> camera centre -> sensor ---------- */
+  const P3 = pr(st.Px, st.Py, st.Pz);
+  const V3 = pr(pj.x, pj.y, f);                 // hit on the virtual image plane
+  const s3 = sens3(pj.x, pj.y), Sh3 = pr(s3[0], s3[1], s3[2]);
+  /* depth guides */
+  line(P3, pr(st.Px,0,st.Pz), 'rgba(90,100,105,.3)', 1, [3,4]);
+  line(pr(st.Px,0,st.Pz), pr(0,0,st.Pz), 'rgba(90,100,105,.3)', 1, [3,4]);
+  line(pr(0,-2.2,st.Pz), pr(0,2.2,st.Pz), '#6b7478', 1.4);
+  line(P3, O, '#15181a', 1.6, [8,6]);
+  line(O, Sh3, '#15181a', 1.6, [8,6]);
+
+  /* ---------- 7. quantisation: snapped pixel on the sensor ---------- */
+  let cellOutline = null;
+  if(pj.inside){
+    const cpts = [pxCorner(pj.ni,pj.mi), pxCorner(pj.ni+1,pj.mi),
+                  pxCorner(pj.ni+1,pj.mi+1), pxCorner(pj.ni,pj.mi+1)];
+    poly(cpts, 'rgba(239,108,18,0.30)', '#ef6c12', 1.6);
+    /* an enlarged copy, stroked last so it stays visible around the marker dots */
+    const gxs = (cpts[0][0]+cpts[1][0]+cpts[2][0]+cpts[3][0])/4;
+    const gys = (cpts[0][1]+cpts[1][1]+cpts[2][1]+cpts[3][1])/4;
+    cellOutline = cpts.map(q => [gxs + (q[0]-gxs)*1.5, gys + (q[1]-gys)*1.5]);
+    const xc = (pj.ni+0.5-ox())*p, yc = (oy()-pj.mi-0.5)*p;
+    const cc = pr(-xc, -yc, -st.f);
+    line(Sh3, cc, '#ef6c12', 1.4, [3,3]);
+    dot(cc, 3.2, '#ef6c12', '#7a3405', 1.1);
+  }
+
+  /* principal point on the sensor */
+  dot(pr(0,0,-f), 4.6, '#15181a', null);
+
+  /* pixel-index origin and the principal point offset (ox, oy) */
+  if(st.mode === 'px'){
+    const A = pxCorner(0,0), B = pr(0, -oy()*p, -f), C = pr(0,0,-f);
+    arrow(A, B, '#8a2be2', 1.8, 10);
+    arrow(B, C, '#8a2be2', 1.8, 10);
+    txtSub('o','x', (A[0]+B[0])/2 - 2, (A[1]+B[1])/2 + 24, 18,
+           {align:'center', col:'#6f1fb8', style:'italic', halo:true});
+    txtSub('o','y', (B[0]+C[0])/2 + 10, (B[1]+C[1])/2 + 6, 18,
+           {align:'left', col:'#6f1fb8', style:'italic', halo:true});
+    dot(A, 3.6, '#8a2be2', null);
+    txt('n = m = 0', A[0]+10, A[1]-7, 13.5, {col:'#6f1fb8', halo:true});
+  }
+
+  /* ---------- 8. the three points ---------- */
+  dot(Sh3, 5.2, '#2bb8ec', '#0d3c52', 1.5);
+  dot(V3,  5.6, '#2bb8ec', '#0d3c52', 1.5);
+  dot(O,   8.5, '#15181a', null);
+  dot(P3,  7.0, '#2bb8ec', '#0d3c52', 1.8);
+  if(cellOutline) poly(cellOutline, null, '#ef6c12', 2.6);
+  txt('P', P3[0]-6, P3[1]-14, 25, {style:'bold', align:'center', halo:true});
+
+  /* camera-centre callout */
+  arrow([O[0]-52, O[1]+78], [O[0]-9, O[1]+13], '#6b7478', 1.6, 11);
+  txt('Camera',  O[0]-54, O[1]+104, 21, {align:'center'});
+  txt('centre',  O[0]-54, O[1]+130, 21, {align:'center'});
+
+  /* ---------- 9. sub-pixel zoom inset (bottom right) ---------- */
+  zoomInset(pj);
+
+  /* ---------- 10. live readout of the whole formation chain (top-left) ---------- */
+  const fx1 = v => (v>=0?'':'−') + Math.abs(v).toFixed(2);
+  const hx = 44; let hy = 78;
+  const swDot = c => { dot([hx+7, hy-5], 5.2, c, '#0d3c52', 1.2); };
+  const capt  = s => { txt(s, hx+22, hy, 12.5, {col:'#7c878c', style:'italic'}); hy += 19; };
+  const row   = (s, c) => { txt(s, hx+22, hy, 15.5, {col:c}); hy += 26; };
+
+  swDot('#2bb8ec');
+  row('P = (' + st.Px.toFixed(1) + ', ' + st.Py.toFixed(1) + ', ' + st.Pz.toFixed(1) + ') mm', '#25313a');
+  capt('↓  project:  × f / Z');
+  swDot('#2bb8ec');
+  if(st.mode === 'mm')
+    row('(x, y) = (' + fx1(pj.x) + ', ' + fx1(pj.y) + ') mm', '#0d7fae');
+  else if(st.mode === 'cen')
+    row('(x/s, y/s) = (' + fx1(pj.x/p) + ', ' + fx1(pj.y/p) + ') px', '#0d7fae');
+  else
+    row('(n, m) = (' + fx1(pj.n) + ', ' + fx1(pj.m) + ')', '#0d7fae');
+  if(st.mode !== 'px'){
+    capt('↓  ÷ s,  + (oₓ, oᵧ)');
+    swDot('#2bb8ec');
+    row('(n, m) = (' + fx1(pj.n) + ', ' + fx1(pj.m) + ')', '#0d7fae');
+  }
+  capt('↓  floor to an integer index');
+  ctx.fillStyle = 'rgba(239,108,18,0.34)'; ctx.fillRect(hx+1, hy-11, 12, 12);
+  ctx.strokeStyle = '#ef6c12'; ctx.lineWidth = 1.6; ctx.strokeRect(hx+1, hy-11, 12, 12);
+  row(pj.inside ? 'pixel (' + pj.ni + ', ' + pj.mi + ')'
+                : 'the ray misses the sensor',
+      pj.inside ? '#b3500c' : '#b3341a');
+}
+
+/* ------------------------------------------------------------------ *
+ *  Panel
+ * ------------------------------------------------------------------ */
+const $ = id => document.getElementById(id);
+const deg = r => (r*180/Math.PI);
+
+function sync(){
+  const p = psz(), Mr = M(), f = st.f, pj = project();
+  $('vPx').textContent = st.Px.toFixed(1) + ' mm';
+  $('vPy').textContent = st.Py.toFixed(1) + ' mm';
+  $('vPz').textContent = st.Pz.toFixed(1) + ' mm';
+  $('vf').textContent  = f.toFixed(1) + ' mm';
+  $('vw').textContent  = st.w.toFixed(1) + ' mm';
+  $('vN').textContent  = st.N + ' × ' + Mr + ' px';
+  $('roSize').textContent = st.w.toFixed(1) + ' × ' + sh().toFixed(1) + ' mm';
+  $('roPix').textContent  = p.toFixed(3) + ' mm';
+  $('roFov').textContent  = deg(2*Math.atan(st.w/(2*f))).toFixed(1) + '° × ' +
+                            deg(2*Math.atan(sh()/(2*f))).toFixed(1) + '°';
+  const fx = f/p;
+  $('roFx').textContent = fx.toFixed(2) + ' px';
+  $('roPP').textContent = '(' + ox().toFixed(2) + ', ' + oy().toFixed(2) + ') px';
+  $('kgrid').innerHTML =
+    '<span>' + fx.toFixed(2) + '</span><span class="z">0</span><span>' + ox().toFixed(2) + '</span>' +
+    '<span class="z">0</span><span>' + fx.toFixed(2) + '</span><span>' + oy().toFixed(2) + '</span>' +
+    '<span class="z">0</span><span class="z">0</span><span class="z">1</span>';
+
+  const n = v => (v<0?'−':'') + Math.abs(v).toFixed(2);
+  let html = '';
+  if(st.mode === 'mm'){
+    html =
+      '<i>x</i> = <i>f</i>&middot;X<sub>c</sub>/Z<sub>c</sub> = ' + f.toFixed(1) + '&middot;(' + n(st.Px) + ')/' +
+        st.Pz.toFixed(1) + ' = <b>' + n(pj.x) + ' mm</b><br>' +
+      '<i>y</i> = <i>f</i>&middot;Y<sub>c</sub>/Z<sub>c</sub> = ' + f.toFixed(1) + '&middot;(' + n(st.Py) + ')/' +
+        st.Pz.toFixed(1) + ' = <b>' + n(pj.y) + ' mm</b><br>' +
+      '<span style="color:#5d6a70">Metric position on the virtual image plane, measured from the principal point. ' +
+      'No knowledge of pixels yet.</span>';
+  } else if(st.mode === 'cen'){
+    html =
+      '<i>x</i>/<i>s</i> = ' + n(pj.x) + ' / ' + p.toFixed(3) + ' = <b>' + n(pj.x/p) + ' px</b><br>' +
+      '<i>y</i>/<i>s</i> = ' + n(pj.y) + ' / ' + p.toFixed(3) + ' = <b>' + n(pj.y/p) + ' px</b><br>' +
+      '<span style="color:#5d6a70">Same point, now counted in pixel widths &mdash; but still centred on the ' +
+      'principal point, and <i>y</i> still points up.</span>';
+  } else {
+    html =
+      '<i>n</i> = <i>x</i>/<i>s</i> + o<sub>x</sub> = ' + n(pj.x/p) + ' + ' + ox().toFixed(2) +
+        ' = <b>' + n(pj.n) + '</b><br>' +
+      '<i>m</i> = o<sub>y</sub> &minus; <i>y</i>/<i>s</i> = ' + oy().toFixed(2) + ' &minus; (' + n(pj.y/p) +
+        ') = <b>' + n(pj.m) + '</b><br>' +
+      (pj.inside
+        ? 'snapped pixel &nbsp;(&lfloor;<i>n</i>&rfloor;, &lfloor;<i>m</i>&rfloor;) = <b class="sn">(' +
+          pj.ni + ', ' + pj.mi + ')</b>, error ' +
+          (Math.hypot(pj.n-(pj.ni+0.5), pj.m-(pj.mi+0.5))*p).toFixed(3) + ' mm'
+        : '<b style="color:#b3341a">the ray misses the sensor</b>') +
+      '<br><span style="color:#5d6a70">The offset <span class="em">(o<sub>x</sub>, o<sub>y</sub>) = (' +
+      ox().toFixed(2) + ', ' + oy().toFixed(2) + ')</span> moves the origin to the image corner; ' +
+      'flooring turns the continuous coordinates into integer indices.</span>';
+  }
+  $('eqBox').innerHTML = html;
+
+  const wb = $('warnBox');
+  if(!pj.inside && st.mode !== 'px'){
+    wb.style.display = 'block';
+    wb.textContent = 'P projects outside the ' + st.N + ' × ' + Mr + ' sensor — no pixel records it.';
+  } else wb.style.display = 'none';
+
+  document.querySelectorAll('#modes label').forEach(l =>
+    l.classList.toggle('on', l.dataset.m === st.mode));
+
+  $('sPx').value = st.Px; $('sPy').value = st.Py; $('sPz').value = st.Pz;
+}
+function refresh(){ sync(); draw(); }
+
+/* sliders */
+const bind = (id, key, fn) => $(id).addEventListener('input', e => {
+  st[key] = parseFloat(e.target.value); if(fn) fn(); refresh();
+});
+bind('sPx','Px'); bind('sPy','Py'); bind('sPz','Pz');
+bind('sf','f'); bind('sw','w');
+$('sN').addEventListener('input', e => { st.N = parseInt(e.target.value,10); refresh(); });
+document.querySelectorAll('input[name=mode]').forEach(r =>
+  r.addEventListener('change', e => { st.mode = e.target.value; refresh(); }));
+
+/* ---- dragging P ---- */
+let drag = false;
+function toCanvas(e){
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * (CW/r.width), (e.clientY - r.top) * (CH/r.height)];
+}
+function nearP(sx, sy){
+  const q = pr(st.Px, st.Py, st.Pz);
+  return Math.hypot(q[0]-sx, q[1]-sy) < 26;
+}
+cv.addEventListener('pointerdown', e => {
+  const [sx,sy] = toCanvas(e);
+  if(nearP(sx,sy)){ drag = true; cv.setPointerCapture(e.pointerId); cv.style.cursor='grabbing'; e.preventDefault(); }
+});
+cv.addEventListener('pointermove', e => {
+  const [sx,sy] = toCanvas(e);
+  if(!drag){ cv.style.cursor = nearP(sx,sy) ? 'grab' : 'default'; return; }
+  const [X,Y] = unpr(sx, sy, st.Pz);
+  st.Px = Math.max(-45, Math.min(45, X));
+  st.Py = Math.max(-40, Math.min(40, Y));
+  refresh();
+});
+['pointerup','pointercancel','pointerleave'].forEach(k =>
+  cv.addEventListener(k, () => { drag = false; cv.style.cursor='default'; }));
+
+window.addEventListener('resize', draw);
+$('sf').value = st.f; $('sw').value = st.w; $('sN').value = st.N;
+refresh();
+</script>
+</body>
+</html>

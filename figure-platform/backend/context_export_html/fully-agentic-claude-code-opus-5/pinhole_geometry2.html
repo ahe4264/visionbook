@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinhole Camera Geometry</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#15181d; --muted:#5d6570;
+    --line:#d8dce2; --accent:#1b6fd0; --green:#00b300; --red:#e60000; --blue:#1a3fd0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:15px; line-height:1.5; padding:18px 16px 40px;
+  }
+  .wrap{max-width:1500px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:-0.01em}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 16px;max-width:95ch}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+  .figure{display:flex;gap:6px;align-items:stretch;flex-wrap:wrap}
+  .panel{flex:1 1 0;min-width:340px}
+  .panel.a{flex-grow:1320;flex-basis:600px}
+  .panel.b{flex-grow:900;flex-basis:400px}
+  svg{display:block;width:100%;height:auto;background:#fff;border-radius:8px;
+      font-family:"Times New Roman",Times,Georgia,serif;
+      -webkit-user-select:none;user-select:none;touch-action:none}
+  .controls{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px}
+  .cgroup{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex:1 1 230px;min-width:220px}
+  .cgroup h3{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .row{display:flex;align-items:center;gap:10px;margin:7px 0}
+  .row label{font-size:13px;min-width:88px;color:var(--muted)}
+  .row input[type=range]{flex:1;min-width:80px;accent-color:var(--accent)}
+  .val{font-variant-numeric:tabular-nums;font-size:13px;min-width:74px;text-align:right;font-weight:600}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{flex:1;border:0;background:#fff;padding:7px 4px;font-size:12.5px;cursor:pointer;color:var(--muted);font-weight:600}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed=true]{background:var(--accent);color:#fff}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;font-weight:600;color:var(--ink)}
+  .btn:hover{background:#f0f3f7}
+  .chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+  .readout{margin-top:14px;display:flex;gap:14px;flex-wrap:wrap}
+  .eq{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;flex:1 1 320px;min-width:290px}
+  .eq h3{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .eq p{margin:4px 0;font-family:"Times New Roman",Times,serif;font-size:16.5px}
+  .eq .num{font-variant-numeric:tabular-nums}
+  .note{color:var(--muted);font-size:12.5px;margin-top:8px;line-height:1.45}
+  .warn{color:#b04a00;font-weight:600}
+  i.m{font-style:italic}
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#14161a;--card:#1d2026;--ink:#e8eaed;--muted:#9aa3ae;--line:#2e333b}
+    .seg button{background:#1d2026}
+    .btn{background:#1d2026;color:var(--ink)}
+    .btn:hover{background:#262b33}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pinhole camera geometry — world, camera and image coordinates</h1>
+  <p class="sub">
+    (a) A scene point <b>P</b> projects through the pinhole at the world origin. The physical projection plane sits a
+    distance <i class="m">f</i> <em>behind</em> the pinhole and records an inverted image; the virtual camera plane sits
+    a distance <i class="m">f</i> <em>in front</em> and carries the same image upright.
+    (b) The virtual camera plane carries two 2-D frames at once: continuous camera coordinates
+    (<i class="m">x</i>, <i class="m">y</i>) centred on the principal point, and discrete pixel indices
+    (<i class="m">n</i>, <i class="m">m</i>) counted from the image corner. Drag <b>P</b> in panel (a).
+  </p>
+
+  <div class="card">
+    <div class="figure">
+      <div class="panel a"><svg id="svgA" viewBox="0 0 1320 830" role="img" aria-label="Panel a: 3D pinhole projection geometry"></svg></div>
+      <div class="panel b"><svg id="svgB" viewBox="0 0 900 830" role="img" aria-label="Panel b: image plane coordinate systems"></svg></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="cgroup">
+      <h3>Camera</h3>
+      <div class="row"><label for="sf">Focal length <i class="m">f</i></label><input id="sf" type="range" min="12" max="28" step="0.1" value="20"><span class="val" id="vf">20.0 mm</span></div>
+      <div class="row"><label for="sz">Depth <i class="m">Z</i><sub>P</sub></label><input id="sz" type="range" min="30" max="60" step="0.2" value="40"><span class="val" id="vz">40.0 mm</span></div>
+    </div>
+    <div class="cgroup">
+      <h3>Scene point P (drag in panel a)</h3>
+      <div class="row"><label for="sx"><i class="m">X</i><sub>P</sub></label><input id="sx" type="range" min="-18" max="22" step="0.1" value="13.7"><span class="val" id="vx">13.7 mm</span></div>
+      <div class="row"><label for="sy"><i class="m">Y</i><sub>P</sub></label><input id="sy" type="range" min="-14" max="16" step="0.1" value="7.5"><span class="val" id="vy">7.5 mm</span></div>
+    </div>
+    <div class="cgroup">
+      <h3>Principal point (pixel origin offset)</h3>
+      <div class="row"><label for="sn0"><i class="m">n</i><sub>0</sub></label><input id="sn0" type="range" min="260" max="380" step="1" value="320"><span class="val" id="vn0">320 px</span></div>
+      <div class="row"><label for="sm0"><i class="m">m</i><sub>0</sub></label><input id="sm0" type="range" min="180" max="300" step="1" value="240"><span class="val" id="vm0">240 px</span></div>
+    </div>
+    <div class="cgroup">
+      <h3>Projection convention</h3>
+      <div class="seg" id="seg">
+        <button data-mode="both" aria-pressed="true">Both planes</button>
+        <button data-mode="virtual" aria-pressed="false">Virtual (upright)</button>
+        <button data-mode="physical" aria-pressed="false">Physical (inverted)</button>
+      </div>
+      <div class="row" style="margin-top:10px;justify-content:space-between">
+        <label class="chk"><input type="checkbox" id="grid"> pixel grid</label>
+        <button class="btn" id="reset">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div class="eq">
+      <h3>Perspective projection (virtual plane)</h3>
+      <p><i class="m">x</i> = <i class="m">f</i>&thinsp;<i class="m">X</i><sub>P</sub>&thinsp;/&thinsp;<i class="m">Z</i><sub>P</sub> = <span class="num" id="eqx"></span></p>
+      <p><i class="m">y</i> = <i class="m">f</i>&thinsp;<i class="m">Y</i><sub>P</sub>&thinsp;/&thinsp;<i class="m">Z</i><sub>P</sub> = <span class="num" id="eqy"></span></p>
+      <div class="note" id="noteA"></div>
+    </div>
+    <div class="eq">
+      <h3>Camera &rarr; image (pixel) coordinates</h3>
+      <p><i class="m">n</i> = <i class="m">n</i><sub>0</sub> &minus; <i class="m">x</i>&thinsp;/&thinsp;&delta; = <span class="num" id="eqn"></span></p>
+      <p><i class="m">m</i> = <i class="m">m</i><sub>0</sub> + <i class="m">y</i>&thinsp;/&thinsp;&delta; = <span class="num" id="eqm"></span></p>
+      <div class="note">&delta; = 0.0375&nbsp;mm/pixel &middot; sensor 24.0 &times; 18.0&nbsp;mm = 640 &times; 480&nbsp;px.
+      The signs follow the axes drawn in panel (b): <i class="m">n</i> increases opposite to <i class="m">x</i>, <i class="m">m</i> increases with <i class="m">y</i>.
+      Without the principal-point offset (<i class="m">n</i><sub>0</sub>, <i class="m">m</i><sub>0</sub>) the two frames disagree by half an image.</div>
+    </div>
+    <div class="eq">
+      <h3>Physical sensor (projection plane)</h3>
+      <p>(<i class="m">x</i>&prime;, <i class="m">y</i>&prime;) = (&minus;<i class="m">x</i>, &minus;<i class="m">y</i>) = <span class="num" id="eqp"></span></p>
+      <p>pixel read-out = <span class="num" id="eqpn"></span></p>
+      <div class="note" id="noteC"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------------- constants ---------------- */
+const S  = 11;          // screen px per millimetre (world scale in panel a)
+const AX = 0.58, AY = 0.67;   // screen direction of the world X axis (foreshortened)
+const O  = {x:430, y:450};    // pinhole (world origin) on screen, panel (a)
+
+const WPX = 640, HPX = 480;   // sensor resolution
+const PITCH = 0.0375;         // mm per pixel  -> sensor 24 x 18 mm
+
+// panel (b) image rectangle (1 svg unit = 1 pixel)
+const RX = 140, RY = 130, RW = WPX, RH = HPX;
+const RR = RX + RW, RB = RY + RH;
+
+const C = {
+  ink:"#000", gray:"#8c8c8c", light:"#c9c9c9",
+  green:"#00c000", red:"#f40000", blue:"#1a3fd0",
+  dot:"#52d3ef", planeV:"#e6efef", planeP:"#ababab"
+};
+
+const DEF = {f:20, Xp:13.7, Yp:7.5, Zp:40, n0:320, m0:240, mode:"both", grid:false};
+let st = Object.assign({}, DEF);
+
+/* ---------------- geometry ---------------- */
+// world -> panel (a) screen
+function P3(X,Y,Z){ return [ O.x + S*(Z + AX*X), O.y - S*(Y + AY*X) ]; }
+// panel (a) screen -> world X,Y at fixed Z
+function unP3(px,py,Z){
+  const X = ((px - O.x)/S - Z)/AX;
+  const Y = (O.y - py)/S - AY*X;
+  return [X,Y];
+}
+
+function geom(){
+  const f = st.f, Zp = st.Zp;
+  const x = f*st.Xp/Zp, y = f*st.Yp/Zp;           // camera coords on the virtual plane (mm)
+  const n = st.n0 - x/PITCH, m = st.m0 + y/PITCH; // pixel indices
+  const nP = st.n0 + x/PITCH, mP = st.m0 - y/PITCH; // same point read off the physical sensor
+  return {
+    x:x, y:y, n:n, m:m, nP:nP, mP:mP,
+    xmin:(st.n0 - WPX)*PITCH, xmax:st.n0*PITCH,
+    ymin:-st.m0*PITCH,        ymax:(HPX - st.m0)*PITCH,
+    onSensor:(n>=0 && n<=WPX && m>=0 && m<=HPX)
+  };
+}
+
+/* ---------------- svg helpers ---------------- */
+function esc(v){ return (Math.round(v*100)/100); }
+function head(ax,ay,bx,by,size,col){
+  const dx=bx-ax, dy=by-ay, L=Math.hypot(dx,dy)||1;
+  const ux=dx/L, uy=dy/L, nx=-uy, ny=ux, w=size*0.40;
+  return '<polygon points="'+esc(bx)+','+esc(by)+' '+esc(bx-ux*size+nx*w)+','+esc(by-uy*size+ny*w)+
+         ' '+esc(bx-ux*size-nx*w)+','+esc(by-uy*size-ny*w)+'" fill="'+col+'"/>';
+}
+function arrow(a,b,col,w,size,dash,both){
+  size = size||16;
+  const dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy)||1, ux=dx/L, uy=dy/L;
+  const s = both ? [a[0]+ux*size*0.75, a[1]+uy*size*0.75] : a;
+  const e = [b[0]-ux*size*0.75, b[1]-uy*size*0.75];
+  let o = '<line x1="'+esc(s[0])+'" y1="'+esc(s[1])+'" x2="'+esc(e[0])+'" y2="'+esc(e[1])+
+          '" stroke="'+col+'" stroke-width="'+w+'"'+(dash?' stroke-dasharray="'+dash+'"':'')+' stroke-linecap="butt"/>';
+  o += head(a[0],a[1],b[0],b[1],size,col);
+  if(both) o += head(b[0],b[1],a[0],a[1],size,col);
+  return o;
+}
+function line(a,b,col,w,dash,op){
+  return '<line x1="'+esc(a[0])+'" y1="'+esc(a[1])+'" x2="'+esc(b[0])+'" y2="'+esc(b[1])+
+         '" stroke="'+col+'" stroke-width="'+w+'"'+(dash?' stroke-dasharray="'+dash+'"':'')+
+         (op!=null?' opacity="'+op+'"':'')+' stroke-linecap="round"/>';
+}
+function poly(pts,fill,stroke,w,dash,op){
+  return '<polygon points="'+pts.map(p=>esc(p[0])+','+esc(p[1])).join(' ')+'" fill="'+fill+
+         '" stroke="'+stroke+'" stroke-width="'+w+'"'+(dash?' stroke-dasharray="'+dash+'"':'')+
+         ' stroke-linejoin="miter"'+(op!=null?' opacity="'+op+'"':'')+'/>';
+}
+function txt(x,y,s,o){
+  o = o||{};
+  return '<text x="'+esc(x)+'" y="'+esc(y)+'" font-size="'+(o.size||32)+'" fill="'+(o.fill||C.ink)+
+         '" text-anchor="'+(o.anchor||'start')+'"'+
+         (o.italic?' font-style="italic"':'')+(o.bold?' font-weight="700"':'')+
+         (o.halo?' stroke="#fff" stroke-width="5" paint-order="stroke" stroke-linejoin="round"':'')+
+         (o.op!=null?' opacity="'+o.op+'"':'')+'>'+s+'</text>';
+}
+function dot(p,r,fill){
+  return '<circle cx="'+esc(p[0])+'" cy="'+esc(p[1])+'" r="'+r+'" fill="'+(fill||C.dot)+
+         '" stroke="#000" stroke-width="2.6"/>';
+}
+
+/* ---------------- panel (a) ---------------- */
+function renderA(){
+  const g = geom(), f = st.f;
+  const dimV = (st.mode==="physical") ? 0.22 : 1;
+  const dimP = (st.mode==="virtual")  ? 0.22 : 1;
+  let s = "";
+
+  /* --- planes (drawn first, behind everything) --- */
+  // virtual camera plane at Z = +f
+  const vc = [[g.xmin,g.ymin],[g.xmax,g.ymin],[g.xmax,g.ymax],[g.xmin,g.ymax]].map(c=>P3(c[0],c[1],f));
+  // physical projection plane at Z = -f : point reflection of the sensor through the pinhole
+  const pc = [[-g.xmin,-g.ymin],[-g.xmax,-g.ymin],[-g.xmax,-g.ymax],[-g.xmin,-g.ymax]].map(c=>P3(c[0],c[1],-f));
+
+  s += '<g opacity="'+dimP+'">'+poly(pc, C.planeP, "#111", 7, "26 16")+'</g>';
+  s += '<g opacity="'+dimV+'">'+poly(vc, C.planeV, "#111", 3.4)+'</g>';
+
+  /* --- world axes --- */
+  s += arrow([O.x,O.y],[O.x, 70], C.ink, 5.5, 22);                       // Y
+  s += arrow([O.x,O.y],[O.x+700, O.y], C.ink, 5.5, 22);                  // Z
+  s += arrow([O.x,O.y],P3(34,0,0), C.ink, 5.5, 22);                      // X
+  s += txt(O.x-16, 72, "Y", {size:40, anchor:"end"});
+  s += txt(O.x+40, 72, "World coordinates", {size:34});
+  s += txt(O.x+700, O.y+52, "Z", {size:40, anchor:"middle"});
+  s += txt(P3(34,0,0)[0]+14, P3(34,0,0)[1]-4, "X", {size:40});
+
+  /* --- construction lines from P --- */
+  const Pp = P3(st.Xp, st.Yp, st.Zp);
+  const Fp = P3(st.Xp, 0, st.Zp);       // foot in the X-Z plane
+  const Zp = P3(0, 0, st.Zp);           // depth mark on the Z axis
+  s += line(Pp, Fp, C.light, 3.2);
+  s += line(Fp, Zp, C.light, 3.2);
+  s += line([Zp[0],O.y-11],[Zp[0],O.y+11], "#9aa0a6", 3);
+  s += txt(Zp[0], O.y+44, "Z<tspan font-size='19' baseline-shift='-6'>P</tspan> = "+st.Zp.toFixed(1)+" mm",
+           {size:24, anchor:"middle", fill:"#9aa0a6", halo:true});
+
+  // chief ray: P -> pinhole -> inverted image on the physical plane
+  const vImg = P3(g.x, g.y, f);         // upright image on virtual plane
+  const pImg = P3(-g.x, -g.y, -f);      // inverted image on physical plane
+  const fImg = P3(-f*st.Xp/st.Zp, 0, -f);
+  s += line(Pp, pImg, "#4a4a4a", 2.6, "13 11");
+  s += line(Fp, fImg, "#4a4a4a", 2.2, "13 11", 0.55);
+
+  /* --- focal-length arrows (red, double headed) --- */
+  s += '<g opacity="'+dimP+'">'+arrow([O.x,O.y], P3(0,0,-f), C.red, 5.5, 22, null, true)+'</g>';
+  s += '<g opacity="'+dimV+'">'+arrow([O.x,O.y], P3(0,0, f), C.red, 5.5, 22, null, true)+'</g>';
+  const fL = P3(0,0,-f), fR = P3(0,0,f);
+  s += txt((O.x+fL[0])/2, O.y+58, "f", {size:40, italic:true, anchor:"middle", op:dimP, halo:true});
+  s += txt((O.x+fR[0])/2 - 6, O.y+58, "f", {size:40, italic:true, anchor:"middle", op:dimV, halo:true});
+
+  /* --- camera axes drawn on each plane --- */
+  const ax = Math.min(g.xmax, -g.xmin)*0.80, ay = Math.min(g.ymax, -g.ymin)*0.92;
+  // virtual plane: x along +X, y along +Y
+  let gv = "";
+  gv += line(P3(-ax*0.85,0,f), P3(0,0,f), C.green, 4.5);
+  gv += arrow(P3(0,0,f), P3(ax,0,f), C.green, 4.5, 18);
+  gv += line(P3(0,-ay*1.05,f), P3(0,0,f), C.green, 4.5);
+  gv += arrow(P3(0,0,f), P3(0,ay,f), C.green, 4.5, 18);
+  gv += txt(P3(ax,0,f)[0]+10, P3(ax,0,f)[1]+30, "x", {size:36, italic:true});
+  gv += txt(P3(0,ay,f)[0]-40, P3(0,ay,f)[1]-6, "y", {size:36, italic:true, anchor:"end"});
+  gv += dot(vImg, 10);
+  gv += txt(vImg[0]-6, vImg[1]-22, "p", {size:36, bold:true, anchor:"end", halo:true});
+  s += '<g opacity="'+dimV+'">'+gv+'</g>';
+
+  // physical plane: axes flipped (x along -X, y along -Y)
+  let gp = "";
+  gp += line(P3(ax*0.85,0,-f), P3(0,0,-f), C.green, 4.5);
+  gp += arrow(P3(0,0,-f), P3(-ax,0,-f), C.green, 4.5, 18);
+  gp += line(P3(0,ay*1.05,-f), P3(0,0,-f), C.green, 4.5);
+  gp += arrow(P3(0,0,-f), P3(0,-ay,-f), C.green, 4.5, 18);
+  gp += txt(P3(-ax,0,-f)[0]+6, P3(-ax,0,-f)[1]-16, "x", {size:36, italic:true, anchor:"end"});
+  gp += txt(P3(0,-ay,-f)[0]+14, P3(0,-ay,-f)[1]+22, "y", {size:36, italic:true});
+  gp += dot(pImg, 10);
+  gp += txt(pImg[0]-4, pImg[1]+40, "p", {size:36, bold:true, anchor:"end", halo:true});
+  s += '<g opacity="'+dimP+'">'+gp+'</g>';
+
+  /* --- pinhole --- */
+  s += '<ellipse cx="'+O.x+'" cy="'+O.y+'" rx="9" ry="13" fill="#000"/>';
+  s += txt(O.x-22, O.y-30, "(0,0,0)", {size:32, anchor:"end", halo:true});
+  s += txt(O.x-4, O.y+104, "Pinhole", {size:32, anchor:"middle", halo:true});
+
+  /* --- point P --- */
+  s += dot(Pp, 12);
+  s += txt(Pp[0]-6, Pp[1]-24, "P", {size:38, bold:true, anchor:"end", halo:true});
+  if(Math.hypot(Pp[0]-vImg[0], Pp[1]-vImg[1]) > 90)
+    s += txt(Pp[0]+20, Pp[1]+34, "("+st.Xp.toFixed(1)+", "+st.Yp.toFixed(1)+", "+st.Zp.toFixed(1)+")",
+             {size:23, fill:"#8a9099", anchor:"middle", halo:true});
+
+  /* --- plane captions --- */
+  const pcx = (pc[0][0]+pc[2][0])/2, vcx = (vc[0][0]+vc[2][0])/2;
+  s += txt(Math.min(Math.max(pcx,150),210), 760, "Projection plane", {size:34, anchor:"middle", op:dimP});
+  s += txt(Math.max(vcx+10, 620), 760, "Virtual camera plane", {size:34, anchor:"middle", op:dimV});
+  s += txt(660, 812, "(a)", {size:40, anchor:"middle"});
+  s += txt(1300, 60, "drag P", {size:24, anchor:"end", fill:"#a8aeb6"});
+
+  document.getElementById("svgA").innerHTML = s;
+}
+
+/* ---------------- panel (b) ---------------- */
+function renderB(){
+  const g = geom();
+  const ppx = RX + st.n0, ppy = RB - st.m0;      // principal point on screen
+  const px  = RX + g.n,   py  = RB - g.m;        // upright (virtual) image point
+  const pxP = RX + g.nP,  pyP = RB - g.mP;       // physical sensor read-out
+  const showV = st.mode!=="physical", showP = st.mode!=="virtual";
+  let s = "";
+
+  // optional pixel grid
+  if(st.grid){
+    let gr = "";
+    for(let i=80;i<WPX;i+=80) gr += line([RX+i,RY],[RX+i,RB], "#d6dde4", 1.6);
+    for(let j=80;j<HPX;j+=80) gr += line([RX,RB-j],[RR,RB-j], "#d6dde4", 1.6);
+    s += gr;
+  }
+
+  // image boundary
+  s += '<rect x="'+RX+'" y="'+RY+'" width="'+RW+'" height="'+RH+'" fill="none" stroke="#000" stroke-width="4"/>';
+
+  // clamp the drawn marker(s) to a small band around the image so nothing runs off the panel
+  const MARG = 34;
+  const cl = (v,a,b)=>Math.max(a,Math.min(b,v));
+  const inside = (n,m)=> (n>=0 && n<=WPX && m>=0 && m<=HPX);
+  const clp  = [cl(px , RX-MARG, RR+MARG), cl(py , RY-MARG, RB+MARG)];
+  const clpP = [cl(pxP, RX-MARG, RR+MARG), cl(pyP, RY-MARG, RB+MARG)];
+
+  // guide lines to the two frames (only while the point is on the sensor)
+  const main = showV ? clp : clpP;
+  const mn = showV ? g.n : g.nP, mm = showV ? g.m : g.mP;
+  if(inside(mn,mm)){
+    s += line([main[0],main[1]],[main[0],RB], C.blue, 2, "8 8", 0.45);
+    s += line([main[0],main[1]],[RX,main[1]], C.blue, 2, "8 8", 0.45);
+    s += line([main[0],main[1]],[main[0],ppy], "#00a000", 2.2, "8 8", 0.55);
+    s += line([main[0],main[1]],[ppx,main[1]], "#00a000", 2.2, "8 8", 0.55);
+    s += txt(main[0], RB-16, "n = "+mn.toFixed(1), {size:24, anchor:"middle", fill:C.blue, halo:true});
+    s += txt(RX+14, main[1]-14, "m = "+mm.toFixed(1), {size:24, fill:C.blue, halo:true});
+    const xv = showV ? g.x : -g.x, yv = showV ? g.y : -g.y;
+    if(Math.abs(mn-st.n0)>70) s += txt((main[0]+ppx)/2, main[1]-14, xv.toFixed(2)+" mm",
+                                       {size:22, anchor:"middle", fill:"#0a8a0a", halo:true});
+    if(Math.abs(mm-st.m0)>70) s += txt(main[0]+12, (main[1]+ppy)/2+8, yv.toFixed(2)+" mm",
+                                       {size:22, fill:"#0a8a0a", halo:true});
+  }
+
+  // camera coordinate frame (green) at the principal point
+  const L = 120, Lneg = 145;
+  s += line([ppx,ppy],[ppx+Lneg,ppy], C.green, 4.5);
+  s += arrow([ppx,ppy],[ppx-L,ppy], C.green, 4.5, 18);
+  s += line([ppx,ppy],[ppx,ppy+Lneg], C.green, 4.5);
+  s += arrow([ppx,ppy],[ppx,ppy-L], C.green, 4.5, 18);
+  s += txt(ppx-L-6, ppy+34, "x", {size:36, italic:true, anchor:"middle"});
+  s += txt(ppx+16, ppy-L+14, "y", {size:36, italic:true});
+  s += txt(ppx+14, ppy+38, "(0,0)", {size:30, halo:true});
+  s += txt(Math.min(ppx+52, RR-268), ppy-L+2, "Camera coordinates", {size:32, halo:true});
+
+  // image (pixel) coordinate frame (blue) at the corner (0,0)
+  s += arrow([RX,RB],[RX+155,RB], C.blue, 4.5, 18);
+  s += arrow([RX,RB],[RX,RB-155], C.blue, 4.5, 18);
+  s += txt(RX+150, RB+46, "n", {size:36, italic:true, anchor:"middle", fill:"#000"});
+  s += txt(RX+22, RB-152, "m", {size:36, italic:true});
+  s += txt(RX-16, RB+42, "(0,0)", {size:30, anchor:"end"});
+  s += txt(RX+66, RB-66, "Image coordinates", {size:32});
+
+  // the projected point(s)
+  const okV = inside(g.n, g.m), okP = inside(g.nP, g.mP);
+  const lab = (pos, str, col) => (pos[0] < RX+90)
+      ? txt(pos[0]+16, pos[1]+14, str, {size:36, bold:true, fill:col, halo:true})
+      : txt(pos[0]-16, pos[1]+14, str, {size:36, bold:true, anchor:"end", fill:col, halo:true});
+  if(st.mode==="both" && okV && okP){
+    s += line(clp, clpP, "#b06000", 2, "9 9", 0.65);
+  }
+  if(showP){
+    const faded = (st.mode==="both");
+    s += '<circle cx="'+esc(clpP[0])+'" cy="'+esc(clpP[1])+'" r="'+(faded?9:11)+'" fill="'+
+         (faded||!okP?"#ffffff":C.dot)+'" stroke="#b06000" stroke-width="2.8"'+
+         (okP?'':' stroke-dasharray="4 3"')+'/>';
+    s += lab(clpP, "p&prime;", "#b06000");
+  }
+  if(showV){
+    if(okV) s += dot(clp, 11);
+    else s += '<circle cx="'+esc(clp[0])+'" cy="'+esc(clp[1])+'" r="10" fill="#fff" stroke="#000" stroke-width="2.4" stroke-dasharray="4 3"/>';
+    s += lab(clp, "p", "#000");
+  }
+
+  // captions
+  let cap = "Virtual camera plane";
+  if(st.mode==="physical") cap = "Projection plane (physical sensor)";
+  s += txt((RX+RR)/2, RB+92, cap, {size:34, anchor:"middle"});
+  let sub = "";
+  if(st.mode==="both")     sub = "p upright (virtual)   •   p′ inverted (physical), rotated 180° about (0,0)";
+  if(st.mode==="virtual")  sub = "upright image — no sign flip in the projection equations";
+  if(st.mode==="physical") sub = "inverted image — pixel read-out is rotated 180° about the principal point";
+  s += txt((RX+RR)/2, RB+130, sub, {size:23, anchor:"middle", fill:"#8a9099"});
+  if(!g.onSensor) s += txt((RX+RR)/2, RY-30, "image point falls outside the sensor", {size:25, anchor:"middle", fill:"#b04a00"});
+  s += txt(460, 812, "(b)", {size:40, anchor:"middle"});
+
+  document.getElementById("svgB").innerHTML = s;
+}
+
+/* ---------------- read-out ---------------- */
+function renderText(){
+  const g = geom();
+  const f1 = v => v.toFixed(1), f2 = v => v.toFixed(2);
+  document.getElementById("eqx").innerHTML = f1(st.f)+" &times; "+f1(st.Xp)+" / "+f1(st.Zp)+" = <b>"+f2(g.x)+" mm</b>";
+  document.getElementById("eqy").innerHTML = f1(st.f)+" &times; "+f1(st.Yp)+" / "+f1(st.Zp)+" = <b>"+f2(g.y)+" mm</b>";
+  document.getElementById("eqn").innerHTML = st.n0+" &minus; ("+f2(g.x)+"/0.0375) = <b>"+g.n.toFixed(1)+" px</b>";
+  document.getElementById("eqm").innerHTML = st.m0+" + ("+f2(g.y)+"/0.0375) = <b>"+g.m.toFixed(1)+" px</b>";
+  document.getElementById("eqp").innerHTML = "(<b>"+f2(-g.x)+", "+f2(-g.y)+"</b>) mm at <i>Z</i> = &minus;"+f1(st.f)+" mm";
+  document.getElementById("eqpn").innerHTML = "(<b>"+g.nP.toFixed(1)+", "+g.mP.toFixed(1)+"</b>) px";
+  document.getElementById("noteA").innerHTML =
+    "Similar triangles: the ray from P to the pinhole crosses <i>Z</i> = <i>f</i> at (<i>x</i>, <i>y</i>) and " +
+    "<i>Z</i> = &minus;<i>f</i> at (&minus;<i>x</i>, &minus;<i>y</i>). Magnification <i>f</i>/<i>Z</i><sub>P</sub> = " +
+    (st.f/st.Zp).toFixed(3) + "." +
+    (g.onSensor ? "" : " <span class='warn'>The image point currently falls outside the 640 &times; 480 sensor.</span>");
+  document.getElementById("noteC").innerHTML =
+    "Flipping the physical plane's axes (panel a, left) &mdash; or equivalently using the virtual plane in front of the " +
+    "pinhole &mdash; removes both minus signs, which is why the virtual-plane convention is used.";
+  document.getElementById("vf").textContent  = st.f.toFixed(1)+" mm";
+  document.getElementById("vz").textContent  = st.Zp.toFixed(1)+" mm";
+  document.getElementById("vx").textContent  = st.Xp.toFixed(1)+" mm";
+  document.getElementById("vy").textContent  = st.Yp.toFixed(1)+" mm";
+  document.getElementById("vn0").textContent = st.n0+" px";
+  document.getElementById("vm0").textContent = st.m0+" px";
+}
+
+function render(){ renderA(); renderB(); renderText(); }
+
+/* ---------------- controls ---------------- */
+function bind(id, key, parse){
+  const el = document.getElementById(id);
+  el.addEventListener("input", function(){ st[key] = parse(el.value); couple(key); render(); });
+  return el;
+}
+// keep the virtual plane between the pinhole and P, i.e. f <= Zp - 4 mm
+function couple(changed){
+  if(st.f > st.Zp - 8){
+    if(changed === "f"){ st.Zp = Math.min(60, st.f + 8); elZ.value = st.Zp; }
+    else               { st.f  = Math.max(12, st.Zp - 8); elF.value = st.f;  }
+  }
+}
+const elF  = bind("sf","f",  parseFloat);
+const elZ  = bind("sz","Zp", parseFloat);
+const elX  = bind("sx","Xp", parseFloat);
+const elY  = bind("sy","Yp", parseFloat);
+const elN0 = bind("sn0","n0", v=>parseInt(v,10));
+const elM0 = bind("sm0","m0", v=>parseInt(v,10));
+
+document.getElementById("grid").addEventListener("change", function(e){ st.grid = e.target.checked; render(); });
+document.getElementById("seg").addEventListener("click", function(e){
+  const b = e.target.closest("button"); if(!b) return;
+  st.mode = b.dataset.mode;
+  [].forEach.call(this.querySelectorAll("button"), x=>x.setAttribute("aria-pressed", x===b?"true":"false"));
+  render();
+});
+document.getElementById("reset").addEventListener("click", function(){
+  st = Object.assign({}, DEF);
+  elF.value=DEF.f; elZ.value=DEF.Zp; elX.value=DEF.Xp; elY.value=DEF.Yp;
+  elN0.value=DEF.n0; elM0.value=DEF.m0;
+  document.getElementById("grid").checked = false;
+  [].forEach.call(document.querySelectorAll("#seg button"),
+    x=>x.setAttribute("aria-pressed", x.dataset.mode===DEF.mode?"true":"false"));
+  render();
+});
+
+/* ---------------- dragging P in panel (a) ---------------- */
+const svgA = document.getElementById("svgA");
+let dragging = false;
+function toSvg(evt){
+  const pt = svgA.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  const m = svgA.getScreenCTM();
+  if(!m) return null;
+  return pt.matrixTransform(m.inverse());
+}
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+function setFromPointer(evt){
+  const p = toSvg(evt); if(!p) return;
+  const w = unP3(p.x, p.y, st.Zp);
+  st.Xp = clamp(Math.round(w[0]*10)/10, -18, 22);
+  st.Yp = clamp(Math.round(w[1]*10)/10, -14, 16);
+  elX.value = st.Xp; elY.value = st.Yp;
+  render();
+}
+svgA.addEventListener("pointerdown", function(evt){
+  const p = toSvg(evt); if(!p) return;
+  const Pp = P3(st.Xp, st.Yp, st.Zp);
+  if(Math.hypot(p.x-Pp[0], p.y-Pp[1]) < 55){
+    dragging = true;
+    svgA.setPointerCapture(evt.pointerId);
+    svgA.style.cursor = "grabbing";
+    evt.preventDefault();
+  }
+});
+svgA.addEventListener("pointermove", function(evt){
+  const p = toSvg(evt); if(!p) return;
+  if(dragging){ setFromPointer(evt); evt.preventDefault(); return; }
+  const Pp = P3(st.Xp, st.Yp, st.Zp);
+  svgA.style.cursor = (Math.hypot(p.x-Pp[0], p.y-Pp[1]) < 55) ? "grab" : "default";
+});
+function endDrag(evt){
+  if(!dragging) return;
+  dragging = false;
+  try{ svgA.releasePointerCapture(evt.pointerId); }catch(e){}
+  svgA.style.cursor = "default";
+}
+svgA.addEventListener("pointerup", endDrag);
+svgA.addEventListener("pointercancel", endDrag);
+
+render();
+})();
+</script>
+</body>
+</html>

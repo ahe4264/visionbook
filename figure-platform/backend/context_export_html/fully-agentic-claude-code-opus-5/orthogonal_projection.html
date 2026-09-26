@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orthographic Projection</title>
+<style>
+  :root{
+    --ink:#11161a; --muted:#5b6770; --line:#c8d0d4; --panel:#f4f6f7;
+    --accent:#0a6ebd;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:#ffffff; color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 16px 48px}
+  h1{font-size:1.32rem;margin:0 0 4px;font-weight:650;letter-spacing:-0.01em}
+  .sub{margin:0 0 16px;color:var(--muted);font-size:.93rem;max-width:80ch}
+  .figbox{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
+  svg{display:block;width:100%;height:auto;background:#fff}
+  .controls{
+    margin-top:16px;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:14px 26px;align-items:start;
+  }
+  .ctl{border:1px solid var(--line);border-radius:9px;padding:11px 13px;background:var(--panel)}
+  .ctl label.top{display:flex;justify-content:space-between;align-items:baseline;
+    font-size:.86rem;font-weight:600;margin-bottom:7px;gap:10px}
+  .ctl .val{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:650}
+  input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .ends{display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:3px}
+  .row{display:flex;align-items:center;gap:9px;font-size:.86rem;font-weight:600}
+  .row input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+  button{font:inherit;font-size:.82rem;padding:5px 12px;border:1px solid var(--line);
+    background:#fff;border-radius:6px;cursor:pointer}
+  button:hover{background:#eef2f4}
+  .hint{font-size:.76rem;color:var(--muted);margin-top:7px;line-height:1.4}
+  .readout{margin-top:16px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  th,td{padding:7px 12px;text-align:left;border-bottom:1px solid #e6eaec}
+  th{background:var(--panel);font-weight:600;width:44%}
+  td{font-variant-numeric:tabular-nums}
+  tr:last-child th,tr:last-child td{border-bottom:none}
+  .ok{color:#137a3e;font-weight:650}
+  .no{color:#b3261e;font-weight:650}
+  .note{margin-top:16px;font-size:.87rem;color:#33404a;max-width:86ch}
+  .note b{color:var(--ink)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;background:var(--panel);padding:1px 4px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Orthographic (parallel) projection of a solid onto a projection plane</h1>
+  <p class="sub">
+    Projection rays run <em>parallel to the Z axis</em> and meet the plane at right angles. The
+    footprint that appears on the plane therefore keeps exactly the lateral size of the object, no
+    matter how far down the Z axis the object sits: <em>x</em>&nbsp;=&nbsp;<em>X</em>,
+    <em>y</em>&nbsp;=&nbsp;<em>Y</em>. Slide towards perspective to watch that guarantee break.
+  </p>
+
+  <div class="figbox">
+    <svg id="fig" viewBox="0 0 1150 700" role="img"
+         aria-label="A two-step staircase solid projected orthographically onto a plane in a world X Y Z frame"></svg>
+  </div>
+
+  <div class="controls">
+    <div class="ctl">
+      <label class="top" for="depth"><span>Object depth <em>d</em> beyond the plane</span>
+        <span class="val" id="depthVal">6.5</span></label>
+      <input type="range" id="depth" min="1.5" max="9.5" step="0.05" value="6.5">
+      <div class="ends"><span>near plane</span><span>far</span></div>
+      <div class="hint">Watch the coloured footprint on the plane: under orthographic projection it
+        never changes size or position.</div>
+      <div style="margin-top:8px"><button id="sweep">&#9654; Sweep depth</button></div>
+    </div>
+
+    <div class="ctl">
+      <label class="top" for="blend"><span>Projection type</span>
+        <span class="val" id="blendVal">orthographic</span></label>
+      <input type="range" id="blend" min="0" max="1" step="0.01" value="0">
+      <div class="ends"><span>orthographic (rays &#8741;)</span><span>perspective (rays &#8594; eye)</span></div>
+      <div class="hint">At the perspective end the rays converge on a centre of projection on the Z
+        axis in front of the plane, and the image shrinks as the object recedes.</div>
+    </div>
+
+    <div class="ctl">
+      <label class="row"><input type="checkbox" id="guides"> Show depth guides &amp; measurements</label>
+      <div class="hint">Adds a lateral measuring rod of length &Delta;<em>X</em> spanning the object,
+        its image &Delta;<em>x</em> on the plane, and a dashed outline of the image the object would
+        cast from a fixed reference depth. Under orthographic projection the two outlines coincide at
+        every depth.</div>
+    </div>
+  </div>
+
+  <div class="readout">
+    <table>
+      <tr><th>Depth of object past the plane, <em>d</em></th><td id="rDepth"></td></tr>
+      <tr><th>Lateral size of object, &Delta;<em>X</em> &times; &Delta;<em>Y</em></th><td id="rObj"></td></tr>
+      <tr><th>Lateral size of image, &Delta;<em>x</em> &times; &Delta;<em>y</em></th><td id="rImg"></td></tr>
+      <tr><th>Magnification &Delta;<em>x</em>/&Delta;<em>X</em></th><td id="rMag"></td></tr>
+      <tr><th>Depth-independent?</th><td id="rDep"></td></tr>
+    </table>
+  </div>
+
+  <p class="note">
+    <b>What the geometry actually does.</b> Every vertex of the staircase solid is a genuine 3-D point
+    <code>(X, Y, Z)</code>. The orthographic image of that vertex is <code>(x, y) = (X, Y)</code>: the
+    Z coordinate is simply discarded, so the projector is the line through the vertex parallel to Z,
+    and the mapping is a true-size copy of the object's X&ndash;Y footprint. The perspective image of
+    the same vertex is <code>(x, y) = (X, Y) &middot; e / (Z &minus; z_eye)</code>, obtained by
+    intersecting the plane <code>Z = z_p</code> with the line joining the vertex to the eye. Because
+    that factor contains Z, near parts of the solid are magnified more than far parts: parallel edges
+    stop being parallel in the image and lengths stop being metric. Only the red faces (perpendicular
+    to Z) and the near cyan end cap turn towards the plane, so those are the surfaces that carry area
+    into the image; the green treads are parallel to the projection direction and collapse to lines.
+  </p>
+</div>
+
+<script>
+(function(){
+"use strict";
+var NS = "http://www.w3.org/2000/svg";
+var svg = document.getElementById("fig");
+
+/* ---------------------------------------------------------------
+   World -> screen : the parallel (axonometric) camera used to DRAW
+   the whole scene.  Z runs horizontally to the right, Y vertically
+   up, X obliquely up-right and foreshortened.  These three numbers
+   are the only artistic choice; everything else is computed.
+   --------------------------------------------------------------- */
+var AX = 50.2 * Math.PI/180;      // screen angle of the X axis
+var KX = 0.626;                   // foreshortening of X relative to Y,Z
+var S  = 40;                      // px per world unit along Y and Z
+var OX = 185, OY = 360;           // screen position of the world origin
+var CX = KX*Math.cos(AX)*S;       // screen dx per unit X
+var CY = KX*Math.sin(AX)*S;       // screen dy (upward) per unit X
+
+function P3(X,Y,Z){ return [OX + S*Z + CX*X, OY - S*Y - CY*X]; }
+
+/* Viewing direction of that camera (unit vector towards the viewer).
+   It is the vector annihilated by the screen map, with the sign fixed
+   so that the +Y faces of the solid come out visible.               */
+var W = (function(){
+  var v = [-1, KX*Math.sin(AX), KX*Math.cos(AX)];
+  var n = Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+  return [v[0]/n, v[1]/n, v[2]/n];
+})();
+
+/* --------------------------- the scene ------------------------- */
+var ZP = 5;                 // the projection plane lives at Z = ZP
+var E  = 7;                 // eye sits E units in FRONT of the plane
+var ZEYE = ZP - E;
+
+var PLANE_X = [-6, 6], PLANE_Y = [-3.8, 5.2];
+
+/* Two-step staircase solid, yawed about Y so that both its risers
+   (red, normal mostly -Z) and its near end cap (cyan) carry area
+   into a projection taken along Z, exactly as in the reference
+   figure.                                                          */
+var TH = 34*Math.PI/180, ct = Math.cos(TH), st = Math.sin(TH);
+var s1 = 1.90, s2 = 2.93, L = 6.76, h1 = 1.10, h2 = 2.46;
+
+/* local (u = step direction, v = extrusion direction, y = up) -> world */
+function toWorld(p, zobj){
+  var u = p[0], v = p[1], y = p[2];
+  return [ u*ct - v*st, y, zobj + u*st + v*ct ];
+}
+
+var d2v = [ ct, 0,  st];    // step direction (risers are perpendicular to it)
+var d1v = [-st, 0,  ct];    // extrusion direction (end caps perpendicular to it)
+function neg(a){ return [-a[0],-a[1],-a[2]]; }
+
+var RED = "#F02D12", GREEN = "#3DDF17", CYAN = "#5FD0F5";
+
+/* staircase profile in (u , y) */
+var PROF = [[0,0],[0,h1],[s1,h1],[s1,h2],[s2,h2],[s2,0]];
+
+var FACES = [
+  {c:RED,   n:neg(d2v), p:[[0,0,0],[0,L,0],[0,L,h1],[0,0,h1]]},              /* lower riser */
+  {c:RED,   n:neg(d2v), p:[[s1,0,h1],[s1,L,h1],[s1,L,h2],[s1,0,h2]]},        /* upper riser */
+  {c:GREEN, n:[0,1,0],  p:[[0,0,h1],[0,L,h1],[s1,L,h1],[s1,0,h1]]},          /* lower tread */
+  {c:GREEN, n:[0,1,0],  p:[[s1,0,h2],[s1,L,h2],[s2,L,h2],[s2,0,h2]]},        /* upper tread */
+  {c:RED,   n:d2v,      p:[[s2,0,0],[s2,L,0],[s2,L,h2],[s2,0,h2]]},          /* back face   */
+  {c:GREEN, n:[0,-1,0], p:[[0,0,0],[s2,0,0],[s2,L,0],[0,L,0]]},              /* bottom      */
+  {c:CYAN,  n:neg(d1v), p:PROF.map(function(q){return [q[0],0,q[1]];})},     /* near cap    */
+  {c:CYAN,  n:d1v,      p:PROF.map(function(q){return [q[0],L,q[1]];})}      /* far cap     */
+];
+
+/* The six local vertices that bound the silhouette seen from the
+   plane (they lie on edges shared by a front-facing and a back-facing
+   face, so they bound the image for BOTH projections).              */
+var SIL = [[0,L,0],[s2,0,0],[s2,0,h2],[s1,L,h2],[s1,L,h1],[0,L,h1]];
+
+/* ------------------------ the projection ----------------------- */
+/* blended orthographic (b = 0) / perspective (b = 1) image of a point */
+function project(P, b){
+  var f = (1-b) + b*( E/(P[2]-ZEYE) );
+  return [P[0]*f, P[1]*f];
+}
+/* a point of the plane, in the plane's own (x,y) coords, to screen */
+function planePt(x,y){ return P3(x, y, ZP); }
+
+/* --------------------------- helpers --------------------------- */
+function el(tag, attrs){
+  var e = document.createElementNS(NS, tag), k;
+  for(k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function merge(a,b){ var o={},k; for(k in a)o[k]=a[k]; for(k in b)o[k]=b[k]; return o; }
+function poly(parent, pts, attrs){
+  var e = el("polygon", attrs);
+  e.setAttribute("points", pts.map(function(p){return p[0].toFixed(2)+","+p[1].toFixed(2);}).join(" "));
+  parent.appendChild(e); return e;
+}
+function line(parent, a, b, attrs){
+  var e = el("line", merge({x1:a[0].toFixed(2), y1:a[1].toFixed(2),
+                            x2:b[0].toFixed(2), y2:b[1].toFixed(2)}, attrs));
+  parent.appendChild(e); return e;
+}
+function text(parent, x, y, s, attrs){
+  var e = el("text", merge({x:x, y:y}, attrs));
+  e.textContent = s; parent.appendChild(e); return e;
+}
+function arrow(parent, a, b, attrs, head){
+  head = head || 13;
+  var ux = b[0]-a[0], uy = b[1]-a[1], m = Math.sqrt(ux*ux+uy*uy);
+  var dx = ux/m, dy = uy/m;
+  var base = [b[0]-dx*head, b[1]-dy*head];
+  line(parent, a, base, attrs);
+  poly(parent, [b, [base[0]-dy*head*0.42, base[1]+dx*head*0.42],
+                    [base[0]+dy*head*0.42, base[1]-dx*head*0.42]],
+       {fill: attrs.stroke, stroke:"none"});
+}
+function dot3(v,w){ return v[0]*w[0]+v[1]*w[1]+v[2]*w[2]; }
+
+/* --------------------------- drawing --------------------------- */
+var ui = {
+  depth:    document.getElementById("depth"),
+  blend:    document.getElementById("blend"),
+  guides:   document.getElementById("guides"),
+  sweep:    document.getElementById("sweep"),
+  depthVal: document.getElementById("depthVal"),
+  blendVal: document.getElementById("blendVal"),
+  rDepth: document.getElementById("rDepth"), rObj: document.getElementById("rObj"),
+  rImg:   document.getElementById("rImg"),   rMag: document.getElementById("rMag"),
+  rDep:   document.getElementById("rDep")
+};
+
+var D_REF = 1.5;            /* reference depth used for the ghost outline */
+var EDGE  = {stroke:"#111", "stroke-width":1.7, "stroke-linejoin":"round"};
+var SERIF = 'Georgia,"Times New Roman",Times,serif';
+
+function draw(){
+  var d    = parseFloat(ui.depth.value);
+  var b    = parseFloat(ui.blend.value);
+  var zobj = ZP + d;
+  var gOn  = ui.guides.checked;
+
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  var root = el("g", {}); svg.appendChild(root);
+
+  /* ---- 1. projection plane patch ---- */
+  poly(root, [planePt(PLANE_X[0],PLANE_Y[1]), planePt(PLANE_X[1],PLANE_Y[1]),
+              planePt(PLANE_X[1],PLANE_Y[0]), planePt(PLANE_X[0],PLANE_Y[0])],
+       {fill:"#E9EDEE", stroke:"#3a4348", "stroke-width":1.6});
+
+  /* ---- 2. Z axis (over the plane, later hidden by the solid) ---- */
+  var gZ = el("g", {}); root.appendChild(gZ);
+  if(b > 0.02){    /* the axis continues in front of the plane, to the eye */
+    line(gZ, P3(0,0,ZEYE-0.25), P3(0,0,0),
+         {stroke:"#111", "stroke-width":2, "stroke-dasharray":"5 5",
+          opacity:(0.25+0.6*b).toFixed(2)});
+  }
+  arrow(gZ, P3(0,0,0), P3(0,0,22.7), {stroke:"#111","stroke-width":4.5}, 20);
+
+  /* ---- 3. the projected image on the plane ---- */
+  var gImg = el("g", {}); root.appendChild(gImg);
+  FACES.filter(function(f){ return f.n[2] < -1e-9; })        /* faces turned to the plane */
+       .map(function(f){
+         var wp = f.p.map(function(q){ return toWorld(q, zobj); });
+         var mz = wp.reduce(function(a,p){ return a+p[2]; },0)/wp.length;
+         return {c:f.c, z:mz, pts: wp.map(function(p){
+                   var q = project(p,b); return planePt(q[0],q[1]); })};
+       })
+       .sort(function(a,c){ return c.z - a.z; })             /* far first */
+       .forEach(function(f){ poly(gImg, f.pts, merge({fill:f.c}, EDGE)); });
+
+  /* ---- 4. ghost: the image cast from a fixed reference depth ---- */
+  if(gOn){
+    var ghost = SIL.map(function(q){
+      var p = project(toWorld(q, ZP + D_REF), b);
+      return planePt(p[0], p[1]);
+    });
+    poly(root, ghost, {fill:"none", stroke:"#7B1FA2", "stroke-width":3,
+                       "stroke-dasharray":"8 5", "stroke-linejoin":"round", opacity:0.95});
+  }
+
+  /* ---- 5. in-plane coordinate axes (green), drawn over the image ---- */
+  var gAx = el("g", {}); root.appendChild(gAx);
+  var GRN = {stroke:"#12CC12", "stroke-width":2.6};
+  arrow(gAx, planePt(0,-2.3), planePt(0,3.9), GRN, 15);
+  arrow(gAx, planePt(-5.6,0), planePt(5.4,0), GRN, 15);
+  text(gAx, planePt(0,3.9)[0]-30, planePt(0,3.9)[1]+14, "y",
+       {"font-family":SERIF,"font-style":"italic","font-size":32,fill:"#111"});
+  text(gAx, planePt(5.4,0)[0]+9, planePt(5.4,0)[1]+27, "x",
+       {"font-family":SERIF,"font-style":"italic","font-size":32,fill:"#111"});
+
+  /* ---- 6. measurements ---- */
+  var Xmin = -L*st, Xmax = s2*ct, dX = Xmax - Xmin, dY = h2;
+  var ix0 = Infinity, ix1 = -Infinity, iy0 = Infinity, iy1 = -Infinity;
+  SIL.forEach(function(q){
+    var p = project(toWorld(q, zobj), b);
+    if(p[0]<ix0) ix0=p[0]; if(p[0]>ix1) ix1=p[0];
+    if(p[1]<iy0) iy0=p[1]; if(p[1]>iy1) iy1=p[1];
+  });
+  var dxI = ix1-ix0, dyI = iy1-iy0;
+
+  /* ---- 7. the solid ---- */
+  var gSol = el("g", {}); root.appendChild(gSol);
+  FACES.map(function(f){
+         var wp = f.p.map(function(q){ return toWorld(q,zobj); });
+         var cen = [0,0,0];
+         wp.forEach(function(p){ cen[0]+=p[0]/wp.length; cen[1]+=p[1]/wp.length; cen[2]+=p[2]/wp.length; });
+         return {c:f.c, n:f.n, dep:dot3(cen,W),
+                 pts: wp.map(function(p){ return P3(p[0],p[1],p[2]); })};
+       })
+       .filter(function(f){ return dot3(f.n, W) > 1e-9; })    /* back-face cull */
+       .sort(function(a,c){ return a.dep - c.dep; })          /* far first */
+       .forEach(function(f){ poly(gSol, f.pts, merge({fill:f.c}, EDGE)); });
+
+  /* ---- 7b. measuring rods (drawn over the solid so nothing is hidden) ---- */
+  if(gOn){
+    var gG = el("g", {}); root.appendChild(gG);
+    var yROD = -3.3;
+    var zROD = zobj + (L*ct + s2*st)*0.5;         /* rod sits at mid-depth of the solid */
+    var A3 = [Xmin, yROD, zROD], B3 = [Xmax, yROD, zROD];
+    var Aim = project(A3,b), Bim = project(B3,b);
+    var As = P3(A3[0],A3[1],A3[2]), Bs = P3(B3[0],B3[1],B3[2]);
+    var Ap = planePt(Aim[0],Aim[1]), Bp = planePt(Bim[0],Bim[1]);
+
+    line(gG, As, Ap, {stroke:"#b3261e","stroke-width":1.6,"stroke-dasharray":"6 5",opacity:.9});
+    line(gG, Bs, Bp, {stroke:"#b3261e","stroke-width":1.6,"stroke-dasharray":"6 5",opacity:.9});
+
+    var tick = function(p,col){ line(gG,[p[0],p[1]-9],[p[0],p[1]+9],{stroke:col,"stroke-width":3.2}); };
+    line(gG, As, Bs, {stroke:"#b3261e","stroke-width":3.4});
+    tick(As,"#b3261e"); tick(Bs,"#b3261e");
+    line(gG, Ap, Bp, {stroke:"#0a6ebd","stroke-width":3.4});
+    tick(Ap,"#0a6ebd"); tick(Bp,"#0a6ebd");
+
+    var HALO = {"font-size":17,"font-weight":700,"text-anchor":"middle",
+                stroke:"#fff","stroke-width":5,"paint-order":"stroke","stroke-linejoin":"round"};
+    text(gG, (As[0]+Bs[0])/2 + 34, (As[1]+Bs[1])/2 + 30,
+         "ΔX = "+dX.toFixed(2), merge(HALO,{fill:"#b3261e"}));
+    text(gG, (Ap[0]+Bp[0])/2 - 30, (Ap[1]+Bp[1])/2 + 32,
+         "Δx = "+dxI.toFixed(2), merge(HALO,{fill:"#0a6ebd"}));
+  }
+
+  /* ---- 8. projection rays ---- */
+  var gRay = el("g", {}); root.appendChild(gRay);
+  var eyeS = P3(0,0,ZEYE);
+  SIL.forEach(function(q){
+    var P  = toWorld(q, zobj);
+    var im = project(P,b);
+    var a = P3(P[0],P[1],P[2]), c = planePt(im[0],im[1]);
+    line(gRay, a, c, {stroke:"#111","stroke-width":1.8,"stroke-dasharray":"9 7",opacity:.92});
+    if(b > 0.02)
+      line(gRay, c, eyeS, {stroke:"#111","stroke-width":1.5,"stroke-dasharray":"9 7",
+                           opacity:(0.55*b).toFixed(2)});
+  });
+
+  /* ---- 9. centre of projection ---- */
+  if(b > 0.02){
+    var gE = el("g", {opacity: Math.min(1,b*3).toFixed(2)}); root.appendChild(gE);
+    gE.appendChild(el("circle",{cx:eyeS[0],cy:eyeS[1],r:7,fill:"#111"}));
+    text(gE, eyeS[0], eyeS[1]+31, "centre of",
+         {"font-size":14,"text-anchor":"middle",fill:"#111","font-weight":600});
+    text(gE, eyeS[0], eyeS[1]+47, "projection",
+         {"font-size":14,"text-anchor":"middle",fill:"#111","font-weight":600});
+  }
+
+  /* ---- 10. world frame X, Y, Z ---- */
+  var gW = el("g", {}); root.appendChild(gW);
+  var BK = {stroke:"#111","stroke-width":4.5};
+  arrow(gW, P3(0,0,0), P3(0,5.5,0), BK, 20);
+  arrow(gW, P3(0,0,0), P3(4.4,0,0), BK, 20);
+  text(gW, P3(0,5.5,0)[0], P3(0,5.5,0)[1]-16, "Y",
+       {"font-family":SERIF,"font-size":34,fill:"#111","text-anchor":"middle"});
+  text(gW, P3(4.4,0,0)[0]+14, P3(4.4,0,0)[1]+4, "X",
+       {"font-family":SERIF,"font-size":34,fill:"#111"});
+  text(gW, P3(0,0,22.7)[0]-8, P3(0,0,22.7)[1]+46, "Z",
+       {"font-family":SERIF,"font-size":34,fill:"#111","text-anchor":"middle"});
+
+  /* ---- 11. captions ---- */
+  text(root, 352, 660, "Projection plane",
+       {"font-family":SERIF,"font-size":25,fill:"#111","text-anchor":"middle"});
+  if(gOn){
+    line(root, [478,654], [510,654],
+         {stroke:"#7B1FA2","stroke-width":3,"stroke-dasharray":"8 5"});
+    text(root, 518, 659, "image the object would cast from the reference depth d = "+D_REF.toFixed(1),
+         {"font-size":13.5,fill:"#4a555c","text-anchor":"start"});
+  }
+  text(root, 1128, 620,
+       b<0.02 ? "rays parallel to Z" : (b>0.98 ? "rays converge on the eye" : "blended projection"),
+       {"font-size":14,fill:"#5b6770","text-anchor":"end","font-style":"italic"});
+
+  /* ---- readout ---- */
+  ui.depthVal.textContent = d.toFixed(1);
+  ui.blendVal.textContent = b<0.005 ? "orthographic"
+                          : (b>0.995 ? "perspective" : (b*100).toFixed(0)+"% perspective");
+  ui.rDepth.textContent = d.toFixed(2)+"   (plane at Z = "+ZP+
+                          ", nearest object corner at Z = "+zobj.toFixed(2)+")";
+  ui.rObj.textContent = dX.toFixed(3)+"  ×  "+dY.toFixed(3);
+  ui.rImg.textContent = dxI.toFixed(3)+"  ×  "+dyI.toFixed(3);
+  var mag = dxI/dX;
+  ui.rMag.textContent = mag.toFixed(4)+(Math.abs(mag-1)<5e-4 ? "   (exactly 1 — true size)" : "");
+  ui.rDep.innerHTML = (b < 0.005)
+      ? '<span class="ok">Yes</span> — drag the depth slider: Δx and Δy never change.'
+      : '<span class="no">No</span> — the image scales as e /(Z − z_eye), so it shrinks as d grows.';
+}
+
+/* ------------------------- interaction ------------------------- */
+["input","change"].forEach(function(ev){
+  ui.depth.addEventListener(ev,draw);
+  ui.blend.addEventListener(ev,draw);
+  ui.guides.addEventListener(ev,draw);
+});
+
+var anim = null, dir = 1;
+ui.sweep.addEventListener("click", function(){
+  if(anim){ cancelAnimationFrame(anim); anim=null; ui.sweep.innerHTML="&#9654; Sweep depth"; return; }
+  ui.sweep.innerHTML="&#10074;&#10074; Stop";
+  var last = performance.now();
+  var step = function(t){
+    var dt = Math.min(50, t-last); last = t;
+    var v = parseFloat(ui.depth.value) + dir*dt*0.0032;
+    if(v >= 9.5){ v = 9.5; dir = -1; }
+    if(v <= 1.5){ v = 1.5; dir = 1; }
+    ui.depth.value = v; draw();
+    anim = requestAnimationFrame(step);
+  };
+  anim = requestAnimationFrame(step);
+});
+
+draw();
+})();
+</script>
+</body>
+</html>

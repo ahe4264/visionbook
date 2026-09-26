@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Supervised Learning Loss Surface</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #12100f;
+      --muted: #686462;
+      --paper: #ffffff;
+      --panel: #f6f4f1;
+      --edge: #d7d0ca;
+      --grid: rgba(112, 112, 112, 0.35);
+      --deep: #300800;
+      --rust: #8b3829;
+      --warm: #ffe1b7;
+      --cyan: #a8e0dc;
+      --teal: #26867c;
+      --pale: #dce5e8;
+      --gold: #f6c55d;
+      --shadow: 0 20px 50px rgba(58, 35, 23, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background: #f4f2ef;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2vw, 22px);
+    }
+
+    .figure {
+      width: min(100%, 1450px);
+      background: var(--paper);
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: clamp(10px, 1.7vw, 20px);
+    }
+
+    .plots {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+      gap: clamp(14px, 2.2vw, 28px);
+      align-items: start;
+    }
+
+    .panel {
+      min-width: 0;
+      position: relative;
+    }
+
+    .plot-frame {
+      width: 100%;
+      aspect-ratio: 1.12 / 1;
+      position: relative;
+      overflow: visible;
+      background: #fff;
+      border-radius: 6px;
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      user-select: none;
+      cursor: crosshair;
+    }
+
+    .controls {
+      margin-top: clamp(12px, 1.8vw, 20px);
+      display: grid;
+      grid-template-columns: 1.15fr 1fr auto;
+      gap: 12px;
+      align-items: stretch;
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .readout {
+      display: grid;
+      align-content: center;
+      gap: 4px;
+      min-width: 0;
+      padding: 0 4px;
+    }
+
+    .readout-title {
+      font-size: clamp(18px, 2vw, 26px);
+      font-weight: 700;
+      line-height: 1.05;
+    }
+
+    .readout-value {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(14px, 1.45vw, 18px);
+    }
+
+    .sliders {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+
+    label {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      color: #24201f;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    label span {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .number {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--teal);
+    }
+
+    .buttons {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid #bfb7b0;
+      border-radius: 7px;
+      background: #ffffff;
+      color: var(--ink);
+      min-height: 38px;
+      padding: 0 13px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #1f7770;
+      border-color: #1f7770;
+      color: #ffffff;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid rgba(38, 134, 124, 0.28);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        display: block;
+      }
+
+      .plots,
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .plot-frame {
+        min-height: 360px;
+      }
+
+      .sliders {
+        grid-template-columns: 1fr;
+      }
+
+      .buttons {
+        justify-content: stretch;
+      }
+
+      button {
+        flex: 1 1 120px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="figure" aria-label="Interactive supervised learning loss landscape with 3D surface and heatmap views">
+    <div class="plots">
+      <section class="panel" aria-label="Three-dimensional loss surface">
+        <div class="plot-frame">
+          <canvas id="surface" width="720" height="640"></canvas>
+        </div>
+      </section>
+      <section class="panel" aria-label="Loss heatmap with contours">
+        <div class="plot-frame">
+          <canvas id="heatmap" width="720" height="640"></canvas>
+        </div>
+      </section>
+    </div>
+
+    <section class="controls" aria-label="Parameter and optimization controls">
+      <div class="readout">
+        <div class="readout-title">Loss landscape, L[φ]</div>
+        <div class="readout-value" id="lossReadout">φ₀ = 0.90, φ₁ = 0.55, L[φ] = 2.3</div>
+      </div>
+      <div class="sliders">
+        <label for="phi0">
+          <span>Intercept, φ₀<b id="phi0Text" class="number">0.90</b></span>
+          <input id="phi0" type="range" min="0" max="2" step="0.01" value="0.90">
+        </label>
+        <label for="phi1">
+          <span>Slope, φ₁<b id="phi1Text" class="number">0.55</b></span>
+          <input id="phi1" type="range" min="-1" max="1" step="0.01" value="0.55">
+        </label>
+        <label for="rate">
+          <span>Learning rate<b id="rateText" class="number">0.025</b></span>
+          <input id="rate" type="range" min="0.005" max="0.075" step="0.001" value="0.025">
+        </label>
+      </div>
+      <div class="buttons">
+        <button id="run" class="primary" type="button">Run descent</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const OPT = { phi0: 1.02, phi1: 0.52 };
+      const DOMAIN = { phi0Min: 0, phi0Max: 2, phi1Min: -1, phi1Max: 1, lossMax: 70 };
+      const examples = [
+        { phi0: 1.60, phi1: -0.80, color: "#dbe4e7", stroke: "#ffffff", radius: 10 },
+        { phi0: 0.40, phi1: 0.20, color: "#a8e0dc", stroke: "#ffffff", radius: 10 }
+      ];
+
+      const state = {
+        phi0: 0.90,
+        phi1: 0.55,
+        rate: 0.025,
+        path: [],
+        shownPath: [],
+        animating: false,
+        dragPanel: null,
+        lastTimestamp: 0,
+        stepIndex: 0,
+        stepT: 0
+      };
+
+      const surfaceCanvas = document.getElementById("surface");
+      const heatCanvas = document.getElementById("heatmap");
+      const phi0Input = document.getElementById("phi0");
+      const phi1Input = document.getElementById("phi1");
+      const rateInput = document.getElementById("rate");
+      const phi0Text = document.getElementById("phi0Text");
+      const phi1Text = document.getElementById("phi1Text");
+      const rateText = document.getElementById("rateText");
+      const lossReadout = document.getElementById("lossReadout");
+      const runButton = document.getElementById("run");
+      const resetButton = document.getElementById("reset");
+
+      let surfaceLayout = null;
+      let heatLayout = null;
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function scale(value, inMin, inMax, outMin, outMax) {
+        return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
+      }
+
+      function loss(phi0, phi1) {
+        const dx = phi0 - OPT.phi0;
+        const dy = phi1 - OPT.phi1;
+        const valley = dy + 0.78 * dx;
+        return 1.8 + 5.5 * dx * dx + 11.5 * valley * valley + 3.2 * dy * dy;
+      }
+
+      function gradient(phi0, phi1) {
+        const dx = phi0 - OPT.phi0;
+        const dy = phi1 - OPT.phi1;
+        const valley = dy + 0.78 * dx;
+        return {
+          phi0: 11.0 * dx + 17.94 * valley,
+          phi1: 23.0 * valley + 6.4 * dy
+        };
+      }
+
+      function colorForLoss(value, alpha) {
+        const t = clamp(value / DOMAIN.lossMax, 0, 1);
+        const stops = [
+          [0.00, [47, 8, 0]],
+          [0.34, [92, 22, 13]],
+          [0.66, [164, 80, 57]],
+          [1.00, [255, 229, 184]]
+        ];
+        let a = stops[0], b = stops[stops.length - 1];
+        for (let i = 0; i < stops.length - 1; i += 1) {
+          if (t >= stops[i][0] && t <= stops[i + 1][0]) {
+            a = stops[i];
+            b = stops[i + 1];
+            break;
+          }
+        }
+        const local = (t - a[0]) / (b[0] - a[0] || 1);
+        const rgb = a[1].map((component, i) => Math.round(lerp(component, b[1][i], local)));
+        return "rgba(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + "," + alpha + ")";
+      }
+
+      function setupCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.round(rect.width * dpr));
+        canvas.height = Math.max(1, Math.round(rect.height * dpr));
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        return { ctx, width: rect.width, height: rect.height };
+      }
+
+      function getSurfaceLayout(width, height) {
+        return {
+          base: { x: width * 0.24, y: height * 0.78 },
+          xVec: { x: width * 0.62, y: -height * 0.13 },
+          yVec: { x: -width * 0.15, y: -height * 0.31 },
+          zVec: { x: 0, y: -height * 0.55 },
+          width,
+          height
+        };
+      }
+
+      function project3D(phi0, phi1, value, layout) {
+        const u = (phi0 - DOMAIN.phi0Min) / (DOMAIN.phi0Max - DOMAIN.phi0Min);
+        const v = (DOMAIN.phi1Max - phi1) / (DOMAIN.phi1Max - DOMAIN.phi1Min);
+        const z = clamp(value, 0, DOMAIN.lossMax) / DOMAIN.lossMax;
+        return {
+          x: layout.base.x + u * layout.xVec.x + v * layout.yVec.x + z * layout.zVec.x,
+          y: layout.base.y + u * layout.xVec.y + v * layout.yVec.y + z * layout.zVec.y,
+          depth: u + v + 0.08 * z
+        };
+      }
+
+      function surfaceToParams(x, y, layout) {
+        const px = x - layout.base.x;
+        const py = y - layout.base.y;
+        const det = layout.xVec.x * layout.yVec.y - layout.xVec.y * layout.yVec.x;
+        const u = (px * layout.yVec.y - py * layout.yVec.x) / det;
+        const v = (layout.xVec.x * py - layout.xVec.y * px) / det;
+        return {
+          phi0: clamp(scale(u, 0, 1, DOMAIN.phi0Min, DOMAIN.phi0Max), DOMAIN.phi0Min, DOMAIN.phi0Max),
+          phi1: clamp(scale(v, 0, 1, DOMAIN.phi1Max, DOMAIN.phi1Min), DOMAIN.phi1Min, DOMAIN.phi1Max)
+        };
+      }
+
+      function drawSurface() {
+        const canvasData = setupCanvas(surfaceCanvas);
+        const ctx = canvasData.ctx;
+        const w = canvasData.width;
+        const h = canvasData.height;
+        surfaceLayout = getSurfaceLayout(w, h);
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+        drawSurfaceGrid(ctx, surfaceLayout);
+        drawSurfaceMesh(ctx, surfaceLayout);
+        drawSurfacePath(ctx, surfaceLayout);
+        drawSurfaceMarkers(ctx, surfaceLayout);
+        drawSurfaceAxes(ctx, surfaceLayout);
+        drawSurfaceText(ctx, w, h);
+      }
+
+      function drawSurfaceGrid(ctx, layout) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(119, 119, 119, 0.32)";
+        ctx.lineWidth = 1;
+
+        for (let i = 0; i <= 4; i += 1) {
+          const phi0 = scale(i, 0, 4, DOMAIN.phi0Min, DOMAIN.phi0Max);
+          const a = project3D(phi0, DOMAIN.phi1Min, 0, layout);
+          const b = project3D(phi0, DOMAIN.phi1Max, 0, layout);
+          line(ctx, a.x, a.y, b.x, b.y);
+        }
+
+        for (let j = 0; j <= 4; j += 1) {
+          const phi1 = scale(j, 0, 4, DOMAIN.phi1Min, DOMAIN.phi1Max);
+          const a = project3D(DOMAIN.phi0Min, phi1, 0, layout);
+          const b = project3D(DOMAIN.phi0Max, phi1, 0, layout);
+          line(ctx, a.x, a.y, b.x, b.y);
+        }
+
+        for (let z = 10; z <= 70; z += 10) {
+          const p0 = project3D(DOMAIN.phi0Min, DOMAIN.phi1Max, z, layout);
+          const px = project3D(DOMAIN.phi0Max, DOMAIN.phi1Max, z, layout);
+          const py = project3D(DOMAIN.phi0Min, DOMAIN.phi1Min, z, layout);
+          ctx.globalAlpha = 0.55;
+          line(ctx, p0.x, p0.y, px.x, px.y);
+          line(ctx, p0.x, p0.y, py.x, py.y);
+        }
+        ctx.restore();
+      }
+
+      function drawSurfaceMesh(ctx, layout) {
+        const n0 = 42;
+        const n1 = 42;
+        const cells = [];
+
+        for (let i = 0; i < n0; i += 1) {
+          for (let j = 0; j < n1; j += 1) {
+            const p00 = gridPoint(i, j, n0, n1, layout);
+            const p10 = gridPoint(i + 1, j, n0, n1, layout);
+            const p11 = gridPoint(i + 1, j + 1, n0, n1, layout);
+            const p01 = gridPoint(i, j + 1, n0, n1, layout);
+            const avgLoss = (p00.loss + p10.loss + p11.loss + p01.loss) / 4;
+            cells.push({
+              points: [p00, p10, p11, p01],
+              loss: avgLoss,
+              depth: (p00.depth + p10.depth + p11.depth + p01.depth) / 4
+            });
+          }
+        }
+
+        cells.sort((a, b) => b.depth - a.depth);
+
+        ctx.save();
+        cells.forEach((cell) => {
+          const shade = 0.86 + 0.16 * clamp((cell.points[0].y - cell.points[2].y + 34) / 68, 0, 1);
+          const fill = colorForLoss(Math.min(DOMAIN.lossMax, cell.loss * shade), 0.98);
+          ctx.beginPath();
+          cell.points.forEach((p, index) => {
+            if (index === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          });
+          ctx.closePath();
+          ctx.fillStyle = fill;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.20)";
+          ctx.lineWidth = 0.45;
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+
+      function gridPoint(i, j, n0, n1, layout) {
+        const phi0 = scale(i, 0, n0, DOMAIN.phi0Min, DOMAIN.phi0Max);
+        const phi1 = scale(j, 0, n1, DOMAIN.phi1Max, DOMAIN.phi1Min);
+        const value = loss(phi0, phi1);
+        return Object.assign({ phi0, phi1, loss: value }, project3D(phi0, phi1, value, layout));
+      }
+
+      function drawSurfacePath(ctx, layout) {
+        const path = state.shownPath.length ? state.shownPath : state.path;
+        if (path.length < 2) return;
+
+        ctx.save();
+        ctx.lineWidth = 3.2;
+        ctx.strokeStyle = "rgba(246, 197, 93, 0.92)";
+        ctx.shadowColor = "rgba(0,0,0,0.26)";
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        path.forEach((p, index) => {
+          const pp = project3D(p.phi0, p.phi1, loss(p.phi0, p.phi1), layout);
+          if (index === 0) ctx.moveTo(pp.x, pp.y);
+          else ctx.lineTo(pp.x, pp.y);
+        });
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        path.forEach((p, index) => {
+          if (index % 2 === 0 || index === path.length - 1) {
+            const pp = project3D(p.phi0, p.phi1, loss(p.phi0, p.phi1), layout);
+            markerCircle(ctx, pp.x, pp.y, index === path.length - 1 ? 5.5 : 3.2, "#f6c55d", "rgba(79,49,18,0.55)", 1.2);
+          }
+        });
+        ctx.restore();
+      }
+
+      function drawSurfaceMarkers(ctx, layout) {
+        examples.forEach((p) => {
+          const pp = project3D(p.phi0, p.phi1, loss(p.phi0, p.phi1), layout);
+          markerCircle(ctx, pp.x, pp.y, p.radius, p.color, "rgba(45,45,45,0.18)", 1.5);
+        });
+
+        const current = project3D(state.phi0, state.phi1, loss(state.phi0, state.phi1), layout);
+        markerCircle(ctx, current.x, current.y, 12, "#26867c", "#ffffff", 3);
+        markerCircle(ctx, current.x, current.y, 4.3, "#184f49", "transparent", 0);
+      }
+
+      function drawSurfaceAxes(ctx, layout) {
+        const frontLeft = project3D(DOMAIN.phi0Min, DOMAIN.phi1Max, 0, layout);
+        const frontRight = project3D(DOMAIN.phi0Max, DOMAIN.phi1Max, 0, layout);
+        const backLeft = project3D(DOMAIN.phi0Min, DOMAIN.phi1Min, 0, layout);
+        const zTop = project3D(DOMAIN.phi0Min, DOMAIN.phi1Max, DOMAIN.lossMax, layout);
+
+        ctx.save();
+        ctx.strokeStyle = "#111111";
+        ctx.lineWidth = 3.2;
+        line(ctx, frontLeft.x, frontLeft.y, frontRight.x, frontRight.y);
+        line(ctx, frontLeft.x, frontLeft.y, backLeft.x, backLeft.y);
+        line(ctx, frontLeft.x, frontLeft.y, zTop.x, zTop.y);
+
+        ctx.fillStyle = "#777777";
+        ctx.font = font(layout.width, 18, 25, 21);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        [0, 1, 2].forEach((tick) => {
+          const p = project3D(tick, DOMAIN.phi1Max, 0, layout);
+          tickLine(ctx, p, layout.yVec, -8, 8);
+          ctx.fillText(tick.toFixed(1), p.x + 3, p.y + 12);
+        });
+
+        ctx.textAlign = "right";
+        [-1, 0, 1].forEach((tick) => {
+          const p = project3D(DOMAIN.phi0Min, tick, 0, layout);
+          tickLine(ctx, p, layout.xVec, -7, 7);
+          ctx.fillText(tick.toFixed(1), p.x - 8, p.y - 3);
+        });
+
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        for (let z = 0; z <= 70; z += 10) {
+          const p = project3D(DOMAIN.phi0Min, DOMAIN.phi1Max, z, layout);
+          ctx.strokeStyle = "#777777";
+          ctx.lineWidth = 1.8;
+          line(ctx, p.x - 5, p.y, p.x + 5, p.y);
+          ctx.fillText(String(z), p.x - 10, p.y);
+        }
+
+        ctx.fillStyle = "#050505";
+        ctx.font = font(layout.width, 25, 34, 30);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        labelAlong(ctx, "Intercept, φ₀", frontLeft, frontRight, 34);
+        labelAlong(ctx, "Slope, φ₁", frontLeft, backLeft, -44);
+        ctx.save();
+        ctx.translate(zTop.x - 52, (zTop.y + frontLeft.y) / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText("Loss, L[φ]", 0, 0);
+        ctx.restore();
+        ctx.restore();
+      }
+
+      function drawSurfaceText(ctx, width, height) {
+        ctx.save();
+        ctx.fillStyle = "#050505";
+        ctx.font = font(width, 34, 46, 40);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText("a)", 8, 4);
+        ctx.restore();
+      }
+
+      function getHeatLayout(width, height) {
+        const left = Math.max(74, width * 0.115);
+        const right = Math.max(24, width * 0.04);
+        const top = Math.max(56, height * 0.09);
+        const bottom = Math.max(68, height * 0.11);
+        return {
+          left,
+          top,
+          width: width - left - right,
+          height: height - top - bottom,
+          fullWidth: width,
+          fullHeight: height
+        };
+      }
+
+      function heatX(phi0, layout) {
+        return scale(phi0, DOMAIN.phi0Min, DOMAIN.phi0Max, layout.left, layout.left + layout.width);
+      }
+
+      function heatY(phi1, layout) {
+        return scale(phi1, DOMAIN.phi1Min, DOMAIN.phi1Max, layout.top, layout.top + layout.height);
+      }
+
+      function heatToParams(x, y, layout) {
+        return {
+          phi0: clamp(scale(x, layout.left, layout.left + layout.width, DOMAIN.phi0Min, DOMAIN.phi0Max), DOMAIN.phi0Min, DOMAIN.phi0Max),
+          phi1: clamp(scale(y, layout.top, layout.top + layout.height, DOMAIN.phi1Min, DOMAIN.phi1Max), DOMAIN.phi1Min, DOMAIN.phi1Max)
+        };
+      }
+
+      function drawHeatmap() {
+        const canvasData = setupCanvas(heatCanvas);
+        const ctx = canvasData.ctx;
+        const w = canvasData.width;
+        const h = canvasData.height;
+        heatLayout = getHeatLayout(w, h);
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+
+        drawHeatField(ctx, heatLayout);
+        drawContours(ctx, heatLayout);
+        drawHeatPath(ctx, heatLayout);
+        drawHeatMarkers(ctx, heatLayout);
+        drawHeatAxes(ctx, heatLayout);
+      }
+
+      function drawHeatField(ctx, layout) {
+        const off = document.createElement("canvas");
+        const imageW = Math.max(2, Math.round(layout.width));
+        const imageH = Math.max(2, Math.round(layout.height));
+        off.width = imageW;
+        off.height = imageH;
+        const offCtx = off.getContext("2d");
+        const image = offCtx.createImageData(imageW, imageH);
+
+        for (let y = 0; y < imageH; y += 1) {
+          const phi1 = scale(y + 0.5, 0, imageH, DOMAIN.phi1Min, DOMAIN.phi1Max);
+          for (let x = 0; x < imageW; x += 1) {
+            const phi0 = scale(x + 0.5, 0, imageW, DOMAIN.phi0Min, DOMAIN.phi0Max);
+            const rgba = colorArray(loss(phi0, phi1));
+            const idx = (y * imageW + x) * 4;
+            image.data[idx] = rgba[0];
+            image.data[idx + 1] = rgba[1];
+            image.data[idx + 2] = rgba[2];
+            image.data[idx + 3] = 255;
+          }
+        }
+        offCtx.putImageData(image, 0, 0);
+        ctx.drawImage(off, layout.left, layout.top, layout.width, layout.height);
+      }
+
+      function colorArray(value) {
+        const t = clamp(value / DOMAIN.lossMax, 0, 1);
+        const stops = [
+          [0.00, [47, 8, 0]],
+          [0.34, [92, 22, 13]],
+          [0.66, [164, 80, 57]],
+          [1.00, [255, 229, 184]]
+        ];
+        let a = stops[0], b = stops[stops.length - 1];
+        for (let i = 0; i < stops.length - 1; i += 1) {
+          if (t >= stops[i][0] && t <= stops[i + 1][0]) {
+            a = stops[i];
+            b = stops[i + 1];
+            break;
+          }
+        }
+        const local = (t - a[0]) / (b[0] - a[0] || 1);
+        return a[1].map((component, i) => Math.round(lerp(component, b[1][i], local)));
+      }
+
+      function drawContours(ctx, layout) {
+        const cols = 72;
+        const rows = 72;
+        const values = [];
+        for (let j = 0; j <= rows; j += 1) {
+          values[j] = [];
+          const phi1 = scale(j, 0, rows, DOMAIN.phi1Min, DOMAIN.phi1Max);
+          for (let i = 0; i <= cols; i += 1) {
+            const phi0 = scale(i, 0, cols, DOMAIN.phi0Min, DOMAIN.phi0Max);
+            values[j][i] = loss(phi0, phi1);
+          }
+        }
+
+        ctx.save();
+        ctx.rect(layout.left, layout.top, layout.width, layout.height);
+        ctx.clip();
+        ctx.strokeStyle = "rgba(126, 126, 126, 0.68)";
+        ctx.lineWidth = 2.2;
+        for (let level = 5; level <= 70; level += 5) {
+          drawContourLevel(ctx, layout, values, cols, rows, level);
+        }
+        ctx.restore();
+      }
+
+      function drawContourLevel(ctx, layout, values, cols, rows, level) {
+        for (let j = 0; j < rows; j += 1) {
+          for (let i = 0; i < cols; i += 1) {
+            const c = [
+              { x: i, y: j, v: values[j][i] },
+              { x: i + 1, y: j, v: values[j][i + 1] },
+              { x: i + 1, y: j + 1, v: values[j + 1][i + 1] },
+              { x: i, y: j + 1, v: values[j + 1][i] }
+            ];
+            const points = [];
+            addEdgeIntersection(points, c[0], c[1], level);
+            addEdgeIntersection(points, c[1], c[2], level);
+            addEdgeIntersection(points, c[2], c[3], level);
+            addEdgeIntersection(points, c[3], c[0], level);
+            if (points.length === 2) {
+              contourSegment(ctx, layout, points[0], points[1], cols, rows);
+            } else if (points.length === 4) {
+              contourSegment(ctx, layout, points[0], points[1], cols, rows);
+              contourSegment(ctx, layout, points[2], points[3], cols, rows);
+            }
+          }
+        }
+      }
+
+      function addEdgeIntersection(points, a, b, level) {
+        const crosses = (a.v <= level && b.v > level) || (a.v > level && b.v <= level);
+        if (!crosses) return;
+        const t = (level - a.v) / (b.v - a.v || 1);
+        points.push({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) });
+      }
+
+      function contourSegment(ctx, layout, a, b, cols, rows) {
+        ctx.beginPath();
+        ctx.moveTo(scale(a.x, 0, cols, layout.left, layout.left + layout.width), scale(a.y, 0, rows, layout.top, layout.top + layout.height));
+        ctx.lineTo(scale(b.x, 0, cols, layout.left, layout.left + layout.width), scale(b.y, 0, rows, layout.top, layout.top + layout.height));
+        ctx.stroke();
+      }
+
+      function drawHeatPath(ctx, layout) {
+        const path = state.shownPath.length ? state.shownPath : state.path;
+        if (path.length < 2) return;
+        ctx.save();
+        ctx.rect(layout.left, layout.top, layout.width, layout.height);
+        ctx.clip();
+        ctx.strokeStyle = "rgba(246, 197, 93, 0.98)";
+        ctx.lineWidth = 3.4;
+        ctx.shadowColor = "rgba(0,0,0,0.25)";
+        ctx.shadowBlur = 3;
+        ctx.beginPath();
+        path.forEach((p, index) => {
+          const x = heatX(p.phi0, layout);
+          const y = heatY(p.phi1, layout);
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        path.forEach((p, index) => {
+          if (index % 2 === 0 || index === path.length - 1) {
+            markerCircle(ctx, heatX(p.phi0, layout), heatY(p.phi1, layout), index === path.length - 1 ? 5.5 : 3.2, "#f6c55d", "rgba(79,49,18,0.55)", 1.2);
+          }
+        });
+        ctx.restore();
+      }
+
+      function drawHeatMarkers(ctx, layout) {
+        examples.forEach((p) => {
+          markerCircle(ctx, heatX(p.phi0, layout), heatY(p.phi1, layout), p.radius, p.color, "rgba(255,255,255,0.75)", 2);
+        });
+        markerCircle(ctx, heatX(state.phi0, layout), heatY(state.phi1, layout), 12, "#26867c", "rgba(255,255,255,0.85)", 3);
+        markerCircle(ctx, heatX(state.phi0, layout), heatY(state.phi1, layout), 4.3, "#184f49", "transparent", 0);
+      }
+
+      function drawHeatAxes(ctx, layout) {
+        const ctxFontTick = font(layout.fullWidth, 19, 27, 23);
+        const ctxFontAxis = font(layout.fullWidth, 28, 40, 35);
+        const ctxFontTitle = font(layout.fullWidth, 30, 42, 36);
+        ctx.save();
+        ctx.strokeStyle = "#111111";
+        ctx.lineWidth = 3.2;
+        ctx.strokeRect(layout.left, layout.top, layout.width, layout.height);
+
+        ctx.fillStyle = "#777777";
+        ctx.font = ctxFontTick;
+        ctx.textBaseline = "top";
+        ctx.textAlign = "center";
+        for (let tick = 0; tick <= 2; tick += 0.2) {
+          const x = heatX(tick, layout);
+          const major = Math.abs(tick - Math.round(tick)) < 0.001;
+          ctx.strokeStyle = "#777777";
+          ctx.lineWidth = major ? 2.4 : 1.8;
+          line(ctx, x, layout.top + layout.height, x, layout.top + layout.height + (major ? 9 : 5));
+          if (major) ctx.fillText(tick.toFixed(1), x, layout.top + layout.height + 14);
+        }
+
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "right";
+        for (let tick = -1; tick <= 1.0001; tick += 0.2) {
+          const y = heatY(tick, layout);
+          const major = Math.abs(tick - Math.round(tick)) < 0.001;
+          ctx.lineWidth = major ? 2.4 : 1.8;
+          line(ctx, layout.left - (major ? 9 : 5), y, layout.left, y);
+          if (major) ctx.fillText(tick.toFixed(1), layout.left - 13, y);
+        }
+
+        ctx.fillStyle = "#050505";
+        ctx.font = ctxFontTitle;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Loss, L[φ]", layout.left + layout.width / 2, layout.top - 28);
+
+        ctx.font = ctxFontAxis;
+        ctx.fillText("Intercept, φ₀", layout.left + layout.width / 2, layout.top + layout.height + 54);
+        ctx.save();
+        ctx.translate(layout.left - 55, layout.top + layout.height / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText("Slope, φ₁", 0, 0);
+        ctx.restore();
+
+        ctx.font = font(layout.fullWidth, 34, 46, 40);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText("b)", 4, 4);
+        ctx.restore();
+      }
+
+      function markerCircle(ctx, x, y, radius, fill, stroke, lineWidth) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        if (lineWidth > 0) {
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = lineWidth;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function line(ctx, x1, y1, x2, y2) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+
+      function tickLine(ctx, p, vec, before, after) {
+        const len = Math.hypot(vec.x, vec.y) || 1;
+        const nx = -vec.y / len;
+        const ny = vec.x / len;
+        line(ctx, p.x + nx * before, p.y + ny * before, p.x + nx * after, p.y + ny * after);
+      }
+
+      function labelAlong(ctx, label, start, end, offset) {
+        const mx = (start.x + end.x) / 2;
+        const my = (start.y + end.y) / 2;
+        const angle = Math.atan2(end.y - start.y, end.x - start.x);
+        ctx.save();
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const len = Math.hypot(dx, dy) || 1;
+        ctx.translate(mx + (-dy / len) * offset, my + (dx / len) * offset);
+        ctx.rotate(angle);
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+      }
+
+      function font(width, min, max, preferred) {
+        const size = clamp(width / 22, min, max);
+        return Math.min(size, preferred) + "px Inter, ui-sans-serif, system-ui, sans-serif";
+      }
+
+      function buildDescentPath(startPhi0, startPhi1) {
+        const points = [{ phi0: startPhi0, phi1: startPhi1 }];
+        let phi0 = startPhi0;
+        let phi1 = startPhi1;
+        for (let i = 0; i < 38; i += 1) {
+          const g = gradient(phi0, phi1);
+          phi0 = clamp(phi0 - state.rate * g.phi0, DOMAIN.phi0Min, DOMAIN.phi0Max);
+          phi1 = clamp(phi1 - state.rate * g.phi1, DOMAIN.phi1Min, DOMAIN.phi1Max);
+          points.push({ phi0, phi1 });
+          if (Math.hypot(phi0 - OPT.phi0, phi1 - OPT.phi1) < 0.006) break;
+        }
+        return points;
+      }
+
+      function startDescent() {
+        state.path = buildDescentPath(state.phi0, state.phi1);
+        state.shownPath = [state.path[0]];
+        state.animating = true;
+        state.stepIndex = 0;
+        state.stepT = 0;
+        state.lastTimestamp = 0;
+        runButton.textContent = "Running";
+        window.requestAnimationFrame(animate);
+      }
+
+      function animate(timestamp) {
+        if (!state.animating) return;
+        if (!state.lastTimestamp) state.lastTimestamp = timestamp;
+        const dt = Math.min(64, timestamp - state.lastTimestamp);
+        state.lastTimestamp = timestamp;
+        state.stepT += dt / 125;
+
+        while (state.stepT >= 1 && state.stepIndex < state.path.length - 1) {
+          state.stepT -= 1;
+          state.stepIndex += 1;
+        }
+
+        if (state.stepIndex >= state.path.length - 1) {
+          const last = state.path[state.path.length - 1];
+          state.phi0 = last.phi0;
+          state.phi1 = last.phi1;
+          state.shownPath = state.path.slice();
+          state.animating = false;
+          runButton.textContent = "Run descent";
+          syncControls();
+          drawAll();
+          return;
+        }
+
+        const a = state.path[state.stepIndex];
+        const b = state.path[state.stepIndex + 1];
+        const t = Math.min(1, state.stepT);
+        const current = {
+          phi0: lerp(a.phi0, b.phi0, t),
+          phi1: lerp(a.phi1, b.phi1, t)
+        };
+        state.phi0 = current.phi0;
+        state.phi1 = current.phi1;
+        state.shownPath = state.path.slice(0, state.stepIndex + 1).concat([current]);
+        syncControls();
+        drawAll();
+        window.requestAnimationFrame(animate);
+      }
+
+      function stopAnimation() {
+        state.animating = false;
+        runButton.textContent = "Run descent";
+      }
+
+      function setCurrent(phi0, phi1, clearPath) {
+        stopAnimation();
+        state.phi0 = clamp(phi0, DOMAIN.phi0Min, DOMAIN.phi0Max);
+        state.phi1 = clamp(phi1, DOMAIN.phi1Min, DOMAIN.phi1Max);
+        if (clearPath) {
+          state.path = [];
+          state.shownPath = [];
+        }
+        syncControls();
+        drawAll();
+      }
+
+      function syncControls() {
+        phi0Input.value = state.phi0.toFixed(2);
+        phi1Input.value = state.phi1.toFixed(2);
+        rateInput.value = state.rate.toFixed(3);
+        phi0Text.textContent = state.phi0.toFixed(2);
+        phi1Text.textContent = state.phi1.toFixed(2);
+        rateText.textContent = state.rate.toFixed(3);
+        lossReadout.textContent = "φ₀ = " + state.phi0.toFixed(2) + ", φ₁ = " + state.phi1.toFixed(2) + ", L[φ] = " + loss(state.phi0, state.phi1).toFixed(2);
+      }
+
+      function drawAll() {
+        drawSurface();
+        drawHeatmap();
+      }
+
+      function pointerPosition(event, canvas) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      }
+
+      function handleSurfacePointer(event) {
+        if (!surfaceLayout) return;
+        const pos = pointerPosition(event, surfaceCanvas);
+        const p = surfaceToParams(pos.x, pos.y, surfaceLayout);
+        setCurrent(p.phi0, p.phi1, true);
+      }
+
+      function handleHeatPointer(event) {
+        if (!heatLayout) return;
+        const pos = pointerPosition(event, heatCanvas);
+        const p = heatToParams(pos.x, pos.y, heatLayout);
+        setCurrent(p.phi0, p.phi1, true);
+      }
+
+      surfaceCanvas.addEventListener("pointerdown", (event) => {
+        surfaceCanvas.setPointerCapture(event.pointerId);
+        state.dragPanel = "surface";
+        handleSurfacePointer(event);
+      });
+      surfaceCanvas.addEventListener("pointermove", (event) => {
+        if (state.dragPanel === "surface") handleSurfacePointer(event);
+      });
+      surfaceCanvas.addEventListener("pointerup", (event) => {
+        if (state.dragPanel === "surface") {
+          handleSurfacePointer(event);
+          state.dragPanel = null;
+          startDescent();
+        }
+      });
+      surfaceCanvas.addEventListener("pointercancel", () => { state.dragPanel = null; });
+
+      heatCanvas.addEventListener("pointerdown", (event) => {
+        heatCanvas.setPointerCapture(event.pointerId);
+        state.dragPanel = "heat";
+        handleHeatPointer(event);
+      });
+      heatCanvas.addEventListener("pointermove", (event) => {
+        if (state.dragPanel === "heat") handleHeatPointer(event);
+      });
+      heatCanvas.addEventListener("pointerup", (event) => {
+        if (state.dragPanel === "heat") {
+          handleHeatPointer(event);
+          state.dragPanel = null;
+          startDescent();
+        }
+      });
+      heatCanvas.addEventListener("pointercancel", () => { state.dragPanel = null; });
+
+      phi0Input.addEventListener("input", () => setCurrent(Number(phi0Input.value), state.phi1, true));
+      phi1Input.addEventListener("input", () => setCurrent(state.phi0, Number(phi1Input.value), true));
+      rateInput.addEventListener("input", () => {
+        state.rate = Number(rateInput.value);
+        rateText.textContent = state.rate.toFixed(3);
+        if (state.path.length) {
+          state.path = buildDescentPath(state.phi0, state.phi1);
+          state.shownPath = state.path.slice(0, Math.min(8, state.path.length));
+        }
+        drawAll();
+      });
+      runButton.addEventListener("click", startDescent);
+      resetButton.addEventListener("click", () => {
+        state.rate = 0.025;
+        setCurrent(0.90, 0.55, true);
+      });
+
+      let resizeTimer = 0;
+      window.addEventListener("resize", () => {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(drawAll, 80);
+      });
+
+      syncControls();
+      drawAll();
+    }());
+  </script>
+</body>
+</html>

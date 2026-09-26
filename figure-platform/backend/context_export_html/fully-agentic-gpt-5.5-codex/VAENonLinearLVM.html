@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VAE Nonlinear Latent Variable Model</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171412;
+      --muted: #605b55;
+      --paper: #fffdfa;
+      --panel: #f4f7f7;
+      --line: #cdd7d8;
+      --brown: #754020;
+      --maroon: #210703;
+      --teal: #8edfd4;
+      --teal-dark: #188e89;
+      --accent: #d45d38;
+      --shadow: 0 18px 42px rgba(30, 24, 20, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background: linear-gradient(180deg, #ffffff 0%, #edf4f4 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+    }
+
+    main {
+      min-width: 0;
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2vw, 22px);
+    }
+
+    .figure-card {
+      width: min(100%, 1240px);
+      aspect-ratio: 1200 / 760;
+      max-height: calc(100vh - 44px);
+      border: 1px solid #d9d0c8;
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      user-select: none;
+      touch-action: none;
+      background: #fffefa;
+    }
+
+    aside {
+      min-width: 0;
+      min-height: 100vh;
+      padding: 18px;
+      background: var(--panel);
+      border-left: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid #d7e0df;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .control-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #35302d;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid #249b97;
+      border-radius: 8px;
+      background: #e8fbf8;
+      color: #0b5754;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #d7f6f1;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--teal-dark);
+    }
+
+    .readout {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px 10px;
+      align-items: baseline;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .readout strong {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .note {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .math-label {
+      font-family: Georgia, "Times New Roman", serif;
+      font-style: italic;
+      fill: #111;
+    }
+
+    .sans-label {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: #211d1a;
+    }
+
+    .axis-line {
+      fill: none;
+      stroke: var(--brown);
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .slice-plane {
+      fill: var(--maroon);
+      stroke: #723719;
+      stroke-width: 1.5;
+      opacity: 0.22;
+    }
+
+    .selected-plane {
+      fill: #250703;
+      stroke: #96552e;
+      stroke-width: 2.2;
+      opacity: 0.94;
+    }
+
+    .curve {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .posterior-bead {
+      stroke: #ffffff;
+      stroke-width: 1.5;
+    }
+
+    .drag-point {
+      cursor: grab;
+      filter: url(#dotShadow);
+    }
+
+    .drag-point:active {
+      cursor: grabbing;
+    }
+
+    @media (max-width: 880px) {
+      body {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 8px;
+      }
+
+      .figure-card {
+        max-height: none;
+      }
+
+      aside {
+        min-height: auto;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      aside h1,
+      aside .note {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 560px) {
+      aside {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="figure-card" aria-label="Interactive nonlinear latent variable model for a variational autoencoder">
+      <svg id="figure" viewBox="0 0 1200 760" role="img" aria-labelledby="figTitle figDesc">
+        <title id="figTitle">Nonlinear latent variable model underlying a VAE</title>
+        <desc id="figDesc">A 3D joint distribution over x1, x2, and z is marginalized into a two-dimensional non-Gaussian distribution, with controls for z slices and posterior uncertainty.</desc>
+        <defs>
+          <marker id="arrowTeal" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#8edfd4"></path>
+          </marker>
+          <marker id="arrowGray" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#b7c2c5"></path>
+          </marker>
+          <radialGradient id="hotSpot" cx="50%" cy="50%" r="62%">
+            <stop offset="0%" stop-color="#ffffcf" stop-opacity="1"></stop>
+            <stop offset="27%" stop-color="#fff4cd" stop-opacity="0.92"></stop>
+            <stop offset="50%" stop-color="#df7657" stop-opacity="0.62"></stop>
+            <stop offset="82%" stop-color="#5a160c" stop-opacity="0.18"></stop>
+            <stop offset="100%" stop-color="#210703" stop-opacity="0"></stop>
+          </radialGradient>
+          <radialGradient id="marginalHotSpot" cx="50%" cy="50%" r="64%">
+            <stop offset="0%" stop-color="#fffbd0" stop-opacity="1"></stop>
+            <stop offset="32%" stop-color="#fff1bd" stop-opacity="0.86"></stop>
+            <stop offset="58%" stop-color="#db684c" stop-opacity="0.42"></stop>
+            <stop offset="88%" stop-color="#451007" stop-opacity="0.12"></stop>
+            <stop offset="100%" stop-color="#210703" stop-opacity="0"></stop>
+          </radialGradient>
+          <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="10"></feGaussianBlur>
+          </filter>
+          <filter id="dotShadow" x="-80%" y="-80%" width="260%" height="260%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2.2" flood-color="#063f3d" flood-opacity="0.28"></feDropShadow>
+          </filter>
+          <clipPath id="clipMarginal"></clipPath>
+          <clipPath id="clipSelected"></clipPath>
+          <clipPath id="clipSweep"></clipPath>
+        </defs>
+
+        <rect width="1200" height="760" fill="#fffefa"></rect>
+        <g id="marginalLayer"></g>
+        <g id="arrowLayer"></g>
+        <g id="jointLayer"></g>
+        <g id="interactionLayer"></g>
+        <g id="labelLayer"></g>
+      </svg>
+    </section>
+  </main>
+
+  <aside>
+    <h1>Nonlinear VAE latent variable model</h1>
+
+    <div class="control">
+      <div class="control-title">Marginalization</div>
+      <button id="animateBtn" type="button">Animate marginalization over z</button>
+      <div class="readout">
+        <span>operation</span><strong id="sweepReadout">ready</strong>
+      </div>
+    </div>
+
+    <div class="control">
+      <label class="control-title" for="zSlider">Latent slice z</label>
+      <input id="zSlider" type="range" min="-2.2" max="2.2" step="0.01" value="0.85">
+      <div class="readout">
+        <span>selected value</span><strong id="zReadout">z = 0.85</strong>
+        <span>conditional</span><strong>Pr(x|z,&phi;)</strong>
+      </div>
+    </div>
+
+    <div class="control">
+      <div class="control-title">Posterior for dragged x</div>
+      <div class="readout">
+        <span>x<sub>1</sub></span><strong id="x1Readout">0.74</strong>
+        <span>x<sub>2</sub></span><strong id="x2Readout">0.49</strong>
+        <span>E[z|x]</span><strong id="meanReadout">0.00</strong>
+        <span>sd[z|x]</span><strong id="sdReadout">0.00</strong>
+      </div>
+    </div>
+
+    <p class="note">The marginal Pr(x|&phi;) is built by integrating the colored conditional slices Pr(x|z,&phi;) over the latent axis. The posterior beads on the z axis show which latent values explain the current observation.</p>
+  </aside>
+
+  <script>
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const svg = document.getElementById("figure");
+    const jointLayer = document.getElementById("jointLayer");
+    const marginalLayer = document.getElementById("marginalLayer");
+    const arrowLayer = document.getElementById("arrowLayer");
+    const interactionLayer = document.getElementById("interactionLayer");
+    const labelLayer = document.getElementById("labelLayer");
+    const zSlider = document.getElementById("zSlider");
+    const zReadout = document.getElementById("zReadout");
+    const x1Readout = document.getElementById("x1Readout");
+    const x2Readout = document.getElementById("x2Readout");
+    const meanReadout = document.getElementById("meanReadout");
+    const sdReadout = document.getElementById("sdReadout");
+    const sweepReadout = document.getElementById("sweepReadout");
+    const animateBtn = document.getElementById("animateBtn");
+
+    const O = { x: 150, y: 474 };
+    const U = { x: 320, y: -102 };
+    const V = { x: 0, y: -310 };
+    const W = { x: 420, y: 146 };
+    const zMin = -2.2;
+    const zMax = 2.2;
+    const sliceValues = [-2.0, -1.45, -0.9, -0.35, 0.2, 0.75, 1.3, 1.85, 2.2];
+    const sliceColors = ["#d7191c", "#1a9641", "#2b83ba", "#111111", "#8c8f17", "#c51b7d", "#00a6c8", "#233b8b", "#7f1d1d"];
+
+    const panel = {
+      D: { x: 895, y: 615 },
+      ex: { x: 235, y: -80 },
+      ey: { x: 0, y: -350 }
+    };
+    panel.A = add(panel.D, panel.ey);
+    panel.C = add(panel.D, panel.ex);
+    panel.B = add(add(panel.D, panel.ex), panel.ey);
+
+    const state = {
+      selectedZ: parseFloat(zSlider.value),
+      obs: centerUV(0.85),
+      dragging: false,
+      animationId: 0,
+      sweepActive: false
+    };
+
+    const leftCurves = [];
+    const rightCurves = [];
+    const posteriorBeads = [];
+
+    function createEl(tag, attrs, parent) {
+      const node = document.createElementNS(SVG_NS, tag);
+      setAttrs(node, attrs || {});
+      if (parent) parent.appendChild(node);
+      return node;
+    }
+
+    function setAttrs(node, attrs) {
+      Object.entries(attrs).forEach(([key, value]) => {
+        if (value === null || value === undefined) return;
+        if (key === "text") {
+          node.textContent = value;
+        } else if (key === "html") {
+          node.innerHTML = value;
+        } else {
+          node.setAttribute(key, String(value));
+        }
+      });
+    }
+
+    function add(a, b) {
+      return { x: a.x + b.x, y: a.y + b.y };
+    }
+
+    function mul(a, s) {
+      return { x: a.x * s, y: a.y * s };
+    }
+
+    function clamp(value, lo, hi) {
+      return Math.max(lo, Math.min(hi, value));
+    }
+
+    function zNorm(z) {
+      return (z - zMin) / (zMax - zMin);
+    }
+
+    function zFromNorm(s) {
+      return zMin + s * (zMax - zMin);
+    }
+
+    function project3D(u, v, z) {
+      const s = zNorm(z);
+      return add(add(add(O, mul(U, u)), mul(V, v)), mul(W, s));
+    }
+
+    function flatProject(u, v) {
+      return add(add(panel.D, mul(panel.ex, u)), mul(panel.ey, v));
+    }
+
+    function uvFromFlatPoint(p) {
+      const dx = p.x - panel.D.x;
+      const dy = p.y - panel.D.y;
+      const det = panel.ex.x * panel.ey.y - panel.ex.y * panel.ey.x;
+      const u = (dx * panel.ey.y - dy * panel.ey.x) / det;
+      const v = (panel.ex.x * dy - panel.ex.y * dx) / det;
+      return { u: clamp(u, 0.02, 0.98), v: clamp(v, 0.02, 0.98) };
+    }
+
+    function pointsToPath(points, close) {
+      const body = points.map((p, index) => `${index ? "L" : "M"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(" ");
+      return close ? `${body} Z` : body;
+    }
+
+    function planePath(z) {
+      return pointsToPath([
+        project3D(0, 0, z),
+        project3D(1, 0, z),
+        project3D(1, 1, z),
+        project3D(0, 1, z)
+      ], true);
+    }
+
+    function centerUV(z) {
+      const s = zNorm(z);
+      const u = 0.12 + 0.74 * s + 0.10 * Math.sin(Math.PI * s);
+      const v = 0.11 + 0.70 * Math.sin(Math.PI * s) + 0.18 * s;
+      return { u: clamp(u, 0.08, 0.92), v: clamp(v, 0.08, 0.88) };
+    }
+
+    function conditionalUV(z, t) {
+      const c = centerUV(z);
+      const width = 0.26 + 0.05 * Math.cos(1.4 * z);
+      const lean = -0.05 * z * (t - 0.5);
+      const curl = 0.065 * Math.sin((t - 0.5) * Math.PI * 2.05 + z * 0.8);
+      return {
+        u: clamp(c.u + (t - 0.5) * width, 0.055, 0.95),
+        v: clamp(c.v + curl + lean, 0.07, 0.93)
+      };
+    }
+
+    function conditionalPath(z, projector) {
+      const pts = [];
+      for (let i = 0; i < 48; i += 1) {
+        const t = i / 47;
+        const uv = conditionalUV(z, t);
+        pts.push(projector(uv.u, uv.v, z));
+      }
+      return pointsToPath(pts, false);
+    }
+
+    function centerPath3D() {
+      const pts = [];
+      for (let i = 0; i < 95; i += 1) {
+        const z = zFromNorm(i / 94);
+        const c = centerUV(z);
+        pts.push(project3D(c.u, c.v, z));
+      }
+      return pointsToPath(pts, false);
+    }
+
+    function centerPathFlat() {
+      const pts = [];
+      for (let i = 0; i < 95; i += 1) {
+        const z = zFromNorm(i / 94);
+        const c = centerUV(z);
+        pts.push(flatProject(c.u, c.v));
+      }
+      return pointsToPath(pts, false);
+    }
+
+    function label(parent, x, y, html, attrs) {
+      const text = createEl("text", Object.assign({
+        x,
+        y,
+        "font-size": 30,
+        "text-anchor": "middle",
+        "dominant-baseline": "middle",
+        class: "math-label"
+      }, attrs || {}), parent);
+      text.innerHTML = html;
+      return text;
+    }
+
+    function buildMarginalPanel() {
+      const panelPath = pointsToPath([panel.A, panel.B, panel.C, panel.D], true);
+      const clip = document.getElementById("clipMarginal");
+      createEl("path", { d: panelPath }, clip);
+
+      createEl("path", {
+        d: panelPath,
+        fill: "#210703",
+        stroke: "#111111",
+        "stroke-width": 3.2
+      }, marginalLayer);
+
+      const density = createEl("g", { "clip-path": "url(#clipMarginal)" }, marginalLayer);
+      for (let i = 0; i < 38; i += 1) {
+        const z = zFromNorm(i / 37);
+        const c = centerUV(z);
+        const p = flatProject(c.u, c.v);
+        const rx = 50 + 18 * Math.sin(Math.PI * zNorm(z));
+        const ry = 32 + 12 * Math.cos(1.2 * z);
+        createEl("ellipse", {
+          cx: p.x,
+          cy: p.y,
+          rx,
+          ry,
+          fill: "url(#marginalHotSpot)",
+          opacity: 0.55,
+          filter: "url(#softGlow)",
+          transform: `rotate(-33 ${p.x} ${p.y})`
+        }, density);
+      }
+      for (let i = 0; i < 16; i += 1) {
+        const z = zFromNorm(i / 15);
+        const c = centerUV(z);
+        const p = flatProject(c.u, c.v);
+        createEl("ellipse", {
+          cx: p.x,
+          cy: p.y,
+          rx: 42,
+          ry: 21,
+          fill: "url(#marginalHotSpot)",
+          opacity: 0.28,
+          transform: `rotate(-58 ${p.x} ${p.y})`
+        }, density);
+      }
+
+      const curveClipGroup = createEl("g", { "clip-path": "url(#clipMarginal)" }, marginalLayer);
+      sliceValues.forEach((z, i) => {
+        const path = createEl("path", {
+          d: conditionalPath(z, (u, v) => flatProject(u, v)),
+          class: "curve",
+          stroke: sliceColors[i],
+          "stroke-width": 2.8,
+          opacity: 0.66
+        }, curveClipGroup);
+        rightCurves.push({ z, path });
+      });
+
+      createEl("path", {
+        d: centerPathFlat(),
+        class: "curve",
+        stroke: "#98ded6",
+        "stroke-width": 4.5,
+        opacity: 0.95,
+        "marker-end": "url(#arrowTeal)"
+      }, curveClipGroup);
+
+      label(labelLayer, 1008, 224, "x<tspan baseline-shift='sub' font-size='19'>1</tspan>", { "font-size": 34 });
+      label(labelLayer, 1151, 426, "x<tspan baseline-shift='sub' font-size='19'>2</tspan>", { "font-size": 32 });
+      label(labelLayer, 1035, 657, "Pr(<tspan font-weight='700'>x</tspan>|&phi;)", { "font-size": 34, transform: "rotate(-18 1035 657)" });
+    }
+
+    function buildJointPanel() {
+      const baseCorners = [
+        project3D(0, 0, zMin),
+        project3D(1, 0, zMin),
+        project3D(1, 1, zMin),
+        project3D(0, 1, zMin)
+      ];
+      const farCorners = [
+        project3D(0, 0, zMax),
+        project3D(1, 0, zMax),
+        project3D(1, 1, zMax),
+        project3D(0, 1, zMax)
+      ];
+
+      [sliceValues[1], sliceValues[5]].forEach((z) => {
+        createEl("path", { d: planePath(z), class: "slice-plane", opacity: 0.78 }, jointLayer);
+        const c = centerUV(z);
+        const p = project3D(c.u, c.v, z);
+        createEl("ellipse", {
+          cx: p.x,
+          cy: p.y,
+          rx: 46,
+          ry: 27,
+          fill: "url(#hotSpot)",
+          opacity: 0.86,
+          filter: "url(#softGlow)",
+          transform: `rotate(-72 ${p.x} ${p.y})`
+        }, jointLayer);
+      });
+
+      sliceValues.forEach((z, i) => {
+        const path = createEl("path", {
+          d: conditionalPath(z, (u, v, zz) => project3D(u, v, zz)),
+          class: "curve",
+          stroke: sliceColors[i],
+          "stroke-width": 2.6,
+          opacity: 0.82
+        }, jointLayer);
+        leftCurves.push({ z, path });
+      });
+
+      const selectedGroup = createEl("g", {}, jointLayer);
+      const selectedPlane = createEl("path", { class: "selected-plane" }, selectedGroup);
+      const selectedGlowClip = document.getElementById("clipSelected");
+      const selectedClipPath = createEl("path", {}, selectedGlowClip);
+      const selectedGlowGroup = createEl("g", { "clip-path": "url(#clipSelected)" }, selectedGroup);
+      const selectedGlow = createEl("ellipse", {
+        fill: "url(#hotSpot)",
+        opacity: 0.92,
+        filter: "url(#softGlow)"
+      }, selectedGlowGroup);
+      const selectedCurve = createEl("path", {
+        class: "curve",
+        stroke: "#8edfd4",
+        "stroke-width": 5.2,
+        opacity: 0.98
+      }, selectedGroup);
+
+      const sweepGroup = createEl("g", { opacity: 0 }, interactionLayer);
+      const sweepClip = document.getElementById("clipSweep");
+      const sweepClipPath = createEl("path", {}, sweepClip);
+      const sweepPlane = createEl("path", {
+        fill: "#8edfd4",
+        opacity: 0.16,
+        stroke: "#16aaa1",
+        "stroke-width": 2.4
+      }, sweepGroup);
+      const sweepCurve = createEl("path", {
+        class: "curve",
+        stroke: "#0d9c95",
+        "stroke-width": 5,
+        "stroke-dasharray": "8 8"
+      }, sweepGroup);
+      const collapseLine = createEl("path", {
+        class: "curve",
+        stroke: "#8edfd4",
+        "stroke-width": 4,
+        opacity: 0.86,
+        "marker-end": "url(#arrowTeal)"
+      }, sweepGroup);
+
+      state.selectedPlane = selectedPlane;
+      state.selectedClipPath = selectedClipPath;
+      state.selectedGlow = selectedGlow;
+      state.selectedCurve = selectedCurve;
+      state.sweepGroup = sweepGroup;
+      state.sweepClipPath = sweepClipPath;
+      state.sweepPlane = sweepPlane;
+      state.sweepCurve = sweepCurve;
+      state.collapseLine = collapseLine;
+
+      drawWireBox(baseCorners, farCorners);
+      drawManifold();
+      drawPosteriorAxis();
+
+      label(labelLayer, 263, 116, "x<tspan baseline-shift='sub' font-size='20'>1</tspan>", { "font-size": 36 });
+      label(labelLayer, 112, 311, "x<tspan baseline-shift='sub' font-size='20'>2</tspan>", { "font-size": 36 });
+      label(labelLayer, 404, 600, "z", { "font-size": 34 });
+      label(labelLayer, 748, 633, "Pr(<tspan font-weight='700'>x</tspan>, z|&phi;)", { "font-size": 33, transform: "rotate(-18 748 633)" });
+    }
+
+    function drawWireBox(baseCorners, farCorners) {
+      const lines = [
+        [baseCorners[0], baseCorners[1], baseCorners[2], baseCorners[3], baseCorners[0]],
+        [farCorners[0], farCorners[1], farCorners[2], farCorners[3], farCorners[0]],
+        [baseCorners[0], farCorners[0]],
+        [baseCorners[1], farCorners[1]],
+        [baseCorners[2], farCorners[2]],
+        [baseCorners[3], farCorners[3]]
+      ];
+      lines.forEach((segment) => {
+        createEl("path", {
+          d: pointsToPath(segment, false),
+          class: "axis-line"
+        }, jointLayer);
+      });
+    }
+
+    function drawManifold() {
+      const path = centerPath3D();
+      createEl("path", {
+        d: path,
+        class: "curve",
+        stroke: "#9be1d8",
+        "stroke-width": 5.2,
+        "stroke-dasharray": "12 10",
+        opacity: 0.85
+      }, jointLayer);
+      createEl("path", {
+        d: path,
+        class: "curve",
+        stroke: "#9be1d8",
+        "stroke-width": 2.2,
+        opacity: 0.45,
+        "marker-end": "url(#arrowTeal)"
+      }, jointLayer);
+      [-1.45, 0.75].forEach((z) => {
+        const c = centerUV(z);
+        const p = project3D(c.u, c.v, z);
+        createEl("circle", {
+          cx: p.x,
+          cy: p.y,
+          r: 7.5,
+          fill: "#1d908a",
+          stroke: "#9be1d8",
+          "stroke-width": 2
+        }, jointLayer);
+      });
+    }
+
+    function drawPosteriorAxis() {
+      const start = project3D(0.02, -0.035, zMin);
+      const end = project3D(0.02, -0.035, zMax);
+      createEl("path", {
+        d: pointsToPath([start, end], false),
+        class: "curve",
+        stroke: "#6f3b20",
+        "stroke-width": 2.8,
+        opacity: 0.82
+      }, interactionLayer);
+
+      sliceValues.forEach((z) => {
+        const p = project3D(0.02, -0.035, z);
+        const bead = createEl("circle", {
+          cx: p.x,
+          cy: p.y,
+          r: 4,
+          fill: "#1d908a",
+          class: "posterior-bead",
+          opacity: 0.4
+        }, interactionLayer);
+        posteriorBeads.push({ z, bead });
+      });
+
+      const p = project3D(0.24, -0.14, -0.85);
+      const text = createEl("text", {
+        x: p.x,
+        y: p.y,
+        "font-size": 18,
+        "text-anchor": "middle",
+        class: "sans-label",
+        transform: `rotate(18 ${p.x} ${p.y})`
+      }, interactionLayer);
+      text.innerHTML = "posterior Pr(z|x,&phi;)";
+    }
+
+    function buildArrowsAndLabels() {
+      createEl("path", {
+        d: "M 628 647 C 722 684, 801 708, 878 686",
+        class: "curve",
+        stroke: "#b7c2c5",
+        "stroke-width": 8,
+        opacity: 0.72,
+        "marker-end": "url(#arrowGray)"
+      }, arrowLayer);
+      const text = createEl("text", {
+        x: 617,
+        y: 700,
+        "font-size": 27,
+        "text-anchor": "middle",
+        class: "sans-label"
+      }, arrowLayer);
+      text.innerHTML = "<tspan x='617' dy='0'>Marginalize over</tspan><tspan x='617' dy='34'>latent variable, z</tspan>";
+    }
+
+    function buildObservationPoint() {
+      const p = flatProject(state.obs.u, state.obs.v);
+      const halo = createEl("circle", {
+        cx: p.x,
+        cy: p.y,
+        r: 19,
+        fill: "#8edfd4",
+        opacity: 0.18
+      }, interactionLayer);
+      const point = createEl("circle", {
+        cx: p.x,
+        cy: p.y,
+        r: 9.5,
+        fill: "#1d908a",
+        stroke: "#9be1d8",
+        "stroke-width": 3,
+        class: "drag-point",
+        tabindex: 0,
+        "aria-label": "drag observation point in x1 x2 plane"
+      }, interactionLayer);
+      state.obsHalo = halo;
+      state.obsPoint = point;
+
+      const hit = createEl("path", {
+        d: pointsToPath([panel.A, panel.B, panel.C, panel.D], true),
+        fill: "transparent",
+        cursor: "crosshair"
+      }, interactionLayer);
+      hit.addEventListener("pointerdown", startDrag);
+      point.addEventListener("pointerdown", startDrag);
+      halo.addEventListener("pointerdown", startDrag);
+      svg.addEventListener("pointermove", onDrag);
+      svg.addEventListener("pointerup", endDrag);
+      svg.addEventListener("pointercancel", endDrag);
+    }
+
+    function posteriorDensity(z, obs) {
+      const c = centerUV(z);
+      const du = obs.u - c.u;
+      const dv = obs.v - c.v;
+      const s = zNorm(z);
+      const sigma = 0.055 + 0.045 * Math.sin(Math.PI * s) + 0.028 * Math.abs(obs.v - 0.5);
+      const prior = Math.exp(-0.5 * Math.pow(z / 1.35, 2));
+      return prior * Math.exp(-(du * du + dv * dv) / (2 * sigma * sigma)) + 1e-8;
+    }
+
+    function normalizedPosterior(obs) {
+      const samples = [];
+      let sum = 0;
+      for (let i = 0; i < 151; i += 1) {
+        const z = zFromNorm(i / 150);
+        const w = posteriorDensity(z, obs);
+        samples.push({ z, w });
+        sum += w;
+      }
+      samples.forEach((sample) => {
+        sample.w /= sum;
+      });
+      return samples;
+    }
+
+    function updatePosterior() {
+      const samples = normalizedPosterior(state.obs);
+      const mean = samples.reduce((acc, sample) => acc + sample.z * sample.w, 0);
+      const variance = samples.reduce((acc, sample) => acc + Math.pow(sample.z - mean, 2) * sample.w, 0);
+      const sd = Math.sqrt(variance);
+      const maxW = Math.max(...samples.map((sample) => sample.w));
+
+      posteriorBeads.forEach(({ z, bead }) => {
+        const nearest = samples.reduce((best, sample) => Math.abs(sample.z - z) < Math.abs(best.z - z) ? sample : best, samples[0]);
+        const strength = nearest.w / maxW;
+        setAttrs(bead, {
+          r: 4 + 11 * Math.sqrt(strength),
+          opacity: 0.25 + 0.75 * strength,
+          fill: strength > 0.55 ? "#fff1bd" : "#1d908a"
+        });
+      });
+
+      [...leftCurves, ...rightCurves].forEach(({ z, path }) => {
+        const nearest = samples.reduce((best, sample) => Math.abs(sample.z - z) < Math.abs(best.z - z) ? sample : best, samples[0]);
+        const strength = nearest.w / maxW;
+        setAttrs(path, {
+          opacity: 0.28 + 0.72 * strength,
+          "stroke-width": 2.2 + 4.6 * strength
+        });
+      });
+
+      x1Readout.textContent = state.obs.u.toFixed(2);
+      x2Readout.textContent = state.obs.v.toFixed(2);
+      meanReadout.textContent = mean.toFixed(2);
+      sdReadout.textContent = sd.toFixed(2);
+    }
+
+    function updateSelectedSlice(z) {
+      state.selectedZ = z;
+      zReadout.textContent = `z = ${z.toFixed(2)}`;
+      zSlider.value = z.toFixed(2);
+      const d = planePath(z);
+      setAttrs(state.selectedPlane, { d });
+      setAttrs(state.selectedClipPath, { d });
+      const c = centerUV(z);
+      const p = project3D(c.u, c.v, z);
+      setAttrs(state.selectedGlow, {
+        cx: p.x,
+        cy: p.y,
+        rx: 54,
+        ry: 28,
+        transform: `rotate(-72 ${p.x} ${p.y})`
+      });
+      setAttrs(state.selectedCurve, {
+        d: conditionalPath(z, (u, v, zz) => project3D(u, v, zz))
+      });
+    }
+
+    function moveObservation(uv) {
+      state.obs = uv;
+      const p = flatProject(uv.u, uv.v);
+      setAttrs(state.obsPoint, { cx: p.x, cy: p.y });
+      setAttrs(state.obsHalo, { cx: p.x, cy: p.y });
+      updatePosterior();
+    }
+
+    function pointerToSvg(evt) {
+      const pt = svg.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      return pt.matrixTransform(svg.getScreenCTM().inverse());
+    }
+
+    function startDrag(evt) {
+      state.dragging = true;
+      svg.setPointerCapture(evt.pointerId);
+      onDrag(evt);
+    }
+
+    function onDrag(evt) {
+      if (!state.dragging) return;
+      const p = pointerToSvg(evt);
+      moveObservation(uvFromFlatPoint(p));
+    }
+
+    function endDrag(evt) {
+      if (!state.dragging) return;
+      state.dragging = false;
+      try {
+        svg.releasePointerCapture(evt.pointerId);
+      } catch (error) {
+        // Pointer capture may already be released by the browser.
+      }
+    }
+
+    function setSweep(progress) {
+      const z = zFromNorm(progress);
+      const plane = planePath(z);
+      setAttrs(state.sweepGroup, { opacity: 1 });
+      setAttrs(state.sweepPlane, { d: plane });
+      setAttrs(state.sweepClipPath, { d: plane });
+      setAttrs(state.sweepCurve, { d: conditionalPath(z, (u, v, zz) => project3D(u, v, zz)) });
+
+      const c = centerUV(z);
+      const p3 = project3D(c.u, c.v, z);
+      const p2 = flatProject(c.u, c.v);
+      const mid = { x: (p3.x + p2.x) * 0.5, y: Math.min(p3.y, p2.y) - 70 };
+      setAttrs(state.collapseLine, {
+        d: `M ${p3.x.toFixed(1)} ${p3.y.toFixed(1)} Q ${mid.x.toFixed(1)} ${mid.y.toFixed(1)} ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`
+      });
+
+      rightCurves.forEach(({ z: curveZ, path }) => {
+        const s = zNorm(curveZ);
+        if (s <= progress + 0.02) {
+          path.setAttribute("opacity", "0.9");
+        }
+      });
+    }
+
+    function animateMarginalization() {
+      cancelAnimationFrame(state.animationId);
+      state.sweepActive = true;
+      sweepReadout.textContent = "sweeping";
+      const duration = 2300;
+      const start = performance.now();
+
+      function frame(now) {
+        const t = clamp((now - start) / duration, 0, 1);
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        setSweep(eased);
+        if (t < 1) {
+          state.animationId = requestAnimationFrame(frame);
+        } else {
+          state.sweepActive = false;
+          sweepReadout.textContent = "Pr(x|phi) formed";
+          setTimeout(() => {
+            if (!state.sweepActive) {
+              setAttrs(state.sweepGroup, { opacity: 0 });
+              sweepReadout.textContent = "ready";
+              updatePosterior();
+            }
+          }, 950);
+        }
+      }
+
+      state.animationId = requestAnimationFrame(frame);
+    }
+
+    function init() {
+      buildMarginalPanel();
+      buildArrowsAndLabels();
+      buildJointPanel();
+      buildObservationPoint();
+      updateSelectedSlice(state.selectedZ);
+      moveObservation(state.obs);
+
+      zSlider.addEventListener("input", (evt) => {
+        updateSelectedSlice(parseFloat(evt.target.value));
+      });
+      animateBtn.addEventListener("click", animateMarginalization);
+    }
+
+    init();
+  </script>
+</body>
+</html>

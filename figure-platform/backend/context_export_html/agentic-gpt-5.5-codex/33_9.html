@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure 33.9</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 230px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <button id="stepMarchButton" onclick="trigger_stepMarch()">Step Jarvis march</button>
+    <button id="resetMarchButton" onclick="trigger_resetMarch()">Reset</button>
+    <label><input id="chainInput" type="checkbox" onchange="toggle_chain(this.checked)"> left-chain mode</label>
+    <span id="stepStatus" style="font:11px/1.35 sans-serif;color:#333">full hull reference view</span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    function compileExpr(src, vars) {
+      vars = vars || ['x'];
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser is not available');
+      }
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var used = expr.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (vars.indexOf(used[i]) === -1) throw new Error('Unknown variable ' + used[i]);
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < vars.length; j++) scope[vars[j]] = arguments[j];
+        return expr.evaluate(scope);
+      };
+    }
+
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var list = Array.isArray(targets) ? targets : [targets];
+      function apply(src) {
+        var fn = compileExpr(src, opts.variables || ['x']);
+        for (var i = 0; i < list.length; i++) {
+          if (typeof list[i] === 'function') list[i](fn, src);
+          else if (list[i] && typeof list[i].setFn === 'function') list[i].setFn(fn);
+        }
+        if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        return true;
+      }
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input };
+    }
+
+    function setPlotFrame() {}
+    function plotX(x) { return x; }
+    function plotY(y) { return y; }
+    function plotFunction() { throw new Error('plotFunction is not used by this figure'); }
+    function fillBetween() { throw new Error('fillBetween is not used by this figure'); }
+    function plotParametric() { throw new Error('plotParametric is not used by this figure'); }
+    function integrateSimpson(fn, a, b, n) {
+      n = n || 100;
+      if (n % 2) n++;
+      var h = (b - a) / n;
+      var s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * (i % 2 ? 4 : 2);
+      return s * h / 3;
+    }
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-6;
+      var fa = fn(a), fb = fn(b);
+      if (fa === 0) return a;
+      if (fb === 0) return b;
+      if (fa * fb > 0) return null;
+      for (var i = 0; i < 80 && Math.abs(b - a) > tol; i++) {
+        var m = (a + b) / 2;
+        var fm = fn(m);
+        if (fa * fm <= 0) { b = m; fb = fm; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 900;
+    var H = 610;
+    draw.viewbox(0, 0, W, H);
+
+    var points = [
+      { id: 'p0', label: 'p0', x: 265, y: 520, ref: 'right', next: 'p1' },
+      { id: 'p1', label: 'p1', x: 705, y: 465, ref: 'right', next: 'p2' },
+      { id: 'p2', label: 'p2', x: 785, y: 340, ref: 'right', next: 'p3' },
+      { id: 'p3', label: 'p3', x: 338, y: 86, ref: 'left', next: 'p4' },
+      { id: 'p4', label: 'p4', x: 136, y: 375, ref: 'left', next: 'p0' }
+    ];
+    var byId = {};
+    points.forEach(function (p) { byId[p.id] = p; });
+
+    var interiors = [
+      { id: 'a', x: 246, y: 274 },
+      { id: 'b', x: 338, y: 265 },
+      { id: 'c', x: 424, y: 265 },
+      { id: 'd', x: 489, y: 247 },
+      { id: 'e', x: 628, y: 265 },
+      { id: 'f', x: 666, y: 340 },
+      { id: 'g', x: 694, y: 410 },
+      { id: 'h', x: 376, y: 311 }
+    ];
+
+    var steps = [
+      { vertex: 'p0', chain: 'right', text: 'p0 -> p1: smallest angle from the rightward ray' },
+      { vertex: 'p1', chain: 'right', text: 'p1 -> p2: wrap upward along the right chain' },
+      { vertex: 'p2', chain: 'right', text: 'p2 -> p3: the broad sweep reaches the top' },
+      { vertex: 'p3', chain: 'left', text: 'p3 -> p4: switch to the leftward reference ray' },
+      { vertex: 'p4', chain: 'left', text: 'p4 -> p0: close the left chain at the start' }
+    ];
+
+    var state = {
+      activeStep: -1,
+      chain: 'right',
+      showChain: false,
+      hoverInterior: null
+    };
+
+    var layers = {
+      hull: draw.group(),
+      chain: draw.group(),
+      rays: draw.group(),
+      arcs: draw.group(),
+      hover: draw.group(),
+      points: draw.group(),
+      labels: draw.group()
+    };
+
+    function ptList(list) {
+      return list.map(function (p) { return p.x + ',' + p.y; }).join(' ');
+    }
+
+    function lineAngle(a, b) {
+      return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+    }
+
+    function mathAngle(a, b) {
+      return Math.atan2(a.y - b.y, b.x - a.x) * 180 / Math.PI;
+    }
+
+    function normAngle(v) {
+      v = v % 360;
+      return v < 0 ? v + 360 : v;
+    }
+
+    function chosenAngle(p) {
+      var q = byId[p.next];
+      if (p.id === 'p3') return normAngle(180 - lineAngle(p, q));
+      if (p.id === 'p4') return normAngle(mathAngle(p, q) - 180);
+      return normAngle(mathAngle(p, q));
+    }
+
+    function candidateAngle(p, q) {
+      if (p.id === 'p3') return normAngle(180 - lineAngle(p, q));
+      if (p.id === 'p4') return normAngle(mathAngle(p, q) - 180);
+      return normAngle(mathAngle(p, q));
+    }
+
+    function fmtAngle(n) {
+      return Math.round(n) + ' deg';
+    }
+
+    function polar(center, r, deg) {
+      var rad = deg * Math.PI / 180;
+      return { x: center.x + r * Math.cos(rad), y: center.y + r * Math.sin(rad) };
+    }
+
+    function arcPath(center, r, startDeg, endDeg, sweep) {
+      var start = polar(center, r, startDeg);
+      var end = polar(center, r, endDeg);
+      var delta = Math.abs(endDeg - startDeg);
+      while (delta > 360) delta -= 360;
+      var large = delta > 180 ? 1 : 0;
+      return 'M ' + start.x + ' ' + start.y + ' A ' + r + ' ' + r + ' 0 ' + large + ' ' + sweep + ' ' + end.x + ' ' + end.y;
+    }
+
+    function drawArrowLine(group, x1, y1, x2, y2, attrs) {
+      attrs = attrs || {};
+      var stroke = attrs.stroke || '#000';
+      var width = attrs.width || 1.4;
+      var line = group.line(x1, y1, x2, y2).stroke({ color: stroke, width: width, linecap: 'round' });
+      if (attrs.dasharray) line.stroke({ dasharray: attrs.dasharray });
+      var angle = Math.atan2(y2 - y1, x2 - x1);
+      var len = attrs.head || 13;
+      var spread = attrs.spread || 6;
+      var bx = x2 - Math.cos(angle) * len;
+      var by = y2 - Math.sin(angle) * len;
+      var nx = -Math.sin(angle);
+      var ny = Math.cos(angle);
+      group.polygon([
+        [x2, y2],
+        [bx + nx * spread, by + ny * spread],
+        [bx - nx * spread, by - ny * spread]
+      ]).fill(stroke);
+      return line;
+    }
+
+    function drawLabel(group, x, y, base, sub, anchor) {
+      var g = group.group();
+      var baseText = g.text(base).font({ family: 'Georgia, Times New Roman, serif', size: 32, style: 'italic' });
+      baseText.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 5, 'stroke-linejoin': 'round' });
+      var subText = g.text(sub).font({ family: 'Georgia, Times New Roman, serif', size: 21, style: 'italic' });
+      subText.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4, 'stroke-linejoin': 'round' });
+      baseText.move(0, 0);
+      subText.move(21, 16);
+      var box = g.bbox();
+      var dx = anchor === 'end' ? -box.width : anchor === 'middle' ? -box.width / 2 : 0;
+      g.translate(x + dx, y);
+      return g;
+    }
+
+    function drawText(group, txt, x, y, size, anchor) {
+      var t = group.text(txt).font({ family: 'Georgia, Times New Roman, serif', size: size || 24 });
+      t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 5, 'stroke-linejoin': 'round' });
+      if (anchor) t.attr({ 'text-anchor': anchor });
+      t.move(x, y);
+      return t;
+    }
+
+    function drawReference(g, p, active) {
+      var color = active ? '#d87700' : '#000';
+      var width = active ? 2.4 : 1.2;
+      g.line(p.x, p.y - 36, p.x, p.y + 36).stroke({ color: color, width: width, linecap: 'round' });
+      if (p.ref === 'right') {
+        g.line(p.x - 36, p.y, p.x + 28, p.y).stroke({ color: color, width: width });
+        drawArrowLine(g, p.x + 20, p.y, p.x + 128, p.y, { stroke: color, width: width, head: 15, spread: 7 });
+      } else {
+        g.line(p.x - 30, p.y, p.x + 38, p.y).stroke({ color: color, width: width });
+        drawArrowLine(g, p.x - 22, p.y, p.x - 128, p.y, { stroke: color, width: width, head: 15, spread: 7 });
+      }
+    }
+
+    function drawAngleArc(g, p, active) {
+      var color = active ? '#d87700' : '#000';
+      var width = active ? 2.5 : 1.2;
+      var cfg = {
+        p0: { r: 221, a0: -7, a1: 0, sweep: 1 },
+        p1: { r: 55, a0: -58, a1: 0, sweep: 1 },
+        p2: { r: 74, a0: -150, a1: 0, sweep: 1 },
+        p3: { r: 108, a0: 180, a1: 125, sweep: 0 },
+        p4: { r: 74, a0: 180, a1: 49, sweep: 0 }
+      }[p.id];
+      g.path(arcPath(p, cfg.r, cfg.a0, cfg.a1, cfg.sweep))
+        .fill('none')
+        .stroke({ color: color, width: width, linecap: 'round' });
+    }
+
+    function drawChainArrows(g) {
+      var topY = 58;
+      var bottomY = 572;
+      var showActive = state.showChain || state.activeStep >= 0;
+      var leftActive = showActive && state.chain === 'left';
+      var rightActive = showActive && state.chain === 'right';
+      drawText(g, 'left chain', 228, 16, leftActive ? 25 : 24, 'middle')
+        .fill(leftActive ? '#1261a6' : '#000');
+      drawText(g, 'right chain', 410, 16, rightActive ? 25 : 24, 'middle')
+        .fill(rightActive ? '#1261a6' : '#000');
+      drawArrowLine(g, 320, topY, 268, topY, { stroke: leftActive ? '#1261a6' : '#000', width: leftActive ? 2.3 : 1.4 });
+      drawArrowLine(g, 358, topY, 414, topY, { stroke: rightActive ? '#1261a6' : '#000', width: rightActive ? 2.3 : 1.4 });
+
+      drawText(g, 'left chain', 171, 586, leftActive ? 25 : 24, 'middle')
+        .fill(leftActive ? '#1261a6' : '#000');
+      drawText(g, 'right chain', 333, 586, rightActive ? 25 : 24, 'middle')
+        .fill(rightActive ? '#1261a6' : '#000');
+      drawArrowLine(g, 238, bottomY, 183, bottomY, { stroke: leftActive ? '#1261a6' : '#000', width: leftActive ? 2.3 : 1.4 });
+      drawArrowLine(g, 287, bottomY, 342, bottomY, { stroke: rightActive ? '#1261a6' : '#000', width: rightActive ? 2.3 : 1.4 });
+    }
+
+    function drawCandidate(g) {
+      if (!state.hoverInterior || state.activeStep < 0) return;
+      var step = steps[state.activeStep];
+      var p = byId[step.vertex];
+      var q = state.hoverInterior;
+      var chosen = chosenAngle(p);
+      var candidate = candidateAngle(p, q);
+      g.line(p.x, p.y, q.x, q.y)
+        .stroke({ color: '#c44724', width: 1.6, dasharray: '5 5', linecap: 'round' });
+      var a = p.ref === 'left' ? 180 : 0;
+      var b = lineAngle(p, q);
+      var sweep = b < a ? 0 : 1;
+      if (p.id === 'p0' || p.id === 'p1' || p.id === 'p2') {
+        b = -candidate;
+        sweep = 0;
+      }
+      var r = p.id === 'p2' ? 54 : p.id === 'p3' ? 78 : 64;
+      g.path(arcPath(p, r, a, b, sweep))
+        .fill('none')
+        .stroke({ color: '#c44724', width: 1.5, dasharray: '4 4' });
+      var lx = Math.min(Math.max(q.x + 13, 18), W - 178);
+      var ly = Math.max(q.y - 44, 22);
+      var label = g.group();
+      label.rect(156, 39).radius(4).fill('#fff').opacity(0.88).stroke({ color: '#e2c8b4', width: 0.8 });
+      label.text('candidate ' + fmtAngle(candidate)).font({ family: 'Arial, sans-serif', size: 12 }).move(8, 5);
+      label.text('chosen ' + fmtAngle(chosen)).font({ family: 'Arial, sans-serif', size: 12 }).fill('#d87700').move(8, 21);
+      label.move(lx, ly);
+    }
+
+    function render() {
+      layers.hull.clear();
+      layers.chain.clear();
+      layers.rays.clear();
+      layers.arcs.clear();
+      layers.hover.clear();
+      layers.points.clear();
+      layers.labels.clear();
+
+      var hull = [byId.p0, byId.p1, byId.p2, byId.p3, byId.p4];
+      layers.hull.polygon(ptList(hull))
+        .fill('none')
+        .stroke({ color: '#a9a9a9', width: 10, linejoin: 'round', linecap: 'round' });
+      layers.hull.polygon(ptList(hull))
+        .fill('none')
+        .stroke({ color: '#2f2f2f', width: 1.8, linejoin: 'round', linecap: 'round' });
+
+      layers.hull.line(252, 588, 350, 2)
+        .stroke({ color: '#000', width: 1.3, dasharray: '6 6', linecap: 'round' });
+
+      var active = state.activeStep >= 0 ? steps[state.activeStep] : null;
+      var activeVertex = active ? active.vertex : null;
+      var activeNext = active ? byId[byId[active.vertex].next].id : null;
+
+      if (state.showChain || state.activeStep >= 0) {
+        var chainEdges = state.chain === 'right'
+          ? [['p0', 'p1'], ['p1', 'p2'], ['p2', 'p3']]
+          : [['p0', 'p4'], ['p4', 'p3']];
+        chainEdges.forEach(function (edge) {
+          var a = byId[edge[0]], b = byId[edge[1]];
+          layers.chain.line(a.x, a.y, b.x, b.y)
+            .stroke({ color: '#1261a6', width: 4.2, opacity: 0.42, linecap: 'round' });
+        });
+      }
+
+      if (active) {
+        var ap = byId[active.vertex];
+        var np = byId[ap.next];
+        layers.chain.line(ap.x, ap.y, np.x, np.y)
+          .stroke({ color: '#d87700', width: 5, opacity: 0.95, linecap: 'round' });
+      }
+
+      points.forEach(function (p) {
+        drawReference(layers.rays, p, p.id === activeVertex);
+        drawAngleArc(layers.arcs, p, p.id === activeVertex);
+      });
+
+      drawChainArrows(layers.labels);
+      drawCandidate(layers.hover);
+
+      interiors.forEach(function (p) {
+        var c = layers.points.circle(10).center(p.x, p.y).fill('#000');
+        c.css('cursor', 'pointer');
+        c.on('mousemove', function (e) {
+          state.hoverInterior = p;
+          if (state.activeStep >= 0) {
+            var s = steps[state.activeStep];
+            var v = byId[s.vertex];
+            showTooltip('Candidate from ' + v.label + ': ' + fmtAngle(candidateAngle(v, p)) + '; chosen hull angle: ' + fmtAngle(chosenAngle(v)) + '.', e);
+          } else {
+            showTooltip('Interior point: it is tested as a candidate but is not selected for the hull.', e);
+          }
+          render();
+        });
+        c.on('mouseleave', function () {
+          state.hoverInterior = null;
+          hideTooltip();
+          render();
+        });
+      });
+
+      points.forEach(function (p) {
+        var r = p.id === activeVertex || p.id === activeNext ? 6.2 : 5.4;
+        var c = layers.points.circle(r * 2).center(p.x, p.y).fill('#000');
+        c.css('cursor', 'pointer');
+        c.on('mousemove', function (e) {
+          showTooltip(p.label + ': convex-hull vertex', e);
+        });
+        c.on('mouseleave', function () { hideTooltip(); });
+        c.on('click', function () {
+          showPopup(p.label, 'Jarvis march compares polar angles at this vertex. The next hull vertex is the visible point giving the smallest admissible turn from the reference ray.');
+        });
+      });
+
+      drawLabel(layers.labels, 278, 526, 'p', '0', 'start');
+      drawLabel(layers.labels, 720, 469, 'p', '1', 'start');
+      drawLabel(layers.labels, 798, 344, 'p', '2', 'start');
+      drawLabel(layers.labels, 350, 93, 'p', '3', 'start');
+      drawLabel(layers.labels, 107, 352, 'p', '4', 'end');
+
+      updateStatus();
+    }
+
+    function updateStatus() {
+      var el = document.getElementById('stepStatus');
+      if (!el) return;
+      if (state.activeStep < 0) {
+        el.textContent = 'full hull reference view';
+      } else {
+        el.textContent = (state.activeStep + 1) + ' of ' + steps.length + ': ' + steps[state.activeStep].text;
+      }
+      var box = document.getElementById('chainInput');
+      if (box) box.checked = state.chain === 'left';
+    }
+
+    function trigger_stepMarch() {
+      state.activeStep = (state.activeStep + 1) % steps.length;
+      state.chain = steps[state.activeStep].chain;
+      state.showChain = true;
+      state.hoverInterior = null;
+      render();
+    }
+
+    function trigger_resetMarch() {
+      state.activeStep = -1;
+      state.chain = 'right';
+      state.showChain = false;
+      state.hoverInterior = null;
+      render();
+    }
+
+    function toggle_chain(on) {
+      state.chain = on ? 'left' : 'right';
+      state.showChain = true;
+      var preferred = state.chain === 'right' ? 0 : 3;
+      if (state.activeStep < 0 || steps[state.activeStep].chain !== state.chain) {
+        state.activeStep = preferred;
+      }
+      state.hoverInterior = null;
+      render();
+    }
+
+    document.addEventListener('fig-resize', function () {
+      draw.size('100%', '100%');
+    });
+
+    render();
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

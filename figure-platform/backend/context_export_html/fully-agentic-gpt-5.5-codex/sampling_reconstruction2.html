@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sinc Reconstruction from Samples</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #ffffff;
+      --ink: #151719;
+      --muted: #59616b;
+      --axis: #151719;
+      --blue: #2447ff;
+      --green: #49f20e;
+      --red: #f10d0d;
+      --panel: #f4f6f8;
+      --line: #d7dde5;
+      --warn: #b94900;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background: #eef2f6;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 0;
+    }
+
+    main {
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px 16px 8px;
+    }
+
+    .figure-shell {
+      width: min(100%, 1500px);
+      aspect-ratio: 1900 / 520;
+      min-height: 210px;
+      background: var(--paper);
+      border: 1px solid #cad2dc;
+      box-shadow: 0 20px 48px rgba(31, 40, 52, 0.14);
+      overflow: hidden;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      touch-action: none;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.05fr) minmax(250px, 0.9fr) minmax(250px, 1.4fr);
+      gap: 14px;
+      align-items: start;
+      padding: 10px 16px 14px;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+    }
+
+    .control-group {
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .control-title {
+      margin: 0;
+      color: #2b3138;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .slider-row,
+    .button-row,
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    label,
+    button,
+    output {
+      font: inherit;
+    }
+
+    .range-label {
+      display: grid;
+      grid-template-columns: auto minmax(130px, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      color: #343b44;
+      font-size: 13px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #2664d8;
+    }
+
+    output {
+      min-width: 4.2em;
+      text-align: right;
+      color: #171a1d;
+      font-variant-numeric: tabular-nums;
+      font-size: 13px;
+    }
+
+    button {
+      border: 1px solid #aeb8c4;
+      background: #fff;
+      color: #1b2026;
+      border-radius: 7px;
+      min-height: 32px;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #718196;
+      background: #f9fbff;
+    }
+
+    button.active {
+      border-color: #1d63d3;
+      background: #eaf2ff;
+      color: #0d459e;
+    }
+
+    .check-row label,
+    .copy-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid #bdc7d3;
+      border-radius: 7px;
+      background: #fff;
+      color: #232930;
+      font-size: 12px;
+      line-height: 1;
+      user-select: none;
+    }
+
+    .copy-chip {
+      min-width: 54px;
+      justify-content: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .copy-chip input,
+    .check-row input {
+      margin: 0;
+      accent-color: #2d63d8;
+    }
+
+    .copies {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      max-height: 74px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .status {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .status.warn {
+      color: var(--warn);
+      font-weight: 650;
+    }
+
+    .axis {
+      stroke: var(--axis);
+      stroke-width: 4.5;
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .tick {
+      stroke: var(--axis);
+      stroke-width: 2.2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .blue-arrow {
+      stroke: var(--blue);
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .copy-path {
+      fill: none;
+      stroke: var(--green);
+      stroke-width: 3.2;
+      stroke-dasharray: 12 9;
+      stroke-linecap: round;
+      opacity: 0.92;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .kernel-path {
+      fill: none;
+      stroke: var(--green);
+      stroke-width: 5;
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .sum-path {
+      fill: none;
+      stroke: var(--red);
+      stroke-width: 5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .source-path {
+      fill: none;
+      stroke: #8c98a6;
+      stroke-width: 2;
+      stroke-dasharray: 5 7;
+      opacity: 0.65;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .zero-dot {
+      fill: #fff;
+      stroke: var(--green);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .sample-dot {
+      fill: #fff;
+      stroke: var(--blue);
+      stroke-width: 2.4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .highlight {
+      stroke: #0f2bb8;
+      stroke-width: 6;
+      filter: drop-shadow(0 0 5px rgba(36, 71, 255, 0.55));
+    }
+
+    .math-label {
+      font-family: "Times New Roman", Times, serif;
+      fill: #111;
+    }
+
+    .panel-label {
+      fill: #3d4650;
+      font-size: 20px;
+      font-weight: 650;
+    }
+
+    .equation-symbol {
+      font-family: "Times New Roman", Times, serif;
+      fill: #111;
+      font-size: 64px;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        min-height: 100vh;
+      }
+
+      main {
+        padding: 10px 8px 6px;
+      }
+
+      .figure-shell {
+        min-height: 172px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+        gap: 11px;
+        padding: 10px;
+      }
+
+      .copies {
+        max-height: 58px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main aria-label="Interactive reconstruction figure">
+    <div class="figure-shell">
+      <svg id="figure" viewBox="0 0 1900 520" role="img" aria-labelledby="fig-title fig-desc">
+        <title id="fig-title">Sinc reconstruction from sample impulses</title>
+        <desc id="fig-desc">A three-part equation: sample impulses convolved with a sinc kernel equals the sum of shifted scaled sinc functions and a reconstructed signal.</desc>
+        <defs>
+          <marker id="axisHead" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="12" markerHeight="12" orient="auto">
+            <path d="M 0 0 L 12 6 L 0 12 L 3.1 6 Z" fill="#151719"></path>
+          </marker>
+          <marker id="blueHead" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 L 2.3 5 Z" fill="#2447ff"></path>
+          </marker>
+          <clipPath id="leftClip"><rect x="58" y="34" width="530" height="392"></rect></clipPath>
+          <clipPath id="kernelClip"><rect x="682" y="34" width="560" height="392"></rect></clipPath>
+          <clipPath id="rightClip"><rect x="1350" y="34" width="500" height="392"></rect></clipPath>
+        </defs>
+
+        <g id="static-layer"></g>
+        <g id="plot-layer"></g>
+      </svg>
+    </div>
+  </main>
+
+  <section class="controls" aria-label="Figure controls">
+    <div class="control-group">
+      <p class="control-title">Sampling interval</p>
+      <label class="range-label">
+        <span>T<sub>s</sub></span>
+        <input id="tsRange" type="range" min="0.42" max="1.58" step="0.01" value="0.68">
+        <output id="tsValue">0.68</output>
+      </label>
+      <div id="sampleStatus" class="status"></div>
+    </div>
+
+    <div class="control-group">
+      <p class="control-title">Convolution sweep</p>
+      <div class="button-row">
+        <button id="playBtn" type="button">Play</button>
+        <button id="stepBtn" type="button">Step</button>
+        <button id="fullBtn" type="button">Full sum</button>
+      </div>
+      <div id="sweepStatus" class="status"></div>
+    </div>
+
+    <div class="control-group">
+      <p class="control-title">Sinc copies</p>
+      <div class="check-row">
+        <label><input id="showCopies" type="checkbox" checked> dashed copies</label>
+        <label><input id="showSource" type="checkbox"> source curve</label>
+      </div>
+      <div id="copyToggles" class="copies" aria-label="Individual sample contributions"></div>
+    </div>
+  </section>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const svg = document.getElementById("figure");
+      const staticLayer = document.getElementById("static-layer");
+      const plotLayer = document.getElementById("plot-layer");
+      const tsRange = document.getElementById("tsRange");
+      const tsValue = document.getElementById("tsValue");
+      const sampleStatus = document.getElementById("sampleStatus");
+      const sweepStatus = document.getElementById("sweepStatus");
+      const playBtn = document.getElementById("playBtn");
+      const stepBtn = document.getElementById("stepBtn");
+      const fullBtn = document.getElementById("fullBtn");
+      const showCopiesInput = document.getElementById("showCopies");
+      const showSourceInput = document.getElementById("showSource");
+      const copyToggles = document.getElementById("copyToggles");
+      const svgns = "http://www.w3.org/2000/svg";
+
+      const panels = {
+        left: { x0: 72, x1: 560, y0: 50, y1: 420, base: 285, tMin: -2.65, tMax: 3.35, yScale: 112 },
+        kernel: { x0: 710, x1: 1210, y0: 50, y1: 420, base: 285, tMin: -5, tMax: 5, yScale: 170 },
+        right: { x0: 1366, x1: 1838, y0: 50, y1: 420, base: 285, tMin: -2.9, tMax: 4.2, yScale: 123 }
+      };
+
+      const state = {
+        Ts: Number(tsRange.value),
+        hidden: new Set(),
+        sampleKeys: [],
+        sweepLimit: null,
+        timer: null,
+        showCopies: true,
+        showSource: false
+      };
+
+      function el(name, attrs) {
+        const node = document.createElementNS(svgns, name);
+        for (const key in attrs || {}) {
+          node.setAttribute(key, attrs[key]);
+        }
+        return node;
+      }
+
+      function text(parent, x, y, value, attrs) {
+        const node = el("text", Object.assign({ x, y }, attrs || {}));
+        node.textContent = value;
+        parent.appendChild(node);
+        return node;
+      }
+
+      function clear(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function mapX(panel, t) {
+        return panel.x0 + (t - panel.tMin) / (panel.tMax - panel.tMin) * (panel.x1 - panel.x0);
+      }
+
+      function mapY(panel, y) {
+        return panel.base - y * panel.yScale;
+      }
+
+      function clamp(v, lo, hi) {
+        return Math.max(lo, Math.min(hi, v));
+      }
+
+      function sinc(x) {
+        if (Math.abs(x) < 1e-7) return 1;
+        const p = Math.PI * x;
+        return Math.sin(p) / p;
+      }
+
+      function sourceSignal(t) {
+        const peak = 1.16 * Math.exp(-0.5 * Math.pow((t - 0.28) / 0.62, 2));
+        const side = 0.58 * Math.exp(-0.5 * Math.pow((t - 3.22) / 0.34, 2));
+        const dip = -0.42 * Math.exp(-0.5 * Math.pow((t - 1.78) / 0.56, 2));
+        const shoulder = 0.22 * Math.exp(-0.5 * Math.pow((t + 1.15) / 0.48, 2));
+        const ripple = 0.13 * Math.sin(2 * Math.PI * 0.82 * (t + 0.04)) * Math.exp(-0.5 * Math.pow((t - 0.6) / 2.5, 2));
+        const slow = 0.08 * Math.cos(2 * Math.PI * 0.31 * (t - 0.2));
+        return peak + side + dip + shoulder + ripple + slow;
+      }
+
+      function pathFrom(panel, fn, count) {
+        const steps = count || 280;
+        let d = "";
+        for (let i = 0; i <= steps; i += 1) {
+          const t = panel.tMin + (panel.tMax - panel.tMin) * i / steps;
+          const x = mapX(panel, t);
+          const y = clamp(mapY(panel, fn(t)), panel.y0 - 26, panel.y1 + 12);
+          d += (i === 0 ? "M " : " L ") + x.toFixed(2) + " " + y.toFixed(2);
+        }
+        return d;
+      }
+
+      function sampleRange(panel, Ts, margin) {
+        const minN = Math.ceil((panel.tMin - margin) / Ts);
+        const maxN = Math.floor((panel.tMax + margin) / Ts);
+        const values = [];
+        for (let n = minN; n <= maxN; n += 1) values.push(n);
+        return values;
+      }
+
+      function keyFor(n) {
+        return "n" + n;
+      }
+
+      function formatN(n) {
+        return n === 0 ? "0" : (n > 0 ? "+" + n : String(n));
+      }
+
+      function makeSampleObjects() {
+        return sampleRange(panels.right, state.Ts, state.Ts * 0.4)
+          .filter((n) => n >= -9 && n <= 12)
+          .map((n) => {
+            const t = n * state.Ts;
+            return { n, key: keyFor(n), t, y: sourceSignal(t) };
+          });
+      }
+
+      function includedSamples(samples) {
+        const active = [];
+        for (let i = 0; i < samples.length; i += 1) {
+          const s = samples[i];
+          if (state.hidden.has(s.key)) continue;
+          if (state.sweepLimit !== null && i >= state.sweepLimit) continue;
+          active.push(s);
+        }
+        return active;
+      }
+
+      function reconstructionAt(t, samples) {
+        let total = 0;
+        for (const s of samples) {
+          total += s.y * sinc((t - s.t) / state.Ts);
+        }
+        return total;
+      }
+
+      function addMathTs(parent, x, y, leading, multiplier) {
+        const group = el("text", { x, y, class: "math-label", "font-size": "34", "text-anchor": "middle" });
+        if (leading) {
+          const a = el("tspan", {});
+          a.textContent = leading;
+          group.appendChild(a);
+        }
+        if (multiplier) {
+          const m = el("tspan", {});
+          m.textContent = multiplier;
+          group.appendChild(m);
+        }
+        const t = el("tspan", {});
+        t.textContent = "T";
+        group.appendChild(t);
+        const sub = el("tspan", { "font-size": "22", "baseline-shift": "sub" });
+        sub.textContent = "s";
+        group.appendChild(sub);
+        parent.appendChild(group);
+      }
+
+      function drawAxis(parent, panel, includeVertical) {
+        parent.appendChild(el("line", {
+          x1: panel.x0,
+          y1: panel.base,
+          x2: panel.x1 + 28,
+          y2: panel.base,
+          class: "axis",
+          "marker-end": "url(#axisHead)"
+        }));
+        if (includeVertical) {
+          parent.appendChild(el("line", {
+            x1: mapX(panel, 0),
+            y1: panel.base + 42,
+            x2: mapX(panel, 0),
+            y2: panel.y0 - 12,
+            class: "axis",
+            "marker-end": "url(#axisHead)"
+          }));
+        }
+        text(parent, panel.x1 + 47, panel.base + 42, "t", {
+          class: "math-label",
+          "font-size": "54",
+          "font-style": "italic"
+        });
+      }
+
+      function drawStatic() {
+        clear(staticLayer);
+        drawAxis(staticLayer, panels.left, false);
+        drawAxis(staticLayer, panels.kernel, true);
+        drawAxis(staticLayer, panels.right, false);
+
+        const op = el("circle", {
+          cx: 638,
+          cy: panels.left.base - 5,
+          r: 15,
+          fill: "none",
+          stroke: "#151719",
+          "stroke-width": "5",
+          "vector-effect": "non-scaling-stroke"
+        });
+        staticLayer.appendChild(op);
+        text(staticLayer, 1298, panels.right.base + 9, "=", { class: "equation-symbol", "text-anchor": "middle" });
+
+        text(staticLayer, 942, panels.kernel.base - 180, "1", {
+          class: "math-label",
+          "font-size": "38",
+          "text-anchor": "middle"
+        });
+        text(staticLayer, 186, 65, "sample sequence", { class: "panel-label" });
+        text(staticLayer, 826, 65, "sinc interpolation kernel", { class: "panel-label" });
+        text(staticLayer, 1486, 65, "superposed reconstruction", { class: "panel-label" });
+
+        staticLayer.appendChild(el("path", {
+          d: pathFrom(panels.kernel, (t) => sinc(t), 440),
+          class: "kernel-path",
+          "clip-path": "url(#kernelClip)"
+        }));
+
+        for (let k = -4; k <= 4; k += 1) {
+          const x = mapX(panels.kernel, k);
+          staticLayer.appendChild(el("circle", { cx: x, cy: panels.kernel.base, r: 4.2, class: "zero-dot" }));
+        }
+      }
+
+      function drawImpulse(parent, panel, t, y, opts) {
+        const x = mapX(panel, t);
+        if (x < panel.x0 - 8 || x > panel.x1 + 8) return;
+        const y2 = clamp(mapY(panel, y), panel.y0 - 10, panel.y1 - 8);
+        const line = el("line", {
+          x1: x,
+          y1: panel.base,
+          x2: x,
+          y2,
+          class: "blue-arrow" + (opts && opts.highlight ? " highlight" : ""),
+          "marker-end": "url(#blueHead)"
+        });
+        parent.appendChild(line);
+        parent.appendChild(el("circle", { cx: x, cy: y2, r: opts && opts.highlight ? 5.5 : 4.2, class: "sample-dot" }));
+      }
+
+      function drawLeftSamples(parent) {
+        const group = el("g", { "clip-path": "url(#leftClip)" });
+        parent.appendChild(group);
+        const samples = sampleRange(panels.left, state.Ts, state.Ts * 0.45);
+        for (const n of samples) {
+          const t = n * state.Ts;
+          const y = sourceSignal(t);
+          drawImpulse(group, panels.left, t, y, {});
+        }
+
+        const labels = [
+          { t: -state.Ts, name: "-T" },
+          { t: 0, name: "0" },
+          { t: state.Ts, name: "T" },
+          { t: 2 * state.Ts, name: "2T" }
+        ];
+        for (const item of labels) {
+          const x = mapX(panels.left, item.t);
+          if (x < panels.left.x0 || x > panels.left.x1) continue;
+          parent.appendChild(el("line", { x1: x, y1: panels.left.base - 9, x2: x, y2: panels.left.base + 9, class: "tick" }));
+          if (item.name === "0") {
+            text(parent, x, panels.left.base + 42, "0", {
+              class: "math-label",
+              "font-size": "34",
+              "text-anchor": "middle"
+            });
+          } else {
+            addMathTs(parent, x, panels.left.base + 42, item.name[0] === "-" ? "-" : "", item.name === "2T" ? "2" : "");
+          }
+        }
+      }
+
+      function drawRightPanel(parent, samples, active) {
+        const panel = panels.right;
+        const clipGroup = el("g", { "clip-path": "url(#rightClip)" });
+        parent.appendChild(clipGroup);
+
+        if (state.showSource) {
+          clipGroup.appendChild(el("path", { d: pathFrom(panel, sourceSignal, 360), class: "source-path" }));
+        }
+
+        if (state.showCopies) {
+          for (const s of active) {
+            clipGroup.appendChild(el("path", {
+              d: pathFrom(panel, (t) => s.y * sinc((t - s.t) / state.Ts), 260),
+              class: "copy-path"
+            }));
+          }
+        }
+
+        const sumPath = pathFrom(panel, (t) => reconstructionAt(t, active), 420);
+        clipGroup.appendChild(el("path", { d: sumPath, class: "sum-path" }));
+
+        const currentIndex = state.sweepLimit === null ? -1 : state.sweepLimit - 1;
+        for (let i = 0; i < samples.length; i += 1) {
+          const s = samples[i];
+          const highlighted = i === currentIndex && !state.hidden.has(s.key);
+          drawImpulse(clipGroup, panel, s.t, s.y, { highlight: highlighted });
+        }
+      }
+
+      function rebuildToggles(samples) {
+        const newKeys = samples.map((s) => s.key).join("|");
+        if (newKeys === state.sampleKeys.join("|")) return;
+        state.sampleKeys = samples.map((s) => s.key);
+        clear(copyToggles);
+        for (const s of samples) {
+          const label = document.createElement("label");
+          label.className = "copy-chip";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = !state.hidden.has(s.key);
+          input.dataset.key = s.key;
+          const span = document.createElement("span");
+          span.textContent = "n=" + formatN(s.n);
+          label.appendChild(input);
+          label.appendChild(span);
+          copyToggles.appendChild(label);
+        }
+      }
+
+      function render() {
+        state.Ts = Number(tsRange.value);
+        tsValue.textContent = state.Ts.toFixed(2);
+        const samples = makeSampleObjects();
+        rebuildToggles(samples);
+        const active = includedSamples(samples);
+
+        clear(plotLayer);
+        drawLeftSamples(plotLayer);
+        drawRightPanel(plotLayer, samples, active);
+
+        const nyquistLimit = 0.78;
+        sampleStatus.classList.toggle("warn", state.Ts > nyquistLimit);
+        if (state.Ts > nyquistLimit) {
+          sampleStatus.textContent = "Undersampled region: the red interpolant folds the fast oscillation into a distorted envelope.";
+        } else {
+          sampleStatus.textContent = "Above Nyquist: narrow sinc copies sum to a clean continuous envelope.";
+        }
+
+        if (state.sweepLimit === null) {
+          sweepStatus.textContent = "Full superposition: " + active.length + " contributing samples.";
+        } else {
+          sweepStatus.textContent = "Sweep: " + Math.min(state.sweepLimit, samples.length) + " of " + samples.length + " sample positions accumulated.";
+        }
+      }
+
+      function stopTimer() {
+        if (state.timer) {
+          window.clearInterval(state.timer);
+          state.timer = null;
+        }
+        playBtn.classList.remove("active");
+        playBtn.textContent = "Play";
+      }
+
+      function startSweep() {
+        if (state.timer) {
+          stopTimer();
+          return;
+        }
+        const samples = makeSampleObjects();
+        if (state.sweepLimit === null || state.sweepLimit >= samples.length) {
+          state.sweepLimit = 0;
+        }
+        playBtn.classList.add("active");
+        playBtn.textContent = "Pause";
+        state.timer = window.setInterval(() => {
+          const nextSamples = makeSampleObjects();
+          state.sweepLimit = Math.min((state.sweepLimit || 0) + 1, nextSamples.length);
+          render();
+          if (state.sweepLimit >= nextSamples.length) stopTimer();
+        }, 650);
+        render();
+      }
+
+      tsRange.addEventListener("input", () => {
+        stopTimer();
+        state.sweepLimit = null;
+        render();
+      });
+
+      showCopiesInput.addEventListener("change", () => {
+        state.showCopies = showCopiesInput.checked;
+        render();
+      });
+
+      showSourceInput.addEventListener("change", () => {
+        state.showSource = showSourceInput.checked;
+        render();
+      });
+
+      copyToggles.addEventListener("change", (event) => {
+        const input = event.target;
+        if (!input || input.tagName !== "INPUT") return;
+        const key = input.dataset.key;
+        if (input.checked) state.hidden.delete(key);
+        else state.hidden.add(key);
+        render();
+      });
+
+      playBtn.addEventListener("click", startSweep);
+
+      stepBtn.addEventListener("click", () => {
+        stopTimer();
+        const samples = makeSampleObjects();
+        if (state.sweepLimit === null || state.sweepLimit >= samples.length) state.sweepLimit = 0;
+        state.sweepLimit += 1;
+        render();
+      });
+
+      fullBtn.addEventListener("click", () => {
+        stopTimer();
+        state.sweepLimit = null;
+        render();
+      });
+
+      drawStatic();
+      render();
+    }());
+  </script>
+</body>
+</html>

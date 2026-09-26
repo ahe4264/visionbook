@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Logistic Sigmoid</title>
+<style>
+  :root{
+    --ink:#111111;
+    --paper:#ffffff;
+    --muted:#5d6166;
+    --rule:#d8dade;
+    --curve:#d2795a;
+    --curve-dark:#a8492a;
+    --guide:#b3b3b3;
+    --panel:#f7f7f8;
+    --accent:#2f6f8f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;}
+  .wrap{max-width:860px;margin:0 auto;padding:22px 16px 44px;}
+  h1{font-size:20px;font-weight:600;letter-spacing:.01em;margin:0 0 2px;}
+  .sub{font-size:13.5px;color:var(--muted);line-height:1.5;margin:0 0 16px;max-width:64ch;}
+  .figbox{border:1px solid var(--rule);border-radius:8px;background:var(--paper);padding:6px 6px 2px;}
+  svg{display:block;width:100%;height:auto;touch-action:none;}
+  .controls{margin-top:14px;display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-start;
+    background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;}
+  .ctl{display:flex;flex-direction:column;gap:7px;min-width:250px;flex:1 1 250px;}
+  .ctl label{font-size:12.5px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);}
+  .row{display:flex;align-items:center;gap:10px;}
+  input[type=range]{flex:1;accent-color:var(--curve-dark);height:22px;}
+  .val{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:13px;background:#fff;
+    border:1px solid var(--rule);border-radius:4px;padding:2px 7px;min-width:64px;text-align:right;}
+  .readout{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:13px;line-height:1.7;color:#22262a;}
+  .readout b{font-weight:600;color:var(--curve-dark);}
+  .chk{display:flex;align-items:center;gap:8px;font-size:13.5px;color:#22262a;text-transform:none;
+    font-weight:400;letter-spacing:0;}
+  .chk input{width:15px;height:15px;accent-color:var(--accent);}
+  .note{margin-top:14px;font-size:13px;color:var(--muted);line-height:1.6;max-width:70ch;}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:8px;}
+  @media (max-width:560px){ .ctl{min-width:100%;flex:1 1 100%;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The logistic sigmoid <span style="font-style:italic">sig</span>[<span style="font-family:Georgia,serif;font-style:italic">z</span>]</h1>
+  <p class="sub">A smooth, bounded, monotonic squashing function that maps any real number to the open
+     interval (0,&nbsp;1) &mdash; so its output can be read as a probability.</p>
+
+  <div class="figbox">
+    <svg id="fig" viewBox="0 0 760 532" role="img"
+         aria-label="Plot of the logistic sigmoid from z = -5 to 5, with a draggable point on the curve and an adjustable probability threshold line."></svg>
+  </div>
+
+  <div class="controls">
+    <div class="ctl">
+      <label for="zs">Point on the curve &nbsp;<span style="text-transform:none;font-weight:400">(or drag it)</span></label>
+      <div class="row">
+        <input id="zs" type="range" min="-5" max="5" step="0.01" value="2">
+        <span class="val" id="zv">z = 2.00</span>
+      </div>
+      <div class="readout" id="ro"></div>
+    </div>
+
+    <div class="ctl">
+      <label for="ts">Probability threshold &nbsp;<span style="text-transform:none;font-weight:400">t</span></label>
+      <div class="row">
+        <input id="ts" type="range" min="0.02" max="0.98" step="0.001" value="0.5">
+        <span class="val" id="tv">t = 0.500</span>
+      </div>
+      <div class="readout" id="rt"></div>
+      <div class="chk"><input type="checkbox" id="tan"><label for="tan" class="chk" style="font-weight:400;text-transform:none;letter-spacing:0;color:#22262a">show tangent line at the point</label></div>
+    </div>
+  </div>
+
+  <p class="hint">Drag the orange dot anywhere along the curve (or click in the plot to jump it there);
+     drag the small grey arrow on the probability axis to move the threshold line. Either slider works too,
+     and arrow keys nudge the focused slider.</p>
+
+  <p class="note"><b>Why it matters.</b> The sigmoid is differentiable everywhere and its slope
+     <span style="font-family:Georgia,serif;font-style:italic">sig</span>&prime;(z)&nbsp;=&nbsp;sig(z)&thinsp;(1&minus;sig(z)) is largest at
+     <span style="font-family:Georgia,serif;font-style:italic">z</span>&nbsp;=&nbsp;0, where the output is exactly&nbsp;0.5.
+     Far from the origin the curve flattens against its asymptotes 0 and 1 &mdash; the function saturates, and the
+     gradient nearly vanishes. Choosing a threshold <span style="font-family:Georgia,serif;font-style:italic">t</span>
+     on the probability axis is equivalent to choosing a cut point
+     <span style="font-family:Georgia,serif;font-style:italic">z</span>* = ln[t/(1&minus;t)] on the score axis, which is
+     exactly how a logistic classifier turns a score into a decision.</p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("fig");
+
+  // ---- geometry -----------------------------------------------------------
+  const W = 760, H = 532;
+  const L = 100, R = 730, T = 30, B = 436;      // plot frame in px
+  const ZMIN = -5, ZMAX = 5, VMIN = 0, VMAX = 1;
+
+  const sx = z => L + (z - ZMIN) / (ZMAX - ZMIN) * (R - L);
+  const sy = v => B - (v - VMIN) / (VMAX - VMIN) * (B - T);
+  const xz = px => ZMIN + (px - L) / (R - L) * (ZMAX - ZMIN);
+  const yv = py => VMIN + (B - py) / (B - T) * (VMAX - VMIN);
+
+  const sig  = z => 1 / (1 + Math.exp(-z));
+  const dsig = z => { const s = sig(z); return s * (1 - s); };
+  const logit = p => Math.log(p / (1 - p));
+  const clamp = (x,a,b) => Math.min(b, Math.max(a, x));
+
+  function el(tag, attrs, parent){
+    const n = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(n);
+    return n;
+  }
+
+  // ---- static scaffolding -------------------------------------------------
+  el("rect", {x:0, y:0, width:W, height:H, fill:"#ffffff"});
+
+  const gShade = el("g", {});                     // decision-region tint
+  const shadeHi = el("rect", {x:sx(0), y:T, width:R-sx(0), height:B-T,
+                              fill:"#d2795a", opacity:0.055}, gShade);
+
+  // minor + major ticks
+  const gTicks = el("g", {stroke:"#111", "stroke-width":1.6, "shape-rendering":"crispEdges"});
+  for (let z = -5; z <= 5.0001; z += 0.5){
+    const major = Math.abs(z % 5) < 1e-9;
+    const len = major ? 10 : 5.5;
+    const x = sx(z);
+    el("line", {x1:x, y1:B, x2:x, y2:B+len, "stroke-width":major?2.4:1.6}, gTicks);
+    el("line", {x1:x, y1:T, x2:x, y2:T-len, "stroke-width":major?2.4:1.6}, gTicks);
+  }
+  for (let v = 0; v <= 1.0001; v += 0.1){
+    const major = (Math.abs(v) < 1e-9) || (Math.abs(v-1) < 1e-9);
+    const len = major ? 10 : 5.5;
+    const y = sy(v);
+    el("line", {x1:L, y1:y, x2:L-len, y2:y, "stroke-width":major?2.4:1.6}, gTicks);
+    el("line", {x1:R, y1:y, x2:R+len, y2:y, "stroke-width":major?2.4:1.6}, gTicks);
+  }
+
+  // frame
+  el("rect", {x:L, y:T, width:R-L, height:B-T, fill:"none", stroke:"#111",
+              "stroke-width":3.4, "shape-rendering":"crispEdges"});
+
+  // axis numbers
+  const SER = "'Latin Modern Roman', 'CMU Serif', 'Times New Roman', Times, serif";
+  const SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif";
+  const tickTxt = (t,x,y,anchor) => el("text",
+      {x:x, y:y, "text-anchor":anchor||"middle", "font-family":SER, "font-size":22, fill:"#111"}).textContent = t;
+  tickTxt("-5.0", sx(-5), B+34);
+  tickTxt("0.0",  sx(0),  B+34);
+  tickTxt("5.0",  sx(5),  B+34);
+  tickTxt("0.0",  L-16,   sy(0)+8, "end");
+  tickTxt("1.0",  L-16,   sy(1)+8, "end");
+
+  // axis labels
+  el("text", {x:(L+R)/2, y:H-16, "text-anchor":"middle", "font-family":SER,
+              "font-style":"italic", "font-size":28, fill:"#111"}).textContent = "z";
+  const yl = el("text", {x:0, y:0, "text-anchor":"middle", "font-family":SER,
+              "font-size":28, fill:"#111",
+              transform:"translate(34,"+((T+B)/2)+") rotate(-90)"});
+  yl.textContent = "sig[";
+  const ylz = el("tspan", {"font-style":"italic"}, yl); ylz.textContent = "z";
+  const yl2 = el("tspan", {}, yl); yl2.textContent = "]";
+
+  // ---- dynamic layers -----------------------------------------------------
+  const clipId = "plotclip";
+  const defs = el("defs", {});
+  const cp = el("clipPath", {id:clipId}, defs);
+  el("rect", {x:L, y:T, width:R-L, height:B-T}, cp);
+
+  const gClip = el("g", {"clip-path":"url(#"+clipId+")"});
+
+  // threshold guides (gray dotted, exactly as in the printed figure at t = 0.5)
+  const GD = {stroke:"#b0b0b0", "stroke-width":2, "stroke-dasharray":"2 5",
+              "stroke-linecap":"round", fill:"none"};
+  const hGuide = el("line", GD, gClip);
+  const vGuide = el("line", GD, gClip);
+
+  // tangent line
+  const tanLine = el("line", {stroke:"#2f6f8f", "stroke-width":2.2,
+                              "stroke-dasharray":"7 5", opacity:0, fill:"none"}, gClip);
+
+  // the sigmoid curve
+  const curve = el("path", {fill:"none", stroke:"#d2795a", "stroke-width":7.5,
+                            "stroke-linecap":"round", "stroke-linejoin":"round"}, gClip);
+  (function(){
+    let d = "";
+    const N = 800;
+    for (let i = 0; i <= N; i++){
+      const z = ZMIN + (ZMAX - ZMIN) * i / N;
+      d += (i ? "L" : "M") + sx(z).toFixed(2) + " " + sy(sig(z)).toFixed(2) + " ";
+    }
+    curve.setAttribute("d", d);
+  })();
+
+  // threshold crossing marker
+  const xMark = el("circle", {r:6.5, fill:"#ffffff", stroke:"#4a4a4a", "stroke-width":2.6}, gClip);
+  // threshold drag handle: a small arrow sitting on the probability axis
+  const knob  = el("polygon", {fill:"#6b7075", stroke:"#ffffff", "stroke-width":1.4,
+                              cursor:"ns-resize"}, gClip);
+  el("title", {}, knob).textContent = "Drag up or down to change the threshold t";
+
+  // draggable point on the curve
+  const ptRing = el("circle", {r:11.5, fill:"#ffffff", stroke:"#ffffff", "stroke-width":3}, gClip);
+  const pt     = el("circle", {r:9, fill:"#a8492a", stroke:"#ffffff", "stroke-width":2.5,
+                               cursor:"grab"}, gClip);
+
+  // z* label under the axis
+  const zstarLab = el("text", {"font-family":SANS, "font-size":16, fill:"#3c3f42",
+                               "text-anchor":"middle"});
+  // t label beside the threshold handle
+  const tLab = el("text", {"font-family":SANS, "font-size":16, fill:"#4a4e52",
+                           "text-anchor":"start"});
+  // coordinate readout balloon
+  const gBal = el("g", {});
+  const balBox = el("rect", {rx:5, ry:5, fill:"#ffffff", stroke:"#a8492a",
+                             "stroke-width":1.6, opacity:0.96}, gBal);
+  const balTxt = el("text", {"font-family":"Menlo, Consolas, monospace", "font-size":15,
+                             fill:"#7a3419"}, gBal);
+
+  // decision-region captions
+  const capL = el("text", {"font-family":SANS, "font-size":15, fill:"#9a7a6c",
+                           "text-anchor":"middle"});
+  const capR = el("text", {"font-family":SANS, "font-size":15, fill:"#9a7a6c",
+                           "text-anchor":"middle"});
+
+  // formula  1 / (1 + exp[-z])  — drawn last so guides never cut through it
+  const gF = el("g", {});
+  const fx = sx(-0.9), fy = T + 50;          // placed as in the printed figure
+  const HALO = {stroke:"#ffffff", "stroke-width":5, "paint-order":"stroke",
+                "stroke-linejoin":"round"};
+  el("text", Object.assign({x:fx, y:fy, "text-anchor":"middle", "font-family":SER,
+              "font-size":28, fill:"#111"}, HALO), gF).textContent = "1";
+  el("line", {x1:fx-86, y1:fy+11, x2:fx+86, y2:fy+11, stroke:"#ffffff", "stroke-width":7}, gF);
+  el("line", {x1:fx-86, y1:fy+11, x2:fx+86, y2:fy+11, stroke:"#111", "stroke-width":1.8}, gF);
+  const den = el("text", Object.assign({x:fx, y:fy+41, "text-anchor":"middle",
+                          "font-family":SER, "font-size":28, fill:"#111"}, HALO), gF);
+  den.textContent = "1+exp[−";
+  el("tspan", {"font-style":"italic"}, den).textContent = "z";
+  el("tspan", {}, den).textContent = "]";
+
+  svg.appendChild(gBal);   // coordinate balloon always on top
+
+  // keep annotation text legible wherever it lands
+  [zstarLab, tLab, capL, capR].forEach(n => {
+    n.setAttribute("stroke", "#ffffff");
+    n.setAttribute("stroke-width", "4");
+    n.setAttribute("paint-order", "stroke");
+    n.setAttribute("stroke-linejoin", "round");
+  });
+
+  // ---- state & rendering --------------------------------------------------
+  const zs = document.getElementById("zs"), zv = document.getElementById("zv");
+  const ts = document.getElementById("ts"), tv = document.getElementById("tv");
+  const ro = document.getElementById("ro"),  rt = document.getElementById("rt");
+  const tanChk = document.getElementById("tan");
+
+  let zPoint = 2.0, thr = 0.5;
+
+  const f2 = x => (x<0?"−":"") + Math.abs(x).toFixed(2);
+  const f3 = x => (x<0?"−":"") + Math.abs(x).toFixed(3);
+
+  function render(){
+    const s = sig(zPoint), px = sx(zPoint), py = sy(s);
+
+    // --- threshold ---
+    const zStar = logit(thr);
+    const tx = sx(clamp(zStar, ZMIN, ZMAX)), ty = sy(thr);
+    hGuide.setAttribute("x1", L);  hGuide.setAttribute("y1", ty);
+    hGuide.setAttribute("x2", tx); hGuide.setAttribute("y2", ty);
+    vGuide.setAttribute("x1", tx); vGuide.setAttribute("y1", ty);
+    vGuide.setAttribute("x2", tx); vGuide.setAttribute("y2", B);
+    xMark.setAttribute("cx", tx);  xMark.setAttribute("cy", ty);
+
+    // arrow handle riding on the probability axis
+    const kx = L + 3;
+    knob.setAttribute("points",
+      kx+","+(ty-8)+" "+(kx+15)+","+ty+" "+kx+","+(ty+8));
+    tLab.setAttribute("x", kx + 21);
+    tLab.setAttribute("y", clamp(ty, T + 16, B - 8) - 8);
+    tLab.textContent = "t = " + thr.toFixed(2);
+
+    shadeHi.setAttribute("x", tx);
+    shadeHi.setAttribute("width", Math.max(0, R - tx));
+
+    zstarLab.setAttribute("x", clamp(tx, L + 34, R - 34));
+    zstarLab.setAttribute("y", B + 60);
+    zstarLab.textContent = "z* = " + f3(zStar);
+
+    const midL = clamp((L + tx) / 2, L + 66, R - 66);
+    const midR = clamp((tx + R) / 2, L + 66, R - 66);
+    // captions sit on a common line, nudged aside only where the curve would cross them
+    const capV = yv(T + 152);
+    const capY = (xpx, up) => {
+      const v = sig(xz(xpx));
+      return Math.abs(v - capV) < 0.11
+        ? clamp(sy(v + (up ? 0.22 : -0.22)), T + 120, B - 18)
+        : T + 152;
+    };
+    capL.setAttribute("x", midL); capL.setAttribute("y", capY(midL, true));
+    capR.setAttribute("x", midR); capR.setAttribute("y", capY(midR, false));
+    capL.textContent = "decide ŷ = 0";
+    capR.textContent = "decide ŷ = 1";
+    capL.setAttribute("opacity", (tx - L) > 150 ? 1 : 0);
+    capR.setAttribute("opacity", (R - tx) > 150 ? 1 : 0);
+
+    // --- point ---
+    pt.setAttribute("cx", px);     pt.setAttribute("cy", py);
+    ptRing.setAttribute("cx", px); ptRing.setAttribute("cy", py);
+
+    // --- tangent ---
+    if (tanChk.checked){
+      const m = dsig(zPoint);
+      const half = 1.7;                        // half-width in z units
+      const z1 = zPoint - half, z2 = zPoint + half;
+      tanLine.setAttribute("opacity", 1);
+      tanLine.setAttribute("x1", sx(z1)); tanLine.setAttribute("y1", sy(s + m*(z1-zPoint)));
+      tanLine.setAttribute("x2", sx(z2)); tanLine.setAttribute("y2", sy(s + m*(z2-zPoint)));
+    } else {
+      tanLine.setAttribute("opacity", 0);
+    }
+
+    // --- balloon ---
+    const label = "(" + f2(zPoint) + ",  " + s.toFixed(3) + ")";
+    balTxt.textContent = label;
+    const bw = label.length * 9.05 + 14, bh = 24;
+    let bx = (px + 22 + bw <= R - 6) ? px + 22 : px - 22 - bw;
+    bx = clamp(bx, L + 6, R - 6 - bw);
+    let by = clamp(py - 34, T + 6, B - bh - 6);
+    // keep the balloon clear of the formula block
+    const overlaps = () => !(bx > fx + 96 || bx + bw < fx - 96 ||
+                             by > fy + 52 || by + bh < fy - 28);
+    if (overlaps()) by = clamp(py + 16, T + 6, B - bh - 6);
+    if (overlaps()) by = fy + 60;
+    balBox.setAttribute("x", bx); balBox.setAttribute("y", by);
+    balBox.setAttribute("width", bw); balBox.setAttribute("height", bh);
+    balTxt.setAttribute("x", bx + 7); balTxt.setAttribute("y", by + 17);
+
+    // --- html readouts ---
+    zs.value = zPoint.toFixed(2);
+    zv.textContent = "z = " + f2(zPoint);
+    ts.value = thr.toFixed(3);
+    tv.textContent = "t = " + thr.toFixed(3);
+    ro.innerHTML = "sig[z] = <b>" + s.toFixed(4) + "</b><br>" +
+                   "slope   = sig(1−sig) = <b>" + dsig(zPoint).toFixed(4) + "</b>" +
+                   (Math.abs(zPoint) < 0.02 ? "  &larr; maximum" : "");
+    rt.innerHTML = "cut point z* = ln[t/(1−t)] = <b>" + f3(zStar) + "</b><br>" +
+                   "the curve crosses t at that z";
+  }
+
+  // ---- interaction --------------------------------------------------------
+  function svgPoint(evt){
+    const r = svg.getBoundingClientRect();
+    return { x: (evt.clientX - r.left) * (W / r.width),
+             y: (evt.clientY - r.top)  * (H / r.height) };
+  }
+
+  let mode = null;   // "point" | "thr"
+
+  svg.addEventListener("pointerdown", e => {
+    const p = svgPoint(e);
+    if (p.x < L - 14 || p.x > R + 14 || p.y < T - 14 || p.y > B + 14) return;
+    const dk = Math.hypot(p.x - (L + 10), p.y - sy(thr));
+    mode = (dk < 26 || p.x < L + 26) ? "thr" : "point";
+    svg.setPointerCapture(e.pointerId);
+    move(p); e.preventDefault();
+  });
+  svg.addEventListener("pointermove", e => { if (mode) move(svgPoint(e)); });
+  const end = e => { if (mode){ mode = null; try{ svg.releasePointerCapture(e.pointerId);}catch(_){} } };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+
+  function move(p){
+    if (mode === "thr"){
+      thr = clamp(yv(clamp(p.y, T, B)), 0.02, 0.98);
+    } else {
+      zPoint = clamp(xz(clamp(p.x, L, R)), ZMIN, ZMAX);
+    }
+    render();
+  }
+
+  zs.addEventListener("input", () => { zPoint = parseFloat(zs.value); render(); });
+  ts.addEventListener("input", () => { thr    = parseFloat(ts.value); render(); });
+  tanChk.addEventListener("change", render);
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deep Residual Network (ResNet) — architecture and the residual block</title>
+<style>
+  :root{
+    --ink:#14181c; --muted:#5d6a75; --line:#c8d0d6; --bg:#fbfcfd;
+    --accent:#b8442a; --accent2:#1d6f8b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1680px;margin:0 auto;padding:22px 26px 46px;}
+  h1{font-size:21px;margin:0 0 4px;font-weight:650;letter-spacing:.1px}
+  .sub{margin:0 0 16px;color:var(--muted);font-size:14px;max-width:1080px;line-height:1.5}
+  .controls{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;
+    border:1px solid var(--line);border-radius:10px;background:#fff;padding:12px 16px;margin-bottom:14px}
+  .grp{display:flex;flex-direction:column;gap:7px;min-width:0}
+  .grp>.lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  button{font:inherit;font-size:13px;padding:7px 13px;border-radius:7px;border:1px solid var(--line);
+    background:#fff;color:var(--ink);cursor:pointer;transition:.12s}
+  button:hover{border-color:#9aa6b0;background:#f2f5f7}
+  button.on{background:var(--accent2);border-color:var(--accent2);color:#fff}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#9d3722}
+  button:disabled{opacity:.55;cursor:default}
+  input[type=range]{width:230px;accent-color:var(--accent2)}
+  .depthlab{font-size:13px;color:var(--ink);font-weight:600;min-width:196px}
+  .depthlab span{color:var(--muted);font-weight:400}
+  .hint{font-size:12px;color:var(--muted)}
+  .figure{border:1px solid var(--line);border-radius:10px;background:#fff;padding:6px 8px;overflow:hidden}
+  svg{display:block;width:100%;height:auto}
+  .cap{margin:14px 2px 0;font-size:13px;color:var(--muted);line-height:1.6;max-width:1180px}
+  .cap b{color:var(--ink)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:10px;align-items:center}
+  .sw{display:inline-block;width:13px;height:13px;border:1px solid #14181c;vertical-align:-2px;margin-right:5px;border-radius:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Deep residual network (ResNet&nbsp;v2): the whole pipeline, and what is inside one ResBlock</h1>
+  <p class="sub">Tensors flow left&nbsp;→&nbsp;right. Each cuboid is a feature tensor: its <b>height</b> encodes the spatial size
+    H×W and its <b>length</b> encodes the channel count C (both on a compressed power scale so 3 … 2048 channels fit on one page).
+    Every stage halves the spatial resolution and doubles the depth. The panel at the top right is a zoom into a single
+    residual block — use the controls to run a forward pass, change the network depth, or pick which stage to zoom into.</p>
+
+  <div class="controls">
+    <div class="grp">
+      <div class="lbl">Residual block</div>
+      <div class="row">
+        <button id="btnPlay" class="primary">▶ Animate forward pass</button>
+        <button id="btnId" class="on">Identity block</button>
+        <button id="btnSub">Subsample block</button>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="lbl">Network depth</div>
+      <div class="row">
+        <input type="range" id="depth" min="0" max="3" step="1" value="3">
+        <span class="depthlab" id="depthLab"></span>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="lbl">Zoom into stage</div>
+      <div class="row" id="stageBtns"></div>
+      <div class="hint">…or click any tensor block in the diagram.</div>
+    </div>
+  </div>
+
+  <div class="figure"><svg id="fig" xmlns="http://www.w3.org/2000/svg"></svg></div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:#9DB4C6"></i>feature tensor</span>
+    <span><i class="sw" style="background:#C96A43"></i>7×7 conv output / BatchNorm</span>
+    <span><i class="sw" style="background:#A9DCD3"></i>ReLU</span>
+    <span><i class="sw" style="background:#fff"></i>convolution</span>
+    <span><i class="sw" style="background:#BEE3DF"></i>1000-d class vector</span>
+  </div>
+
+  <p class="cap"><b>Why it works.</b> A residual block computes <b>y = x + F(x)</b>. The skip path carries <i>x</i> straight to the
+    ⊕, so however many blocks are stacked, there is always an uninterrupted route from the loss back to the early layers:
+    ∂y/∂x = I + ∂F/∂x, which cannot vanish. The block body is a <b>bottleneck</b>: a 1×1 conv squeezes C channels down to C/4,
+    a 3×3 conv does the expensive spatial mixing in that cheap space, and a second 1×1 conv expands back to C — which is what
+    makes 100+ block networks affordable. The ordering shown (BN → ReLU → Conv, three times) is the <b>pre-activation</b>
+    variant, ResNet&nbsp;v2, in which the skip path is a completely clean identity.</p>
+</div>
+
+<script>
+(function(){
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+function E(tag,a,p){const n=document.createElementNS(NS,tag);
+  for(const k in a){if(a[k]!==undefined&&a[k]!==null)n.setAttribute(k,a[k]);}
+  if(p)p.appendChild(n);return n;}
+const SERIF='ui-serif,Georgia,"Times New Roman",serif';
+function T(p,x,y,s,o){o=o||{};
+  const t=E('text',{x:x,y:y,'font-size':o.fs||21,'text-anchor':o.anchor||'start',
+    fill:o.fill||'#14181c','font-family':o.ff||SERIF,'font-weight':o.fw||400,
+    'font-style':o.fi||null,
+    transform:o.rot?('rotate('+o.rot+' '+x+' '+y+')'):null,
+    'pointer-events':'none'},p);
+  if(Array.isArray(s)){s.forEach(function(line,i){
+      const ts=E('tspan',{x:x,dy:i===0?0:(o.dy||24)},t);ts.textContent=line;});}
+  else t.textContent=s;
+  return t;}
+function L(p,x1,y1,x2,y2,o){o=o||{};return E('line',{x1:x1,y1:y1,x2:x2,y2:y2,
+  stroke:o.stroke||'#14181c','stroke-width':o.sw||2.2,
+  'stroke-dasharray':o.dash||null,'marker-end':o.arrow?'url(#ah)':null,
+  'stroke-linecap':'round'},p);}
+
+/* ---------- scales: geometry is computed, not drawn by hand ---------- */
+// vertical extent of a tensor  <- spatial size (compressed power law)
+function fS(s){return 7.09*Math.pow(s,0.6);}
+// horizontal extent of a tensor <- channel count (same compression)
+function gC(c){return 1.90*Math.pow(c,0.6);}
+const KX=0.42, KY=0.36;          // isometric foreshortening of the depth axis
+const BASE=600;                  // common front-bottom baseline for every tensor
+
+const COL={
+  t:{f:'#9DB4C6',t:'#BACBD8',s:'#6F8CA0'},          // feature tensor
+  o:{f:'#C96A43',t:'#DD8A63',s:'#9A4B2B'},          // conv1 output
+  c:{f:'#BEE3DF',t:'#D8F0ED',s:'#8CC4BD'}           // class vector
+};
+
+const STAGES=[
+  {S:56,C:256,b:64,name:'Stage 1',tag:'conv2_x'},
+  {S:28,C:512,b:128,name:'Stage 2',tag:'conv3_x'},
+  {S:14,C:1024,b:256,name:'Stage 3',tag:'conv4_x'},
+  {S:7,C:2048,b:512,name:'Stage 4',tag:'conv5_x'}
+];
+const DEPTHS=[
+  {n:50, blocks:[3,4,6,3]},
+  {n:101,blocks:[3,4,23,3]},
+  {n:152,blocks:[3,8,36,3]},
+  {n:200,blocks:[3,24,36,3]}
+];
+const state={di:3, stage:2, sub:false, playing:false};
+
+const svg=document.getElementById('fig');
+let W=0,H=744;
+let PX0=0,PX1=0;                 // inset panel extent
+const CHAIN=[                    // pre-activation bottleneck: BN-ReLU-Conv ×3
+  {k:'bn',  t:'BN',      w:52},
+  {k:'relu',t:'ReLU',    w:64},
+  {k:'cv1', t:'Conv 1×1',w:112},
+  {k:'bn',  t:'BN',      w:52},
+  {k:'relu',t:'ReLU',    w:64},
+  {k:'cv3', t:'Conv 3×3',w:112},
+  {k:'bn',  t:'BN',      w:52},
+  {k:'relu',t:'ReLU',    w:64},
+  {k:'cv1b',t:'Conv 1×1',w:112}
+];
+const CX0=1185, CGAP=24, CY=124, CH=36, SKY=62;
+let chainPos=[], plusX=0, teeX=CX0-30;
+
+/* ---------- one cuboid ---------- */
+function cuboid(g,x,h,Lw,dep,col,extra){
+  const dx=KX*dep, dy=KY*dep, y=BASE;
+  const st={stroke:'#14181c','stroke-width':2,'stroke-linejoin':'round'};
+  E('polygon',Object.assign({points:[x+Lw,y,x+Lw+dx,y-dy,x+Lw+dx,y-dy-h,x+Lw,y-h].join(' '),fill:col.s},st),g);
+  E('polygon',Object.assign({points:[x,y-h,x+Lw,y-h,x+Lw+dx,y-h-dy,x+dx,y-h-dy].join(' '),fill:col.t},st),g);
+  E('polygon',Object.assign({points:[x,y,x+Lw,y,x+Lw,y-h,x,y-h].join(' '),fill:(extra&&extra.front)||col.f},st),g);
+  return {x:x,L:Lw,dx:dx,dy:dy,h:h,top:y-h,topBack:y-h-dy,right:x+Lw+dx,cx:x+Lw/2};
+}
+
+/* ---------- layout (pure) ---------- */
+function layout(){
+  const cfg=DEPTHS[state.di];
+  const g={};
+  let x=70;
+  const ih=fS(224);
+  g.input={x:x,h:ih,L:8,dep:ih,dx:KX*ih,dy:KY*ih};
+  x=g.input.x+g.input.L+g.input.dx*0.85;
+  const ch=fS(112);
+  g.conv1={x:x,h:ch,L:gC(64),dep:ch,dx:KX*ch,dy:KY*ch};
+  x=g.conv1.x+g.conv1.L+g.conv1.dx+30;
+  const ph=fS(56);
+  g.pool={x:x,h:ph,L:gC(64),dep:ph,dx:KX*ph,dy:KY*ph};
+  x=g.pool.x+g.pool.L+g.pool.dx+26;
+
+  g.stages=STAGES.map(function(st,i){
+    const n=cfg.blocks[i];
+    const h=fS(st.S), Lw=gC(st.C), dep=fS(st.S), dx=KX*dep;
+    const pitch=Lw+Math.max(12,0.5*dx);
+    const shown=Math.min(n,3), ellAfter=(n>3)?1:-1;
+    const boxes=[]; let ell=null; const x0=x;
+    for(let k=0;k<shown;k++){
+      boxes.push(x); x+=pitch;
+      if(k===ellAfter){ const a=x-pitch+Lw+dx; x+=66; ell={x0:a,x1:x-14}; }
+    }
+    const last=boxes[boxes.length-1];
+    const right=last+Lw+dx;
+    x=right+34;
+    return {st:st,i:i,n:n,h:h,L:Lw,dep:dep,dx:dx,dy:KY*dep,boxes:boxes,ell:ell,x0:x0,x1:right};
+  });
+  x+=16;
+  g.fc1=x; g.fc2=x+62;
+  W=Math.round(g.fc2+66);
+  PX1=W-20; PX0=990;
+  return g;
+}
+
+/* ---------- labels that sit under the diagram ---------- */
+function underLabel(g,lines,bx,by){
+  const px=bx-20, py=by+52;
+  T(g,px,py,lines,{fs:21,anchor:'end',rot:-20,dy:25});
+  L(g,bx-16,by+34,bx+4,by+6,{arrow:true,sw:2.2});
+}
+function dimLabel(g,txt,tx,ty,ax,ay){
+  T(g,tx,ty,txt,{fs:22,rot:-22});
+  L(g,tx-8,ty+5,ax,ay,{arrow:true,sw:1.8});
+}
+
+/* ---------- main diagram ---------- */
+let gMain,gPanel,gAnim;
+function drawMain(){
+  const g=layout();
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  gMain.textContent='';
+
+  /* input image plane 224×224×3 */
+  const ip=g.input, y=BASE;
+  const gi=E('g',{},gMain);
+  E('polygon',{points:[ip.x+ip.L,y,ip.x+ip.L+ip.dx,y-ip.dy,ip.x+ip.L+ip.dx,y-ip.dy-ip.h,ip.x+ip.L,y-ip.h].join(' '),
+    fill:'url(#photo)',stroke:'#14181c','stroke-width':2},gi);
+  E('polygon',{points:[ip.x,y-ip.h,ip.x+ip.L,y-ip.h,ip.x+ip.L+ip.dx,y-ip.h-ip.dy,ip.x+ip.dx,y-ip.h-ip.dy].join(' '),
+    fill:'#7d8d99',stroke:'#14181c','stroke-width':2},gi);
+  E('polygon',{points:[ip.x,y,ip.x+ip.L,y,ip.x+ip.L,y-ip.h,ip.x,y-ip.h].join(' '),
+    fill:'#4d5a64',stroke:'#14181c','stroke-width':2},gi);
+  dimLabel(gMain,'224 × 224 × 3',ip.x+ip.dx+118,y-ip.h-ip.dy-34,
+           ip.x+ip.L+ip.dx*0.40,y-ip.h-ip.dy*0.40);
+
+  /* conv1 output 112×112×64 */
+  const c1=cuboid(gMain,g.conv1.x,g.conv1.h,g.conv1.L,g.conv1.dep,COL.o);
+  dimLabel(gMain,'112 × 112 × 64',g.conv1.x+g.conv1.dx+92,c1.topBack-26,
+           g.conv1.x+g.conv1.L*0.5+g.conv1.dx*0.45,c1.topBack+g.conv1.dy*0.45);
+  underLabel(gMain,['Conv 7×7','Stride 2'],g.conv1.x,BASE);
+
+  /* maxpool output 56×56×64 */
+  cuboid(gMain,g.pool.x,g.pool.h,g.pool.L,g.pool.dep,COL.t);
+  underLabel(gMain,['MaxPool'],g.pool.x,BASE);
+
+  /* the four residual stages */
+  g.stages.forEach(function(S){
+    const gg=E('g',{style:'cursor:pointer'},gMain);
+    gg.addEventListener('click',function(){selectStage(S.i);});
+    const sel=(S.i===state.stage);
+
+    S.boxes.forEach(function(bx){
+      cuboid(gg,bx,S.h,S.L,S.dep,COL.t);
+    });
+
+    /* "⋯" between the shown blocks + the total-block annotation */
+    if(S.ell){
+      const cxm=(S.ell.x0+S.ell.x1)/2, ym=BASE-S.h*0.55-S.dy*0.3;
+      for(let k=-1;k<=1;k++) E('circle',{cx:cxm+k*17,cy:ym,r:3.6,fill:'#1d6f8b'},gg);
+      T(gg,cxm,BASE+26,[S.n+' blocks','total'],{fs:21,anchor:'middle',fill:'#1d6f8b',dy:24});
+    }else{
+      T(gg,(S.x0+S.x1)/2+30,BASE+26,S.n+' blocks',{fs:21,anchor:'middle',fill:'#1d6f8b'});
+    }
+
+    /* bracket above the stage with one arrow dropping into every drawn block */
+    let yb=Math.min(BASE-S.h-S.dy-26,520);
+    const accent=sel?'#b8442a':'#14181c';
+    if(S.ell){
+      L(gg,S.x0+S.L*0.4,yb,S.ell.x0,yb,{sw:2,stroke:accent});
+      L(gg,S.ell.x0,yb,S.ell.x1,yb,{sw:2,stroke:accent,dash:'2 9'});
+      L(gg,S.ell.x1,yb,S.x1-S.L*0.25,yb,{sw:2,stroke:accent});
+    }else{
+      L(gg,S.x0+S.L*0.4,yb,S.x1-S.L*0.25,yb,{sw:2,stroke:accent});
+    }
+    S.boxes.forEach(function(bx){
+      L(gg,bx+S.L*0.92,yb,bx+S.L*0.30,BASE-S.h-S.dy-7,{arrow:true,sw:1.8,stroke:accent});
+    });
+    const lx=S.x0+S.L*0.4+(S.i===0?48:0);
+    T(gg,lx,yb-44,['ResBlock',S.st.S+' × '+S.st.S+' × '+S.st.C+'('+S.st.b+')'],
+      {fs:22,rot:-22,dy:26,fill:accent,fw:sel?700:400});
+
+    underLabel(gg,['Subsample'],S.boxes[0],BASE);
+
+    if(sel){
+      E('rect',{x:S.x0-13,y:BASE-S.h-S.dy-13,width:(S.x1-S.x0)+26,height:S.h+S.dy+19,
+        rx:9,fill:'none',stroke:'#b8442a','stroke-width':2.6,'stroke-dasharray':'9 7',
+        'pointer-events':'none'},gg);
+    }
+  });
+
+  /* classifier: 1000-d FC vector and softmax vector, drawn with a break */
+  [g.fc1,g.fc2].forEach(function(fx,k){
+    const seg=46,gap=26,wd=20,dep=20;
+    const gg=E('g',{},gMain);
+    const dx=KX*dep,dy=KY*dep;
+    function bar(y0,y1){
+      const h=y1-y0;
+      E('polygon',{points:[fx+wd,y1,fx+wd+dx,y1-dy,fx+wd+dx,y1-dy-h,fx+wd,y1-h].join(' '),
+        fill:COL.c.s,stroke:'#14181c','stroke-width':2},gg);
+      E('polygon',{points:[fx,y0,fx+wd,y0,fx+wd+dx,y0-dy,fx+dx,y0-dy].join(' '),
+        fill:COL.c.t,stroke:'#14181c','stroke-width':2},gg);
+      E('rect',{x:fx,y:y0,width:wd,height:h,fill:COL.c.f,stroke:'#14181c','stroke-width':2},gg);
+    }
+    bar(BASE-seg,BASE);
+    bar(BASE-seg-gap-seg,BASE-seg-gap);
+    for(let i=-1;i<=1;i++) E('circle',{cx:fx+wd/2,cy:BASE-seg-gap/2+i*9,r:2.6,fill:'#14181c'},gg);
+    T(gg,fx+wd/2,BASE-2*seg-gap-dy-12,'1000',{fs:22,anchor:'middle'});
+    underLabel(gg,k===0?['AvgPool + FC']:['Softmax'],fx,BASE);
+  });
+  /* arrow from the last stage into the classifier */
+  L(gMain,g.stages[3].x1+6,BASE-10,g.fc1-8,BASE-10,{arrow:true,sw:2.2});
+}
+
+/* ---------- inset: zoom into one residual block ---------- */
+function blockSpec(){
+  const i=state.stage, st=STAGES[i];
+  if(!state.sub){
+    return {inC:st.C,outC:st.C,b:st.b,inS:st.S,outS:st.S,stride:1,proj:false,
+      title:st.name+' · identity ResBlock · '+st.S+'×'+st.S+'×'+st.C+', bottleneck '+st.b};
+  }
+  const inC=(i===0)?64:STAGES[i-1].C;
+  const inS=(i===0)?56:st.S*2;
+  const stride=(i===0)?1:2;
+  return {inC:inC,outC:st.C,b:st.b,inS:inS,outS:st.S,stride:stride,proj:true,
+    title:st.name+' · subsample ResBlock · '+inS+'×'+inS+'×'+inC+' → '+st.S+'×'+st.S+'×'+st.C};
+}
+
+function drawPanel(){
+  gPanel.textContent='';
+  const sp=blockSpec();
+  E('rect',{x:PX0,y:12,width:PX1-PX0,height:228,rx:16,fill:'#C6CACB',
+    stroke:'#14181c','stroke-width':2.4},gPanel);
+
+  T(gPanel,PX0+18,34,sp.title,{fs:19,fw:700,fill:'#1a2228'});
+
+  /* the little cube on the left + "=" */
+  const cd=44;
+  (function(){
+    const x=PX0+42,y=164,h=58,Lw=34,dx=KX*cd,dy=KY*cd;
+    E('polygon',{points:[x+Lw,y,x+Lw+dx,y-dy,x+Lw+dx,y-dy-h,x+Lw,y-h].join(' '),fill:COL.t.s,stroke:'#14181c','stroke-width':2},gPanel);
+    E('polygon',{points:[x,y-h,x+Lw,y-h,x+Lw+dx,y-h-dy,x+dx,y-h-dy].join(' '),fill:COL.t.t,stroke:'#14181c','stroke-width':2},gPanel);
+    E('rect',{x:x,y:y-h,width:Lw,height:h,fill:COL.t.f,stroke:'#14181c','stroke-width':2},gPanel);
+  })();
+  T(gPanel,PX0+118,CY+12,'=',{fs:36,fw:700});
+
+  /* main path */
+  chainPos=[]; let x=CX0;
+  L(gPanel,teeX,CY,CX0-6,CY,{arrow:true,sw:2.2});
+  E('circle',{cx:teeX,cy:CY,r:4.4,fill:'#14181c'},gPanel);
+  CHAIN.forEach(function(it,i){
+    const fill=(it.k==='bn')?'#E2794A':(it.k==='relu')?'#A9DCD3':'#FFFFFF';
+    const r=E('rect',{x:x,y:CY-CH/2,width:it.w,height:CH,rx:5,fill:fill,
+      stroke:'#14181c','stroke-width':2,'data-i':i},gPanel);
+    T(gPanel,x+it.w/2,CY+7,it.t,{fs:20,anchor:'middle'});
+    chainPos.push({x:x,w:it.w,el:r,k:it.k});
+    x+=it.w;
+    if(i<CHAIN.length-1){ L(gPanel,x+3,CY,x+CGAP-3,CY,{arrow:true,sw:2.2}); x+=CGAP; }
+  });
+  plusX=x+42;
+  L(gPanel,x+3,CY,plusX-16,CY,{arrow:true,sw:2.2});
+  const plus=E('circle',{cx:plusX,cy:CY,r:14,fill:'#fff',stroke:'#14181c','stroke-width':2.4},gPanel);
+  plus.setAttribute('id','plusC');
+  L(gPanel,plusX-8,CY,plusX+8,CY,{sw:2});
+  L(gPanel,plusX,CY-8,plusX,CY+8,{sw:2});
+  L(gPanel,plusX+16,CY,PX1-36,CY,{arrow:true,sw:2.2});
+
+  /* skip path */
+  const sk=E('polyline',{points:[teeX,CY,teeX,SKY,plusX,SKY,plusX,CY-16].join(' '),
+    fill:'none',stroke:'#14181c','stroke-width':2.2,'marker-end':'url(#ah)'},gPanel);
+  sk.setAttribute('id','skipline');
+  if(sp.proj){
+    const bw=132,bx=(teeX+plusX)/2-bw/2;
+    E('rect',{x:bx,y:SKY-19,width:bw,height:38,rx:5,fill:'#fff',stroke:'#14181c','stroke-width':2},gPanel);
+    T(gPanel,bx+bw/2,SKY+7,'Conv 1×1'+(sp.stride>1?', /2':''),{fs:19,anchor:'middle'});
+    T(gPanel,bx+bw+18,SKY-14,'projection shortcut: '+sp.inC+' → '+sp.outC+(sp.stride>1?', stride 2':''),
+      {fs:17,fill:'#3a4750',fi:'italic'});
+  }else{
+    T(gPanel,(teeX+plusX)/2,SKY-12,'identity skip — '+sp.inC+' channels pass through untouched',
+      {fs:17,anchor:'middle',fill:'#3a4750',fi:'italic'});
+  }
+
+  /* channel bookkeeping under the three convolutions */
+  const ann=[
+    {i:2,t:sp.inC+' → '+sp.b,s:'squeeze'},
+    {i:5,t:sp.b+' → '+sp.b+(sp.stride>1?', stride 2':''),s:sp.inS+'×'+sp.inS+' → '+sp.outS+'×'+sp.outS},
+    {i:8,t:sp.b+' → '+sp.outC,s:'expand'}
+  ];
+  ann.forEach(function(a){
+    const c=chainPos[a.i].x+chainPos[a.i].w/2;
+    T(gPanel,c,CY+40,a.t,{fs:19,anchor:'middle',fw:700,fill:'#0f2a36'});
+    T(gPanel,c,CY+58,a.s,{fs:16,anchor:'middle',fill:'#46525b',fi:'italic'});
+  });
+
+  /* channel-width strip: length ∝ channel count, so the bottleneck is visible */
+  const strip=[{cx:PX0+215,c:sp.inC},{cx:chainPos[2].x+chainPos[2].w/2,c:sp.b},
+               {cx:chainPos[5].x+chainPos[5].w/2,c:sp.b},{cx:chainPos[8].x+chainPos[8].w/2,c:sp.outC}];
+  const sy=CY+68;
+  strip.forEach(function(s){
+    const w=gC(s.c)*0.42;
+    E('rect',{x:s.cx-w/2,y:sy,width:w,height:11,fill:COL.t.f,stroke:'#14181c','stroke-width':1.6},gPanel);
+    T(gPanel,s.cx,sy+29,s.c+' ch',{fs:17,anchor:'middle',fill:'#1d6f8b'});
+  });
+  T(gPanel,PX0+18,sy+29,'width ∝ channels',{fs:16,fill:'#46525b',fi:'italic'});
+}
+
+/* ---------- animation ---------- */
+function polyLen(pts){let d=0;const seg=[];
+  for(let i=1;i<pts.length;i++){const l=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);seg.push(l);d+=l;}
+  return {seg:seg,total:d};}
+function polyAt(pts,info,t){
+  let d=t*info.total;
+  for(let i=0;i<info.seg.length;i++){
+    if(d<=info.seg[i]||i===info.seg.length-1){
+      const f=info.seg[i]?Math.min(1,d/info.seg[i]):0;
+      return [pts[i][0]+(pts[i+1][0]-pts[i][0])*f, pts[i][1]+(pts[i+1][1]-pts[i][1])*f];
+    }
+    d-=info.seg[i];
+  }
+  return pts[pts.length-1];
+}
+let raf=null;
+function play(){
+  if(state.playing) return;
+  state.playing=true;
+  document.getElementById('btnPlay').disabled=true;
+  gAnim.textContent='';
+  const mainPts=[[teeX,CY],[plusX-16,CY]];
+  const skipPts=[[teeX,CY],[teeX,SKY],[plusX,SKY],[plusX,CY-16]];
+  const mi=polyLen(mainPts), si=polyLen(skipPts);
+  const trailM=E('polyline',{points:'',fill:'none',stroke:'#b8442a','stroke-width':5,
+    'stroke-linecap':'round',opacity:.4},gAnim);
+  const trailS=E('polyline',{points:'',fill:'none',stroke:'#1d6f8b','stroke-width':5,
+    'stroke-linecap':'round',opacity:.4},gAnim);
+  const dotM=E('circle',{cx:teeX,cy:CY,r:8,fill:'#b8442a',stroke:'#fff','stroke-width':2},gAnim);
+  const dotS=E('circle',{cx:teeX,cy:CY,r:8,fill:'#1d6f8b',stroke:'#fff','stroke-width':2},gAnim);
+  const tag=T(gAnim,teeX,CY-34,'F(x)',{fs:18,anchor:'middle',fill:'#b8442a',fw:700});
+  const tag2=T(gAnim,teeX,SKY+24,'x',{fs:18,anchor:'middle',fill:'#1d6f8b',fw:700});
+  const D=3200, t0=performance.now();
+  function frame(now){
+    let t=(now-t0)/D;
+    if(t>1)t=1;
+    const e=t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+    const pm=polyAt(mainPts,mi,e), ps=polyAt(skipPts,si,e);
+    dotM.setAttribute('cx',pm[0]);dotM.setAttribute('cy',pm[1]);
+    dotS.setAttribute('cx',ps[0]);dotS.setAttribute('cy',ps[1]);
+    tag.setAttribute('x',pm[0]);tag.setAttribute('y',pm[1]-34);
+    tag2.setAttribute('x',ps[0]);tag2.setAttribute('y',ps[1]+24);
+    let mp=[];for(let k=0;k<=40;k++){const p=polyAt(mainPts,mi,e*k/40);mp.push(p[0]+','+p[1]);}
+    trailM.setAttribute('points',mp.join(' '));
+    let sp2=[];for(let k=0;k<=40;k++){const p=polyAt(skipPts,si,e*k/40);sp2.push(p[0]+','+p[1]);}
+    trailS.setAttribute('points',sp2.join(' '));
+    chainPos.forEach(function(c){
+      const hot=(pm[0]>=c.x-2&&pm[0]<=c.x+c.w+2);
+      c.el.setAttribute('stroke',hot?'#b8442a':'#14181c');
+      c.el.setAttribute('stroke-width',hot?4.5:2);
+    });
+    if(t<1){raf=requestAnimationFrame(frame);}
+    else{
+      chainPos.forEach(function(c){c.el.setAttribute('stroke','#14181c');c.el.setAttribute('stroke-width',2);});
+      const pc=document.getElementById('plusC');
+      tag.remove(); tag2.remove(); dotM.remove(); dotS.remove();
+      const sum=T(gAnim,plusX,CY-34,'y = x + F(x)',{fs:20,anchor:'middle',fill:'#b8442a',fw:700});
+      let k=0;
+      (function pulse(){
+        k++;
+        pc.setAttribute('r',14+6*Math.sin(k/4));
+        pc.setAttribute('stroke',k%12<6?'#b8442a':'#14181c');
+        if(k<48){raf=requestAnimationFrame(pulse);}
+        else{
+          pc.setAttribute('r',14);pc.setAttribute('stroke','#14181c');
+          const out=E('circle',{cx:plusX+16,cy:CY,r:8,fill:'#0f2a36'},gAnim);
+          const t1=performance.now();
+          (function run(n){
+            const f=Math.min(1,(n-t1)/700);
+            out.setAttribute('cx',plusX+16+f*(PX1-52-plusX));
+            if(f<1){raf=requestAnimationFrame(run);}
+            else{
+              setTimeout(function(){gAnim.textContent='';state.playing=false;
+                document.getElementById('btnPlay').disabled=false;},700);
+            }
+          })(t1);
+          void sum;
+        }
+      })();
+    }
+  }
+  raf=requestAnimationFrame(frame);
+}
+
+/* ---------- wiring ---------- */
+function selectStage(i){
+  if(state.playing){cancelAnimationFrame(raf);gAnim.textContent='';state.playing=false;
+    document.getElementById('btnPlay').disabled=false;}
+  state.stage=i; render();
+}
+function render(){
+  drawMain(); drawPanel();
+  document.getElementById('depthLab').innerHTML=
+    'ResNet-'+DEPTHS[state.di].n+' <span>&nbsp;· blocks per stage '+DEPTHS[state.di].blocks.join(' / ')+
+    ' &nbsp;(= '+DEPTHS[state.di].blocks.reduce(function(a,b){return a+b;},0)+' residual blocks)</span>';
+  [].forEach.call(document.querySelectorAll('#stageBtns button'),function(b,i){
+    b.className=(i===state.stage)?'on':'';});
+  document.getElementById('btnId').className=state.sub?'':'on';
+  document.getElementById('btnSub').className=state.sub?'on':'';
+}
+function init(){
+  const defs=E('defs',{},svg);
+  const m=E('marker',{id:'ah',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,
+    orient:'auto-start-reverse',markerUnits:'strokeWidth'},defs);
+  E('path',{d:'M0,0 L10,5 L0,10 z',fill:'#14181c'},m);
+  const rg=E('radialGradient',{id:'photo',cx:'50%',cy:'42%',r:'62%'},defs);
+  E('stop',{offset:'0%','stop-color':'#ffd98a'},rg);
+  E('stop',{offset:'22%','stop-color':'#e8862f'},rg);
+  E('stop',{offset:'52%','stop-color':'#7d3413'},rg);
+  E('stop',{offset:'100%','stop-color':'#150d09'},rg);
+
+  gMain=E('g',{},svg); gPanel=E('g',{},svg); gAnim=E('g',{},svg);
+
+  const sb=document.getElementById('stageBtns');
+  STAGES.forEach(function(s,i){
+    const b=document.createElement('button');
+    b.textContent=s.st===undefined?(s.S+'×'+s.S+'×'+s.C):'';
+    b.textContent=s.S+'×'+s.S+'×'+s.C;
+    b.addEventListener('click',function(){selectStage(i);});
+    sb.appendChild(b);
+  });
+  document.getElementById('depth').addEventListener('input',function(e){
+    state.di=+e.target.value; render();});
+  document.getElementById('btnPlay').addEventListener('click',play);
+  document.getElementById('btnId').addEventListener('click',function(){state.sub=false;render();});
+  document.getElementById('btnSub').addEventListener('click',function(){state.sub=true;render();});
+  render();
+}
+init();
+})();
+</script>
+</body>
+</html>

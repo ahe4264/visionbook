@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logistic Sigmoid</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111111;
+      --muted: #666f7a;
+      --paper: #f7f9fb;
+      --panel: #ffffff;
+      --axis: #0f0f10;
+      --grid: #c3ccd3;
+      --curve: #d87b52;
+      --curve-dark: #bd623c;
+      --threshold: #2563eb;
+      --threshold-soft: rgba(37, 99, 235, 0.14);
+      --point: #101820;
+      --shadow: 0 20px 50px rgba(15, 23, 42, 0.11);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, #ffffff 0%, #edf2f6 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .figure-shell {
+      width: min(1040px, 100vw);
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      padding: clamp(10px, 2vw, 24px);
+      overflow: hidden;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr minmax(260px, 420px);
+      gap: 12px;
+      align-items: center;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.86);
+      border: 1px solid rgba(148, 163, 184, 0.36);
+      border-radius: 8px;
+      box-shadow: 0 8px 26px rgba(15, 23, 42, 0.08);
+      backdrop-filter: blur(12px);
+      min-width: 0;
+    }
+
+    .readouts {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .metric {
+      display: grid;
+      gap: 2px;
+      min-width: min(100%, 190px);
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.32);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .metric-value {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      font-size: 15px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .slider-block {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+      padding: 8px 10px;
+      background: #fff;
+      border: 1px solid rgba(148, 163, 184, 0.32);
+      border-radius: 8px;
+    }
+
+    .slider-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      min-width: 0;
+      accent-color: var(--threshold);
+      cursor: pointer;
+    }
+
+    .slider-value {
+      min-width: 4.8ch;
+      text-align: right;
+      color: var(--threshold);
+      font-size: 14px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stage {
+      display: grid;
+      min-height: 0;
+      min-width: 0;
+      background: var(--panel);
+      border: 1px solid rgba(148, 163, 184, 0.34);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .plot-wrap {
+      position: relative;
+      width: 100%;
+      min-height: 440px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 440px;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .axis-label,
+    .tick-label,
+    .formula {
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .axis-label {
+      fill: #111;
+      font-size: 28px;
+      font-style: italic;
+    }
+
+    .tick-label {
+      fill: #7a7a7a;
+      font-size: 22px;
+    }
+
+    .formula {
+      fill: #111;
+      font-size: 27px;
+    }
+
+    .guide {
+      stroke: var(--grid);
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-dasharray: 2.5 5.5;
+    }
+
+    .threshold-line {
+      stroke: var(--threshold);
+      stroke-width: 2.5;
+      stroke-dasharray: 7 7;
+    }
+
+    .threshold-band {
+      fill: var(--threshold-soft);
+    }
+
+    .threshold-marker {
+      fill: #ffffff;
+      stroke: var(--threshold);
+      stroke-width: 3;
+    }
+
+    .curve {
+      fill: none;
+      stroke: var(--curve);
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .axis-box {
+      fill: none;
+      stroke: var(--axis);
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .minor-tick,
+    .major-tick {
+      stroke: #808080;
+      stroke-width: 3;
+    }
+
+    .major-tick {
+      stroke: #111;
+    }
+
+    .drag-halo {
+      fill: rgba(16, 24, 32, 0.12);
+      pointer-events: none;
+    }
+
+    .drag-point {
+      fill: var(--point);
+      stroke: #fff;
+      stroke-width: 3;
+      cursor: grab;
+      filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.24));
+    }
+
+    .drag-point:active {
+      cursor: grabbing;
+    }
+
+    .callout {
+      fill: #ffffff;
+      stroke: rgba(15, 23, 42, 0.18);
+      stroke-width: 1.2;
+      filter: drop-shadow(0 8px 14px rgba(15, 23, 42, 0.16));
+    }
+
+    .callout-text,
+    .threshold-text {
+      font-size: 13px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .callout-text {
+      fill: var(--ink);
+    }
+
+    .threshold-text {
+      fill: var(--threshold);
+    }
+
+    .hit-area {
+      fill: transparent;
+      cursor: crosshair;
+    }
+
+    @media (max-width: 760px) {
+      .figure-shell {
+        grid-template-rows: auto auto;
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .metric {
+        min-width: min(100%, 170px);
+        flex: 1 1 150px;
+      }
+
+      .slider-block {
+        grid-template-columns: 1fr auto;
+      }
+
+      .slider-block input {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
+
+      .plot-wrap,
+      svg {
+        min-height: 380px;
+      }
+
+      .axis-label {
+        font-size: 24px;
+      }
+
+      .tick-label {
+        font-size: 18px;
+      }
+
+      .formula {
+        font-size: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="figure-shell" aria-label="Interactive logistic sigmoid figure">
+    <section class="toolbar" aria-label="Sigmoid controls and readouts">
+      <div class="readouts">
+        <div class="metric">
+          <div class="metric-label">Curve point</div>
+          <div class="metric-value" id="pointReadout">z = 0.00, sig[z] = 0.500</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Threshold intercept</div>
+          <div class="metric-value" id="interceptReadout">z = 0.00</div>
+        </div>
+      </div>
+      <label class="slider-block" for="threshold">
+        <span class="slider-title">Probability threshold</span>
+        <input id="threshold" type="range" min="0.01" max="0.99" step="0.01" value="0.50">
+        <span class="slider-value" id="thresholdValue">0.50</span>
+      </label>
+    </section>
+
+    <section class="stage" aria-label="Logistic sigmoid plot">
+      <div class="plot-wrap" id="plotWrap">
+        <svg id="plot" role="img" aria-labelledby="plotTitle plotDesc">
+          <title id="plotTitle">Logistic sigmoid function</title>
+          <desc id="plotDesc">A smooth orange S-shaped sigmoid curve over z from minus five to five with draggable point and probability threshold controls.</desc>
+        </svg>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const svg = document.getElementById("plot");
+      const wrap = document.getElementById("plotWrap");
+      const thresholdInput = document.getElementById("threshold");
+      const thresholdValue = document.getElementById("thresholdValue");
+      const pointReadout = document.getElementById("pointReadout");
+      const interceptReadout = document.getElementById("interceptReadout");
+
+      const state = {
+        z: 0,
+        threshold: 0.5,
+        dragging: false,
+        width: 860,
+        height: 520,
+        margin: { top: 54, right: 36, bottom: 68, left: 88 },
+        plot: { left: 88, right: 824, top: 54, bottom: 452, width: 736, height: 398 }
+      };
+
+      const NS = "http://www.w3.org/2000/svg";
+      const xDomain = [-5, 5];
+      const yDomain = [0, 1];
+
+      function sigmoid(z) {
+        return 1 / (1 + Math.exp(-z));
+      }
+
+      function logit(p) {
+        return Math.log(p / (1 - p));
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function formatZ(z) {
+        return z.toFixed(2).replace("-0.00", "0.00");
+      }
+
+      function formatP(p) {
+        return p.toFixed(3).replace("-0.000", "0.000");
+      }
+
+      function sx(z) {
+        const t = (z - xDomain[0]) / (xDomain[1] - xDomain[0]);
+        return state.plot.left + t * state.plot.width;
+      }
+
+      function sy(y) {
+        const t = (y - yDomain[0]) / (yDomain[1] - yDomain[0]);
+        return state.plot.bottom - t * state.plot.height;
+      }
+
+      function zx(x) {
+        const t = (x - state.plot.left) / state.plot.width;
+        return xDomain[0] + t * (xDomain[1] - xDomain[0]);
+      }
+
+      function el(tag, attrs = {}, parent = svg) {
+        const node = document.createElementNS(NS, tag);
+        Object.entries(attrs).forEach(([key, value]) => {
+          if (key === "text") {
+            node.textContent = value;
+          } else {
+            node.setAttribute(key, value);
+          }
+        });
+        parent.appendChild(node);
+        return node;
+      }
+
+      function pathForSigmoid() {
+        const samples = 220;
+        let d = "";
+        for (let i = 0; i <= samples; i += 1) {
+          const z = xDomain[0] + (i / samples) * (xDomain[1] - xDomain[0]);
+          const command = i === 0 ? "M" : "L";
+          d += `${command}${sx(z).toFixed(2)},${sy(sigmoid(z)).toFixed(2)}`;
+        }
+        return d;
+      }
+
+      function updateMeasurements() {
+        const rect = wrap.getBoundingClientRect();
+        const width = Math.max(340, rect.width || 860);
+        const height = clamp(Math.round(width * 0.62), 380, 610);
+        const compact = width < 560;
+        const margin = {
+          top: compact ? 46 : 54,
+          right: compact ? 22 : 36,
+          bottom: compact ? 62 : 68,
+          left: compact ? 66 : 88
+        };
+        state.width = width;
+        state.height = height;
+        state.margin = margin;
+        state.plot = {
+          left: margin.left,
+          right: width - margin.right,
+          top: margin.top,
+          bottom: height - margin.bottom,
+          width: width - margin.left - margin.right,
+          height: height - margin.top - margin.bottom
+        };
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.style.height = `${height}px`;
+      }
+
+      function drawFormula(group) {
+        const x = state.plot.left + state.plot.width * 0.22;
+        const y = state.plot.top + state.plot.height * 0.12;
+        const denominatorWidth = state.width < 560 ? 154 : 205;
+        const center = x + denominatorWidth / 2;
+
+        el("text", {
+          class: "formula",
+          x: center,
+          y,
+          "text-anchor": "middle",
+          text: "1"
+        }, group);
+        el("line", {
+          x1: x,
+          y1: y + 10,
+          x2: x + denominatorWidth,
+          y2: y + 10,
+          stroke: "#111",
+          "stroke-width": 2
+        }, group);
+        el("text", {
+          class: "formula",
+          x: center,
+          y: y + (state.width < 560 ? 38 : 42),
+          "text-anchor": "middle",
+          text: state.width < 560 ? "1 + exp[-z]" : "1 + exp[−z]"
+        }, group);
+      }
+
+      function drawTicks(group) {
+        [-4, -3, -2, -1, 1, 2, 3, 4].forEach((z) => {
+          el("line", {
+            class: "minor-tick",
+            x1: sx(z),
+            y1: state.plot.bottom,
+            x2: sx(z),
+            y2: state.plot.bottom + 8
+          }, group);
+        });
+
+        [0.2, 0.4, 0.6, 0.8].forEach((p) => {
+          el("line", {
+            class: "minor-tick",
+            x1: state.plot.left - 8,
+            y1: sy(p),
+            x2: state.plot.left,
+            y2: sy(p)
+          }, group);
+        });
+
+        [-5, 0, 5].forEach((z) => {
+          el("line", {
+            class: "major-tick",
+            x1: sx(z),
+            y1: state.plot.bottom,
+            x2: sx(z),
+            y2: state.plot.bottom + 10
+          }, group);
+          el("text", {
+            class: "tick-label",
+            x: sx(z),
+            y: state.plot.bottom + 34,
+            "text-anchor": "middle",
+            text: z.toFixed(1)
+          }, group);
+        });
+
+        [0, 1].forEach((p) => {
+          el("line", {
+            class: "major-tick",
+            x1: state.plot.left - 10,
+            y1: sy(p),
+            x2: state.plot.left,
+            y2: sy(p)
+          }, group);
+          el("text", {
+            class: "tick-label",
+            x: state.plot.left - 16,
+            y: sy(p) + 7,
+            "text-anchor": "end",
+            text: p.toFixed(1)
+          }, group);
+        });
+      }
+
+      function drawLabels(group) {
+        el("text", {
+          class: "axis-label",
+          x: state.plot.left + state.plot.width / 2,
+          y: state.height - 18,
+          "text-anchor": "middle",
+          text: "z"
+        }, group);
+
+        const label = el("text", {
+          class: "axis-label",
+          x: 26,
+          y: state.plot.top + state.plot.height / 2,
+          transform: `rotate(-90 26 ${state.plot.top + state.plot.height / 2})`,
+          "text-anchor": "middle"
+        }, group);
+        label.textContent = "sig[z]";
+      }
+
+      function drawCallout(group, x, y, text, kind) {
+        const compact = state.width < 560;
+        const width = compact ? 126 : 148;
+        const height = 30;
+        let px = x + 15;
+        let py = y - 46;
+        if (px + width > state.plot.right) px = x - width - 15;
+        if (py < state.plot.top + 4) py = y + 16;
+
+        el("rect", {
+          class: kind === "threshold" ? "callout threshold-callout" : "callout",
+          x: px,
+          y: py,
+          width,
+          height,
+          rx: 6
+        }, group);
+        el("text", {
+          class: kind === "threshold" ? "threshold-text" : "callout-text",
+          x: px + width / 2,
+          y: py + 20,
+          "text-anchor": "middle",
+          text
+        }, group);
+      }
+
+      function draw() {
+        updateMeasurements();
+        svg.innerHTML = "";
+        const title = el("title", { id: "plotTitle" });
+        title.textContent = "Logistic sigmoid function";
+        const desc = el("desc", { id: "plotDesc" });
+        desc.textContent = "A smooth orange S-shaped sigmoid curve over z from minus five to five with draggable point and probability threshold controls.";
+
+        const defs = el("defs");
+        const clip = el("clipPath", { id: "plotClip" }, defs);
+        el("rect", {
+          x: state.plot.left,
+          y: state.plot.top,
+          width: state.plot.width,
+          height: state.plot.height
+        }, clip);
+
+        const hit = el("rect", {
+          class: "hit-area",
+          x: state.plot.left,
+          y: state.plot.top,
+          width: state.plot.width,
+          height: state.plot.height
+        });
+
+        const guides = el("g", { "aria-hidden": "true" });
+        el("line", {
+          class: "guide",
+          x1: state.plot.left,
+          y1: sy(1),
+          x2: state.plot.right,
+          y2: sy(1)
+        }, guides);
+        el("line", {
+          class: "guide",
+          x1: sx(0),
+          y1: sy(0),
+          x2: sx(0),
+          y2: sy(1)
+        }, guides);
+        el("line", {
+          class: "guide",
+          x1: state.plot.left,
+          y1: sy(0.5),
+          x2: sx(0),
+          y2: sy(0.5)
+        }, guides);
+
+        const thresholdGroup = el("g", { "aria-label": "Probability threshold" });
+        const interceptZ = logit(state.threshold);
+        const interceptX = sx(interceptZ);
+        const thresholdY = sy(state.threshold);
+        el("rect", {
+          class: "threshold-band",
+          x: state.plot.left,
+          y: thresholdY,
+          width: state.plot.width,
+          height: state.plot.bottom - thresholdY,
+          "clip-path": "url(#plotClip)"
+        }, thresholdGroup);
+        el("line", {
+          class: "threshold-line",
+          x1: state.plot.left,
+          y1: thresholdY,
+          x2: state.plot.right,
+          y2: thresholdY
+        }, thresholdGroup);
+        el("line", {
+          class: "threshold-line",
+          x1: interceptX,
+          y1: thresholdY,
+          x2: interceptX,
+          y2: state.plot.bottom
+        }, thresholdGroup);
+        el("circle", {
+          class: "threshold-marker",
+          cx: interceptX,
+          cy: thresholdY,
+          r: state.width < 560 ? 6 : 7
+        }, thresholdGroup);
+        drawCallout(thresholdGroup, interceptX, thresholdY, `z = ${formatZ(interceptZ)}`, "threshold");
+
+        const curveGroup = el("g", { "clip-path": "url(#plotClip)" });
+        el("path", {
+          class: "curve",
+          d: pathForSigmoid()
+        }, curveGroup);
+
+        const interactive = el("g", { "aria-label": "Draggable sigmoid point" });
+        const pointX = sx(state.z);
+        const pointY = sy(sigmoid(state.z));
+        el("line", {
+          class: "guide",
+          x1: state.plot.left,
+          y1: pointY,
+          x2: pointX,
+          y2: pointY
+        }, interactive);
+        el("line", {
+          class: "guide",
+          x1: pointX,
+          y1: pointY,
+          x2: pointX,
+          y2: state.plot.bottom
+        }, interactive);
+        el("circle", {
+          class: "drag-halo",
+          cx: pointX,
+          cy: pointY,
+          r: 15
+        }, interactive);
+        const dragPoint = el("circle", {
+          class: "drag-point",
+          cx: pointX,
+          cy: pointY,
+          r: state.width < 560 ? 7 : 8,
+          tabindex: 0,
+          role: "slider",
+          "aria-valuemin": "-5",
+          "aria-valuemax": "5",
+          "aria-valuenow": state.z.toFixed(2),
+          "aria-label": "z position on sigmoid curve"
+        }, interactive);
+        drawCallout(interactive, pointX, pointY, `(${formatZ(state.z)}, ${formatP(sigmoid(state.z))})`, "point");
+
+        const axes = el("g", { "aria-hidden": "true" });
+        drawTicks(axes);
+        el("rect", {
+          class: "axis-box",
+          x: state.plot.left,
+          y: state.plot.top,
+          width: state.plot.width,
+          height: state.plot.height
+        }, axes);
+        drawLabels(axes);
+        drawFormula(axes);
+
+        dragPoint.addEventListener("keydown", onPointKeydown);
+
+        pointReadout.textContent = `z = ${formatZ(state.z)}, sig[z] = ${formatP(sigmoid(state.z))}`;
+        thresholdValue.textContent = state.threshold.toFixed(2);
+        interceptReadout.textContent = `z = ${formatZ(interceptZ)}`;
+      }
+
+      function eventToSvgPoint(event) {
+        const rect = svg.getBoundingClientRect();
+        return {
+          x: ((event.clientX - rect.left) / rect.width) * state.width,
+          y: ((event.clientY - rect.top) / rect.height) * state.height
+        };
+      }
+
+      function isInsidePlot(point) {
+        return point.x >= state.plot.left &&
+          point.x <= state.plot.right &&
+          point.y >= state.plot.top &&
+          point.y <= state.plot.bottom;
+      }
+
+      function pointerToZ(event) {
+        const point = eventToSvgPoint(event);
+        return clamp(zx(point.x), xDomain[0], xDomain[1]);
+      }
+
+      function setZ(z) {
+        state.z = clamp(z, xDomain[0], xDomain[1]);
+        draw();
+      }
+
+      function onPointerDown(event) {
+        const point = eventToSvgPoint(event);
+        if (!isInsidePlot(point)) return;
+        event.preventDefault();
+        state.dragging = true;
+        svg.setPointerCapture(event.pointerId);
+        setZ(pointerToZ(event));
+      }
+
+      function onPointerMove(event) {
+        if (!state.dragging) return;
+        setZ(pointerToZ(event));
+      }
+
+      function onPointerUp(event) {
+        if (!state.dragging) return;
+        state.dragging = false;
+        if (svg.hasPointerCapture(event.pointerId)) {
+          svg.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      function onPointKeydown(event) {
+        const step = event.shiftKey ? 0.5 : 0.1;
+        if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+          event.preventDefault();
+          setZ(state.z - step);
+        }
+        if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+          event.preventDefault();
+          setZ(state.z + step);
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          setZ(xDomain[0]);
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          setZ(xDomain[1]);
+        }
+      }
+
+      thresholdInput.addEventListener("input", () => {
+        state.threshold = Number(thresholdInput.value);
+        draw();
+      });
+
+      svg.addEventListener("pointerdown", onPointerDown);
+      svg.addEventListener("pointermove", onPointerMove);
+      svg.addEventListener("pointerup", onPointerUp);
+      svg.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("resize", draw);
+
+      draw();
+    })();
+  </script>
+</body>
+</html>

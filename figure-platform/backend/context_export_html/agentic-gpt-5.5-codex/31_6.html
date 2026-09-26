@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* -- Reset ------------------------------------------------------------- */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* -- Layout ------------------------------------------------------------
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically. */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* -- Figure mount point ----------------------------------------------- */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* -- Control panel (mirrors base_scene_new.html #ui) ------------------ */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* -- Docked control panel ---------------------------------------------
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip. */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* -- Inline equation parse errors ------------------------------------- */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* -- Hover tooltip ----------------------------------------------------- */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <button id="stepInput" onclick="trigger_step()">Next step</button>
+    <span id="demoNarration" style="display:block;margin:0;font-size:10px;max-width:180px"></span>
+    <span style="display:flex;align-items:center;gap:6px"><button onclick="prevStep()">&#9664;</button><span id="stepLabel"></span><button onclick="nextStep()">&#9654;</button></span>
+    <label style="display:block"><input id="tamperInput" type="checkbox" onchange="toggle_tamper(this.checked)"> Tampered transmission</label>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    /* -- Error overlay ----------------------------------------------------- */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* -- Tooltip + popup helpers ------------------------------------------ */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* -- Resize event ------------------------------------------------------ */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* -- UI layout: keep controls in a right-side column ------------------- */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* -- Keyboard dismiss -------------------------------------------------- */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* -- Expression parsing stubs retained for scaffold compatibility ----- */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) throw new Error('Expression parser unavailable');
+      var parser = new window.exprEval.Parser();
+      var expr = parser.parse(src);
+      var allowed = {};
+      (vars || ['x']).forEach(function (name) { allowed[name] = true; });
+      expr.variables().forEach(function (name) {
+        if (!allowed[name]) throw new Error('Unknown variable ' + name);
+      });
+      return function () {
+        var scope = {};
+        for (var i = 0; i < (vars || ['x']).length; i++) scope[(vars || ['x'])[i]] = arguments[i];
+        return expr.evaluate(scope);
+      };
+    }
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, Math.floor(n || 100));
+      if (n % 2) n++;
+      var h = (b - a) / n;
+      var sum = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) sum += fn(a + i * h) * (i % 2 ? 4 : 2);
+      return sum * h / 3;
+    }
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-6;
+      var fa = fn(a), fb = fn(b);
+      if (fa === 0) return a;
+      if (fb === 0) return b;
+      if (fa * fb > 0) return null;
+      for (var i = 0; i < 80 && Math.abs(b - a) > tol; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (fa * fm <= 0) { b = m; fb = fm; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+    function bindEquationInput(inputId) {
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      return { input: input };
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var container = document.getElementById('container');
+    var draw = SVG().addTo(container).size('100%', '100%');
+    var W = 1250;
+    var H = 365;
+    draw.viewbox(0, 0, W, H);
+    draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+
+    var state = { step: 0, tampered: false, hover: null };
+    var marks = {};
+    var baseStroke = { color: '#000000', width: 1.6, linecap: 'butt', linejoin: 'miter' };
+    var activeStroke = { color: '#1876d1', width: 4.4, linecap: 'round', linejoin: 'round' };
+    var tamperStroke = { color: '#c9342f', width: 4.2, linecap: 'round', linejoin: 'round' };
+    var dimActive = { color: '#98c5f2', width: 3.2, linecap: 'round', linejoin: 'round' };
+
+    var arrow = draw.marker(14, 10, function (add) {
+      add.path('M0,0 L14,5 L0,10 Z').fill('#000000');
+    }).ref(13, 5).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    var arrowBlue = draw.marker(14, 10, function (add) {
+      add.path('M0,0 L14,5 L0,10 Z').fill('#1876d1');
+    }).ref(13, 5).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    var arrowRed = draw.marker(14, 10, function (add) {
+      add.path('M0,0 L14,5 L0,10 Z').fill('#c9342f');
+    }).ref(13, 5).orient('auto').attr({ markerUnits: 'strokeWidth' });
+
+    var stage = draw.group();
+    var base = stage.group();
+    var overlay = stage.group();
+    var labels = stage.group();
+    var hits = stage.group();
+
+    function plainText(txt, x, y, size, anchor) {
+      return labels.text(txt)
+        .font({ family: 'Times New Roman, Times, serif', size: size, anchor: anchor || 'start' })
+        .attr({ 'dominant-baseline': 'middle', 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 4, 'stroke-linejoin': 'round' })
+        .fill('#000000')
+        .move(x, y - size / 2);
+    }
+
+    function mathText(parts, x, y, size, anchor) {
+      var t = labels.text(function (add) {
+        parts.forEach(function (part) {
+          var sp = add.tspan(part.text);
+          if (part.sub) sp.font({ size: size * 0.58 }).dy(size * 0.22);
+          if (part.up) sp.dy(-size * 0.22);
+        });
+      });
+      t.font({ family: 'Times New Roman, Times, serif', size: size, anchor: anchor || 'start', style: 'italic' })
+        .attr({ 'dominant-baseline': 'middle', 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 4, 'stroke-linejoin': 'round' })
+        .fill('#000000')
+        .move(x, y - size / 2);
+      return t;
+    }
+
+    function makeBox(group, x, y, w, h, textParts) {
+      var g = group.group();
+      g.rect(w, h).move(x, y).fill('#d7d7d7').stroke({ color: '#000000', width: 1.6 });
+      var text = g.text(function (add) {
+        textParts.forEach(function (part) {
+          var sp = add.tspan(part.text);
+          if (part.sub) sp.font({ size: 21 }).dy(8);
+        });
+      });
+      text.font({ family: 'Times New Roman, Times, serif', size: 34, anchor: 'middle', style: 'italic' })
+        .fill('#000000')
+        .center(x + w / 2, y + h / 2 + 4);
+      return g;
+    }
+
+    function blackPath(d, hasArrow) {
+      var p = base.path(d).fill('none').stroke(baseStroke);
+      if (hasArrow) p.marker('end', arrow);
+      return p;
+    }
+
+    function overlayPath(name, d, hasArrow, tip, popupTitle, popupBody) {
+      var p = overlay.path(d).fill('none').stroke({ color: '#1876d1', width: 4, linecap: 'round', linejoin: 'round', opacity: 0 });
+      if (hasArrow) p.marker('end', arrowBlue);
+      marks[name] = p;
+
+      var h = hits.path(d).fill('none').stroke({ color: '#ffffff', width: 22, opacity: 0 });
+      h.css('cursor', 'pointer')
+        .on('mousemove', function (e) { showTooltip(tip, e); setHover(name); })
+        .on('mouseleave', function () { hideTooltip(); setHover(null); })
+        .on('click', function () { showPopup(popupTitle, popupBody); });
+      return p;
+    }
+
+    makeBox(base, 176, 116, 98, 73, [{ text: 'S' }, { text: 'A', sub: true }]);
+    makeBox(base, 884, 116, 98, 73, [{ text: 'P' }, { text: 'A', sub: true }]);
+    makeBox(base, 994, 202, 74, 49, [{ text: '=?' }]);
+
+    blackPath('M51 296 H1010', false);
+    blackPath('M126 296 V153 H176', true);
+    blackPath('M274 153 H446 V296', true);
+    blackPath('M835 296 V153 H884', true);
+    blackPath('M982 153 H1031 V202', true);
+    blackPath('M1010 296 V251', true);
+    blackPath('M1068 226 H1122', true);
+
+    overlayPath('sign', 'M126 296 V153 H176', true,
+      "The message M' is fed into Alice's signing transformation.",
+      'Signing',
+      "Alice applies the private signing transformation S_A to the message M'. The result is the signature that will travel with the message.");
+    overlayPath('signed', 'M274 153 H446 V296', true,
+      "The signature leaves Alice and joins the message on the channel.",
+      'Signature on the channel',
+      "The value sigma = S_A(M') is sent with the message. Bob will not trust it blindly; he will transform it with Alice's public key.");
+    overlayPath('sigma', 'M835 296 V153 H884', true,
+      "Bob sends sigma through P_A before comparing.",
+      'Signature branch',
+      "Bob applies Alice's public verification transformation P_A to sigma. If the signature matches the transmitted message, this transformed value equals the message.");
+    overlayPath('verified', 'M982 153 H1031 V202', true,
+      'The public-key transform of sigma becomes one input to the comparison.',
+      'Verification output',
+      "The output of P_A(sigma) is checked against the received message. This is the point where a forged or mismatched pair is exposed.");
+    overlayPath('message', 'M835 296 H1010 V251', true,
+      "The received message M' goes directly into the comparison.",
+      'Message branch',
+      "The message itself is not transformed on Bob's lower branch. It is compared with the value recovered from the signature.");
+    overlayPath('accept', 'M1068 226 H1122', true,
+      'The comparison accepts only when the two inputs match.',
+      'Decision',
+      'The equality box represents the final check. Matching inputs produce accept; a tampered message-signature pair produces reject.');
+
+    plainText('Alice', 224, 24, 36, 'middle');
+    plainText('Bob', 932, 24, 36, 'middle');
+    plainText('sign', 224, 92, 34, 'middle');
+    plainText('verify', 922, 92, 34, 'middle');
+    mathText([{ text: 'M' }, { text: "'" }], 8, 296, 34, 'start');
+    mathText([{ text: "\u03c3 = S" }, { text: 'A', sub: true }, { text: "(M')" }], 286, 135, 32, 'start');
+    mathText([{ text: "(M', \u03c3)" }], 585, 276, 31, 'middle');
+    mathText([{ text: '\u03c3' }], 836, 135, 32, 'middle');
+    mathText([{ text: "M'" }], 930, 275, 33, 'middle');
+    plainText('accept', 1125, 226, 32, 'start');
+    plainText('communication channel', 640, 345, 30, 'middle');
+
+    var channelPairLabel = labels.group();
+    var decisionLabel = labels.group();
+    var compareBox = base.rect(74, 49).move(994, 202).fill('none').stroke({ color: '#000000', width: 0 });
+
+    function setOverlay(path, visible, stroke, marker) {
+      path.stroke(stroke || activeStroke);
+      path.opacity(visible ? 1 : 0);
+      if (marker === 'red') path.marker('end', arrowRed);
+      else path.marker('end', arrowBlue);
+    }
+
+    function setHover(name) {
+      state.hover = name;
+      renderState();
+    }
+
+    var steps = [
+      'The original block diagram: Alice signs the message and Bob checks the transmitted pair.',
+      "Alice signs M', producing sigma = S_A(M').",
+      "The pair (M', sigma) travels together across the communication channel.",
+      "Bob transforms sigma through P_A while carrying M' directly to the comparison.",
+      'The equality test compares the two inputs and accepts only if they match.'
+    ];
+
+    function renderState() {
+      Object.keys(marks).forEach(function (name) { setOverlay(marks[name], false); });
+      compareBox.fill('none');
+      channelPairLabel.clear();
+      decisionLabel.clear();
+
+      if (state.step >= 1) setOverlay(marks.sign, true, state.tampered ? dimActive : activeStroke);
+      if (state.step >= 2) setOverlay(marks.signed, true, state.tampered ? tamperStroke : activeStroke, state.tampered ? 'red' : 'blue');
+      if (state.step >= 3) {
+        setOverlay(marks.sigma, true, state.tampered ? tamperStroke : activeStroke, state.tampered ? 'red' : 'blue');
+        setOverlay(marks.verified, true, state.tampered ? tamperStroke : activeStroke, state.tampered ? 'red' : 'blue');
+        setOverlay(marks.message, true, state.tampered ? dimActive : activeStroke);
+      }
+      if (state.step >= 4) {
+        setOverlay(marks.accept, true, state.tampered ? tamperStroke : activeStroke, state.tampered ? 'red' : 'blue');
+        compareBox.fill(state.tampered ? '#f5d6d3' : '#d8ecff');
+      }
+
+      if (state.hover === 'sigma') {
+        setOverlay(marks.sigma, true, activeStroke);
+        setOverlay(marks.verified, true, activeStroke);
+        compareBox.fill('#d8ecff');
+      }
+      if (state.hover === 'message') {
+        setOverlay(marks.message, true, activeStroke);
+        compareBox.fill('#d8ecff');
+      }
+
+      if (state.tampered) {
+        channelPairLabel.text(function (add) {
+          add.tspan("(M'*, ");
+          add.tspan('\u03c3');
+          add.tspan(')');
+        }).font({ family: 'Times New Roman, Times, serif', size: 28, anchor: 'middle', style: 'italic' })
+          .attr({ 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 4, 'stroke-linejoin': 'round' })
+          .fill('#c9342f')
+          .center(590, 275);
+        if (state.step >= 4) {
+          decisionLabel.text('reject')
+            .font({ family: 'Times New Roman, Times, serif', size: 30, anchor: 'start' })
+            .attr({ 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 4, 'stroke-linejoin': 'round' })
+            .fill('#c9342f')
+            .move(1125, 211);
+        }
+      }
+
+      document.getElementById('demoNarration').textContent = steps[state.step];
+      document.getElementById('stepLabel').textContent = (state.step + 1) + ' of ' + steps.length;
+      document.getElementById('stepInput').textContent = state.step >= steps.length - 1 ? 'Reset steps' : 'Next step';
+    }
+
+    function setStep(n) {
+      state.step = Math.max(0, Math.min(steps.length - 1, n));
+      renderState();
+    }
+
+    function nextStep() {
+      setStep(Math.min(steps.length - 1, state.step + 1));
+    }
+
+    function prevStep() {
+      setStep(Math.max(0, state.step - 1));
+    }
+
+    function trigger_step() {
+      if (state.step >= steps.length - 1) setStep(0);
+      else nextStep();
+    }
+
+    function toggle_tamper(on) {
+      state.tampered = Boolean(on);
+      if (state.tampered && state.step < 2) state.step = 2;
+      renderState();
+    }
+
+    window.prevStep = prevStep;
+    window.nextStep = nextStep;
+    window.trigger_step = trigger_step;
+    window.toggle_tamper = toggle_tamper;
+
+    setStep(0);
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

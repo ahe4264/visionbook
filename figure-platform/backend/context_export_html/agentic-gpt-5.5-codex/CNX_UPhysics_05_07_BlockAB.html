@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+      font: inherit;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 270px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    .ui-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    #ui label.ui-label {
+      display: inline-flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      line-height: 1.25;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <span class="ui-line">
+      <button id="showBothInput" onclick="trigger_showBoth()">Both</button>
+      <button id="isolateAInput" onclick="trigger_isolateA()">A</button>
+      <button id="isolateBInput" onclick="trigger_isolateB()">B</button>
+    </span>
+    <label class="ui-label"><input id="pairsInput" type="checkbox" onchange="toggle_pairs(this.checked)"> Contact pairs</label>
+    <label class="ui-label"><input id="slideInput" type="checkbox" onchange="toggle_slide(this.checked)"> Reverse sliding</label>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    var _container = document.getElementById('container');
+    if (window.ResizeObserver) {
+      new ResizeObserver(function () {
+        document.dispatchEvent(new CustomEvent('fig-resize'));
+      }).observe(_container);
+    }
+    function setUiLayout(mode, sizePx) {
+      document.body.setAttribute('data-ui-layout', mode === 'bottom' ? 'bottom' : 'right');
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+    function _autoUiLayout() {
+      if (!document.body.getAttribute('data-ui-layout')) document.body.setAttribute('data-ui-layout', 'right');
+    }
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    (function () {
+      if (typeof SVG === 'undefined') throw new Error('SVG.js failed to load');
+
+      setUiLayout('right', 270);
+
+      var W = 899;
+      var H = 528;
+      var red = '#c94145';
+      var hi = '#ee8b2f';
+      var tan = '#fee6bb';
+      var salmon = '#e89672';
+      var blockB = '#b99a68';
+      var ink = '#0f0f0f';
+      var gray = '#8a8a8a';
+      var lightGray = '#aaaaaa';
+
+      var state = {
+        selected: 'both',
+        pairs: false,
+        reversed: false
+      };
+
+      var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+      draw.viewbox(0, 0, W, H);
+      draw.attr({ preserveAspectRatio: 'xMidYMid meet' });
+      draw.rect(W, H).fill('#ffffff');
+
+      var redMarker = makeMarker(red);
+      var highMarker = makeMarker(hi);
+      var blackMarker = makeMarker(ink);
+      var smallBlackMarker = makeMarker(ink, 7, 7);
+
+      var panelA = draw.group();
+      var panelB = draw.group();
+      var sketchOutlines = {};
+      var blockHits = [];
+      var forces = {};
+      var forceGroups = { A: [], B: [] };
+      var allForceIds = [];
+
+      makePanel(panelA, 0, 'A');
+      makePanel(panelB, 263, 'B');
+      addLegendA();
+      addLegendB();
+
+      draw.text('(a)').font({ family: 'Arial, sans-serif', size: 21, weight: '400' }).move(438, 211).fill('#000');
+      draw.text('(b)').font({ family: 'Arial, sans-serif', size: 21, weight: '400' }).move(438, 500).fill('#000');
+
+      wireUi();
+      applyState();
+      window.__figureStatus = { rendered: true };
+      window.__markRendered();
+
+      function makeMarker(color, w, h) {
+        var mw = w || 12;
+        var mh = h || 12;
+        var marker = draw.marker(mw, mh, function (add) {
+          add.path('M 0 0 L ' + mw + ' ' + (mh / 2) + ' L 0 ' + mh + ' z').fill(color);
+        });
+        marker.ref(mw, mh / 2);
+        marker.orient('auto');
+        marker.attr({ markerUnits: 'userSpaceOnUse' });
+        return marker;
+      }
+
+      function makePanel(parent, oy, body) {
+        makeFbd(parent, oy, body);
+        makeInclineSketch(parent, oy, body);
+      }
+
+      function makeFbd(parent, oy, body) {
+        var g = parent.group();
+        var dot = { x: body === 'A' ? 104 : 107, y: oy + (body === 'A' ? 74 : 109) };
+        g.line(3, dot.y + 39, 195, dot.y - 47).stroke({ color: ink, width: 1.25, dasharray: '8 6' });
+        g.circle(13).center(dot.x, dot.y).fill('#000');
+
+        if (body === 'A') {
+          forceGroups.A.push(g);
+          makeForce(g, 'NBA', 'A', dot, { x: 75, y: oy + 15 }, null, { x: 88, y: oy + 7 }, 'N', 'BA', 'normal force exerted by B on A');
+          makeForce(g, 'T', 'A', dot, { x: 163, y: oy + 49 }, null, { x: 150, y: oy + 62 }, 'T', '', 'tension');
+          makeForce(g, 'fBA', 'A', dot, { x: 45, y: oy + 95 }, { x: 165, y: oy + 48 }, { x: 36, y: oy + 55 }, 'f', 'BA', 'friction force exerted by B on A');
+          makeForce(g, 'wA', 'A', dot, { x: dot.x, y: oy + 137 }, null, { x: 111, y: oy + 108 }, 'w', 'A', 'weight of block A');
+        } else {
+          forceGroups.B.push(g);
+          makeForce(g, 'NB', 'B', dot, { x: 76, y: oy + 38 }, null, { x: 76, y: oy + 45 }, 'N', 'B', 'normal force exerted by the incline plane on B');
+          makeForce(g, 'fAB', 'B', dot, { x: 151, y: oy + 86 }, { x: 61, y: oy + 130 }, { x: 122, y: oy + 70 }, 'f', 'AB', 'friction force exerted by A on B');
+          makeForce(g, 'fB', 'B', dot, { x: 176, y: oy + 75 }, { x: 50, y: oy + 133 }, { x: 170, y: oy + 86 }, 'f', 'B', 'friction force exerted by the incline plane on B');
+          makeForce(g, 'NAB', 'B', dot, { x: 139, y: oy + 158 }, null, { x: 140, y: oy + 139 }, 'N', 'AB', 'normal force exerted by A on B');
+          makeForce(g, 'wB', 'B', dot, { x: dot.x, y: oy + 165 }, null, { x: 72, y: oy + 142 }, 'w', 'B', 'weight of block B');
+        }
+      }
+
+      function makeInclineSketch(parent, oy, body) {
+        var g = parent.group();
+        var yBase = oy + 194;
+        var slopeY = oy + 84;
+        g.polygon([[164, yBase], [431, slopeY], [431, yBase]]).fill(tan).stroke('none');
+        g.line(164, yBase, 431, slopeY).stroke({ color: lightGray, width: 2 });
+        g.line(431, slopeY, 431, yBase).stroke({ color: ink, width: 2 });
+        g.line(164, yBase, 431, yBase).stroke({ color: '#d8d8d8', width: 1 });
+        g.line(314, oy + 104, 431, oy + 25).stroke({ color: ink, width: 2 });
+
+        var blockGroup = g.group();
+        var bCenter = body === 'A' ? { x: 306, y: oy + 132 } : { x: 306, y: oy + 132 };
+        var aCenter = body === 'A' ? { x: 296, y: oy + 92 } : { x: 296, y: oy + 116 };
+        var bRect = rotatedRect(blockGroup, bCenter.x, bCenter.y, 68, 48, -22.4, blockB, '#9d8359', 'B', body === 'B');
+        var aRect = rotatedRect(blockGroup, aCenter.x, aCenter.y, 48, 34, -22.4, salmon, '#d57e60', 'A', body === 'A');
+
+        var outline;
+        if (body === 'A') {
+          outline = rotatedOutline(g, 296, oy + 92, 59, 43, -22.4);
+          sketchOutlines.A = outline;
+        } else {
+          outline = rotatedOutline(g, 307, oy + 132, 82, 62, -22.4);
+          sketchOutlines.B = outline;
+        }
+
+        makeBlockHit(aRect.hit, 'A', 'Click to isolate block A and show only forces acting on A.');
+        makeBlockHit(bRect.hit, 'B', 'Click to isolate block B and show the two contact surfaces acting on B.');
+      }
+
+      function rotatedRect(parent, cx, cy, w, h, angle, fill, stroke, label, isPrimary) {
+        var g = parent.group();
+        g.rotate(angle, cx, cy);
+        var rect = g.rect(w, h).radius(3).center(cx, cy).fill(fill).stroke({ color: stroke, width: 1.5 });
+        var text = g.text(label).font({ family: 'Arial, sans-serif', size: 22, weight: '700' }).center(cx, cy - 2).fill('#000');
+        var hit = g.rect(w + 10, h + 10).center(cx, cy).fill('#fff').opacity(0);
+        hit.data('primary', isPrimary ? 'yes' : 'no');
+        return { group: g, rect: rect, text: text, hit: hit };
+      }
+
+      function rotatedOutline(parent, cx, cy, w, h, angle) {
+        var g = parent.group();
+        g.rotate(angle, cx, cy);
+        return g.rect(w, h).radius(17).center(cx, cy).fill('none').stroke({ color: gray, width: 4 });
+      }
+
+      function makeBlockHit(hit, body, tooltip) {
+        hit.css('cursor', 'pointer');
+        hit.on('mousemove', function (event) { showTooltip(tooltip, event); });
+        hit.on('mouseleave', hideTooltip);
+        hit.on('click', function () {
+          selectBody(body);
+          showPopup(body === 'A' ? 'Block A isolated' : 'Block B isolated',
+            body === 'A'
+              ? 'The free-body diagram for A keeps only forces acting on A: tension, weight, and the contact forces from B.'
+              : 'The free-body diagram for B includes forces from both contact surfaces: the incline and block A.');
+        });
+        blockHits.push({ body: body, hit: hit });
+      }
+
+      function makeForce(parent, id, owner, start, end, reversedEnd, labelPos, base, sub, tip) {
+        var g = parent.group();
+        var line = g.line(start.x, start.y, end.x, end.y)
+          .stroke({ color: red, width: 4.2, linecap: 'round' })
+          .marker('end', redMarker);
+        var hit = g.line(start.x, start.y, end.x, end.y)
+          .stroke({ color: '#fff', width: 18, linecap: 'round', opacity: 0 })
+          .fill('none');
+        var label = vectorText(g, labelPos.x, labelPos.y, base, sub, 20, '#000');
+        var item = {
+          id: id,
+          owner: owner,
+          group: g,
+          line: line,
+          hit: hit,
+          label: label,
+          start: start,
+          end: end,
+          reversedEnd: reversedEnd,
+          labelPos: labelPos,
+          base: base,
+          sub: sub,
+          tip: tip
+        };
+        hit.css('cursor', 'pointer');
+        hit.on('mousemove', function (event) { showTooltip(tip, event); });
+        hit.on('mouseleave', hideTooltip);
+        hit.on('click', function () {
+          showPopup(forceTitle(base, sub), tip + '. It appears in this diagram because it acts on block ' + owner + '.');
+        });
+        forces[id] = item;
+        allForceIds.push(id);
+        return item;
+      }
+
+      function vectorText(parent, x, y, base, sub, size, fill) {
+        var g = parent.group();
+        g.translate(x, y);
+        var arrow = g.line(3, 4, Math.max(16, size * 0.72), 1)
+          .stroke({ color: fill, width: Math.max(1.2, size * 0.08), linecap: 'round' })
+          .marker('end', fill === red || fill === hi ? redMarker : smallBlackMarker);
+        if (base === 'T') arrow.opacity(0);
+        var main = g.text(base).font({ family: 'Arial, sans-serif', size: size, weight: '700' }).move(0, 7).fill(fill);
+        main.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+        var subText = g.text(sub || '').font({ family: 'Arial, sans-serif', size: Math.max(10, size * 0.58), weight: '700' })
+          .move(size * 0.62, size * 0.68 + 7)
+          .fill(fill);
+        subText.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+        return g;
+      }
+
+      function legendVar(parent, x, y, base, sub, text, eqX) {
+        vectorText(parent, x, y, base, sub, 21, '#000');
+        parent.text('= ' + text).font({ family: 'Arial, sans-serif', size: 20, weight: '400' }).move(eqX || (x + 43), y + 8).fill('#000');
+      }
+
+      function addLegendA() {
+        var g = panelA.group();
+        legendVar(g, 464, 9, 'w', 'A', 'weight of block A', 498);
+        legendVar(g, 464, 55, 'T', '', 'tension', 498);
+        legendVar(g, 464, 105, 'N', 'BA', 'normal force exerted by B on A', 522);
+        legendVar(g, 464, 154, 'f', 'BA', 'friction force exerted by B on A', 522);
+      }
+
+      function addLegendB() {
+        var g = panelB.group();
+        legendVar(g, 464, 272, 'w', 'B', 'weight of block B', 498);
+        legendVar(g, 464, 320, 'N', 'AB', 'normal force exerted by A on B', 522);
+        legendVar(g, 464, 369, 'N', 'B', 'normal force exerted by the incline plane on B', 522);
+        legendVar(g, 464, 417, 'f', 'AB', 'friction force exerted by A on B', 522);
+        legendVar(g, 464, 465, 'f', 'B', 'friction force exerted by the incline plane on B', 522);
+      }
+
+      function forceTitle(base, sub) {
+        return sub ? base + '_' + sub : base;
+      }
+
+      function updateForceDirection(item) {
+        var useReverse = state.reversed && item.reversedEnd;
+        var target = useReverse ? item.reversedEnd : item.end;
+        item.line.plot(item.start.x, item.start.y, target.x, target.y);
+        item.hit.plot(item.start.x, item.start.y, target.x, target.y);
+
+        if (item.id === 'fBA') item.label.translate(useReverse ? 150 : item.labelPos.x, useReverse ? item.start.y - 33 : item.labelPos.y);
+        if (item.id === 'fAB') item.label.translate(useReverse ? 45 : item.labelPos.x, useReverse ? item.start.y + 11 : item.labelPos.y);
+        if (item.id === 'fB') item.label.translate(useReverse ? 25 : item.labelPos.x, useReverse ? item.start.y + 24 : item.labelPos.y);
+      }
+
+      function applyState() {
+        for (var i = 0; i < allForceIds.length; i++) updateForceDirection(forces[allForceIds[i]]);
+
+        var aOpacity = state.selected === 'both' || state.selected === 'A' ? 1 : 0.34;
+        var bOpacity = state.selected === 'both' || state.selected === 'B' ? 1 : 0.34;
+        for (var ai = 0; ai < forceGroups.A.length; ai++) forceGroups.A[ai].opacity(aOpacity);
+        for (var bi = 0; bi < forceGroups.B.length; bi++) forceGroups.B[bi].opacity(bOpacity);
+        if (sketchOutlines.A) sketchOutlines.A.stroke({ color: state.selected === 'A' ? red : gray, width: state.selected === 'A' ? 5 : 4 }).opacity(state.selected === 'B' ? 0.35 : 1);
+        if (sketchOutlines.B) sketchOutlines.B.stroke({ color: state.selected === 'B' ? red : gray, width: state.selected === 'B' ? 5 : 4 }).opacity(state.selected === 'A' ? 0.35 : 1);
+
+        var pairIds = { NBA: true, NAB: true, fBA: true, fAB: true };
+        for (var fi = 0; fi < allForceIds.length; fi++) {
+          var id = allForceIds[fi];
+          var force = forces[id];
+          var isPair = !!pairIds[id];
+          var color = state.pairs && isPair ? hi : red;
+          var marker = state.pairs && isPair ? highMarker : redMarker;
+          var width = state.pairs && isPair ? 5.4 : 4.2;
+          var opacity = state.pairs && !isPair ? 0.42 : 1;
+          force.line.stroke({ color: color, width: width, linecap: 'round' }).marker('end', marker);
+          force.group.opacity((force.owner === 'A' ? aOpacity : bOpacity) * opacity);
+        }
+
+        activeButton('showBothInput', state.selected === 'both');
+        activeButton('isolateAInput', state.selected === 'A');
+        activeButton('isolateBInput', state.selected === 'B');
+        document.getElementById('pairsInput').checked = state.pairs;
+        document.getElementById('slideInput').checked = state.reversed;
+      }
+
+      function activeButton(id, on) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        if (on) el.classList.add('active');
+        else el.classList.remove('active');
+      }
+
+      function selectBody(body) {
+        state.selected = body;
+        applyState();
+      }
+
+      window.trigger_showBoth = function () {
+        state.selected = 'both';
+        applyState();
+      };
+      window.trigger_isolateA = function () {
+        selectBody('A');
+      };
+      window.trigger_isolateB = function () {
+        selectBody('B');
+      };
+      window.toggle_pairs = function (on) {
+        state.pairs = !!on;
+        applyState();
+      };
+      window.toggle_slide = function (on) {
+        state.reversed = !!on;
+        applyState();
+      };
+
+      function wireUi() {
+        var pairs = document.getElementById('pairsInput');
+        var slide = document.getElementById('slideInput');
+        pairs.addEventListener('mousemove', function (event) {
+          showTooltip('Highlights third-law contact-force pairs on different bodies.', event);
+        });
+        pairs.addEventListener('mouseleave', hideTooltip);
+        slide.addEventListener('mousemove', function (event) {
+          showTooltip('Reverses the friction directions to match the opposite sliding tendency.', event);
+        });
+        slide.addEventListener('mouseleave', hideTooltip);
+      }
+    }());
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts - no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+
+    #ui .fig7-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    #ui label.fig7-check {
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #ui .fig7-tabs button {
+      flex: 1 1 0;
+      min-width: 62px;
+      padding-left: 6px;
+      padding-right: 6px;
+    }
+
+    #ui .fig7-caption,
+    #ui .fig7-status,
+    #ui .fig7-log {
+      margin: 0;
+      color: #333;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    #ui .fig7-status {
+      font-weight: 600;
+    }
+
+    #ui .fig7-log {
+      max-height: 84px;
+      overflow: auto;
+      padding: 5px 6px;
+      border: 1px solid #d8dde3;
+      border-radius: 4px;
+      background: #fff;
+      font-family: ui-monospace, Consolas, monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+    <span class="fig7-row fig7-tabs"><button id="sampleTab" class="active" onclick="loadCodeSample('sample')">Sample</button><button id="buggyTab" onclick="loadCodeSample('buggy')">Buggy</button><button id="starterTab" onclick="loadCodeSample('starter')">Starter</button></span>
+    <label>PARTITION(A, p, r)<textarea id="partitionCode"></textarea></label>
+    <label>Input array<input id="arrayInput" value="13,19,9,5,12,8,7,4,21,2,6,11"></label>
+    <span class="fig7-row"><button id="runButton" onclick="runPartitionCode()">Run</button><button onclick="firstFrame()">|&lt;</button><button onclick="prevFrame()">&lt;</button><button id="playButton" onclick="togglePlayback()">Play</button><button onclick="nextFrame()">&gt;</button></span>
+    <label>Speed: <output id="speedVal">1</output><input id="speedInput" type="range" min="0.5" max="3" step="0.5" value="1" oninput="document.getElementById('speedVal').value=this.value;updateSpeed(+this.value)"></label>
+    <label class="fig7-check"><input id="caseInput" type="checkbox" onchange="toggle_case(this.checked)"> Current A[j] &le; x</label>
+    <span class="fig7-row"><button onclick="prevStep()">Step back</button><span id="stepLabel">1 of 5</span><button onclick="nextStep()">Step</button></span>
+    <span id="demoNarration" class="fig7-caption">Invariant at loop top: A[p..i] is at most x, A[i+1..j-1] is greater than x, and A[j..r-1] is unrestricted.</span>
+    <span id="frameCounter" class="fig7-caption">Frame 1 of 1</span>
+    <span id="statusReadout" class="fig7-status">not run</span>
+    <span id="frameCaption" class="fig7-caption">Static invariant diagram.</span>
+    <span id="runLog" class="fig7-log"></span>
+    <!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">Reload</button>
+  </div>
+
+  <script>
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = e.message || 'Figure failed to load';
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    // @FIGURE_CODE_BEGIN
+    // Library: svgjs
+    var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+    var W = 1080;
+    var H = 320;
+    draw.viewbox(0, 0, W, H);
+
+    var stage = draw.group();
+    var staticArray = [2, 6, 5, 4, 9, 13, 8, 12, 7, 19, 21, 11, 10, 15, 17, 12];
+    var demoArray = [9, 3, 8, 2, 7, 5, 11, 14, 6, 10, 13, 12];
+    var sampleCode = [
+      'function PARTITION(A, p, r, api) {',
+      '  var x = A[r];',
+      '  var i = p - 1;',
+      '  for (var j = p; j < r; j++) {',
+      '    if (api.compare(j, x)) {',
+      '      i = i + 1;',
+      '      api.swap(i, j);',
+      '    }',
+      '  }',
+      '  api.swap(i + 1, r);',
+      '  return i + 1;',
+      '}'
+    ].join('\n');
+    var buggyCode = [
+      'function PARTITION(A, p, r, api) {',
+      '  var x = A[r];',
+      '  var i = p - 1;',
+      '  for (var j = p; j < r; j++) {',
+      '    if (api.compare(j, x)) {',
+      '      api.swap(i, j);',
+      '      i = i + 1;',
+      '    }',
+      '  }',
+      '  api.swap(i + 1, r);',
+      '  return i + 1;',
+      '}'
+    ].join('\n');
+    var starterCode = [
+      'function PARTITION(A, p, r, api) {',
+      '  var x = A[r];',
+      '  var i = p - 1;',
+      '  for (var j = p; j < r; j++) {',
+      '    // compare A[j] with x, then swap when needed',
+      '  }',
+      '  return i + 1;',
+      '}'
+    ].join('\n');
+
+    var currentFrames = [];
+    var currentFrameIndex = 0;
+    var playing = false;
+    var playTimer = 0;
+    var playSpeed = 1;
+
+    var demoSteps = [
+      {
+        state: makeStaticState('static'),
+        text: 'Invariant at loop top: A[p..i] is at most x, A[i+1..j-1] is greater than x, and A[j..r-1] is unrestricted.'
+      },
+      {
+        state: makeCaseState(false),
+        text: 'Case A[j] > x: j advances and the element joins the darker greater-than-x region.'
+      },
+      {
+        state: makeCaseState(true),
+        text: 'Case A[j] <= x: i advances, A[j] swaps into the pale region, and both classified regions remain true.'
+      },
+      {
+        state: {
+          mode: 'demo',
+          array: [3, 9, 4, 7, 12, 18, 14, 20, 6, 11, 15, 10],
+          p: 0,
+          i: 3,
+          j: 8,
+          r: 11,
+          x: 10,
+          pivotIndex: 11,
+          touched: [8],
+          bad: [],
+          message: 'After several iterations, the unexamined interval has narrowed to A[j..r-1].',
+          kind: 'loop'
+        },
+        text: 'The bars move only when the loop has evidence: <= x on the left, > x in the middle, unrestricted ahead.'
+      },
+      {
+        state: {
+          mode: 'demo',
+          array: [3, 9, 4, 7, 6, 10, 14, 20, 12, 11, 15, 18],
+          p: 0,
+          i: 5,
+          j: 11,
+          r: 11,
+          x: 10,
+          pivotIndex: 5,
+          final: true,
+          touched: [5, 11],
+          bad: [],
+          message: 'Final swap puts the pivot between the two classified regions.',
+          kind: 'swap'
+        },
+        text: 'At the end, the pivot sits after all values <= x and before all values > x.'
+      }
+    ];
+    var currentDemoStep = 0;
+
+    function makeStaticState(message) {
+      return {
+        mode: 'static',
+        array: staticArray.slice(),
+        p: 0,
+        i: 3,
+        j: 10,
+        r: 15,
+        x: 'x',
+        pivotIndex: 15,
+        touched: [],
+        bad: [],
+        message: message || 'Static invariant diagram.',
+        kind: 'static'
+      };
+    }
+
+    function makeCaseState(isLess) {
+      var arr = demoArray.slice();
+      arr[5] = isLess ? 4 : 17;
+      return {
+        mode: 'demo',
+        array: arr,
+        p: 0,
+        i: 2,
+        j: 5,
+        r: 11,
+        x: 12,
+        pivotIndex: 11,
+        touched: [5],
+        bad: [],
+        message: isLess ? 'A[j] <= x, so i moves right and a swap grows the pale region.' : 'A[j] > x, so only j moves right and the dark region grows.',
+        kind: isLess ? 'compare-true' : 'compare-false',
+        showValues: true
+      };
+    }
+
+    function svgText(parent, text, x, y, size, opts) {
+      opts = opts || {};
+      var t = parent.text(String(text)).move(x, y);
+      t.font({
+        family: opts.family || 'Times New Roman, Times, serif',
+        size: size,
+        style: opts.italic ? 'italic' : 'normal',
+        weight: opts.weight || 'normal',
+        anchor: opts.anchor || 'middle'
+      });
+      t.fill(opts.fill || '#000');
+      if (opts.halo) {
+        t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': opts.halo, 'stroke-linejoin': 'round' });
+      }
+      return t;
+    }
+
+    function underBrace(parent, x1, x2, y, depth, stroke) {
+      var mid = (x1 + x2) / 2;
+      var d = [
+        'M', x1, y,
+        'C', x1 + 18, y + depth * 0.55, mid - 54, y + depth * 0.35, mid, y + depth,
+        'C', mid + 54, y + depth * 0.35, x2 - 18, y + depth * 0.55, x2, y
+      ].join(' ');
+      return parent.path(d).fill('none').stroke({ color: stroke || '#000', width: 2.2, linecap: 'round' });
+    }
+
+    function regionForCell(state, idx) {
+      if (idx < state.p || idx > state.r) return 'outside';
+      if (idx <= state.i) return 'le';
+      if (idx < state.j) return 'gt';
+      if (idx < state.r) return 'free';
+      return 'pivot';
+    }
+
+    function drawPartition(state) {
+      stage.clear();
+      var g = stage.group();
+      var n = state.r - state.p + 1;
+      var stripX = 42;
+      var stripY = 88;
+      var stripW = 996;
+      var cellW = stripW / n;
+      var cellH = 64;
+      var badMap = {};
+      var touchMap = {};
+      (state.bad || []).forEach(function (idx) { badMap[idx] = true; });
+      (state.touched || []).forEach(function (idx) { touchMap[idx] = true; });
+
+      var colors = {
+        le: '#e5e5e5',
+        gt: '#9c9c9c',
+        free: '#ffffff',
+        pivot: '#ffffff',
+        outside: '#ffffff'
+      };
+      for (var idx = state.p; idx <= state.r; idx++) {
+        var k = idx - state.p;
+        var x = stripX + k * cellW;
+        var region = regionForCell(state, idx);
+        var fill = colors[region];
+        if (badMap[idx]) fill = '#ffd6d6';
+        var cell = g.rect(cellW, cellH).move(x, stripY).fill(fill).stroke({ color: '#000', width: 1.8 });
+        if (touchMap[idx]) {
+          g.rect(cellW - 5, cellH - 5).move(x + 2.5, stripY + 2.5).fill('none').stroke({ color: '#1b6ea8', width: 2.4 });
+        }
+        if (state.showValues && idx !== state.r) {
+          svgText(g, state.array[idx], x + cellW / 2, stripY + 19, 18, { family: 'sans-serif', halo: 3 });
+        }
+      }
+
+      var barAfterI = stripX + (state.i - state.p + 1) * cellW;
+      var barAtJ = stripX + (state.j - state.p) * cellW;
+      var barBeforeR = stripX + (state.r - state.p) * cellW;
+      [barAfterI, barAtJ, barBeforeR].forEach(function (x) {
+        g.rect(13, cellH + 12).move(x - 6.5, stripY - 6).fill('#000');
+      });
+
+      svgText(g, 'p', stripX + cellW * 0.5, 18, 42, { italic: true });
+      svgText(g, 'i', stripX + (state.i - state.p + 0.5) * cellW, 18, 42, { italic: true });
+      svgText(g, 'j', stripX + (state.j - state.p + 0.5) * cellW, 18, 42, { italic: true });
+      svgText(g, 'r', stripX + (state.r - state.p + 0.5) * cellW, 18, 42, { italic: true });
+      svgText(g, 'x', stripX + (state.r - state.p + 0.5) * cellW, stripY + 19, 38, { italic: true });
+
+      var braceY = stripY + cellH + 18;
+      underBrace(g, stripX, barAfterI - 8, braceY, 22);
+      underBrace(g, barAfterI + 8, barAtJ - 8, braceY, 22);
+      underBrace(g, barAtJ + 8, barBeforeR - 8, braceY, 22);
+
+      svgText(g, '<= x', (stripX + barAfterI) / 2, braceY + 26, 34, { italic: true });
+      svgText(g, '> x', (barAfterI + barAtJ) / 2, braceY + 26, 34, { italic: true });
+      svgText(g, 'unrestricted', (barAtJ + barBeforeR) / 2, braceY + 26, 34, { weight: 'bold' });
+
+      var leRegion = g.rect(Math.max(0, barAfterI - stripX - 2), cellH + 6).move(stripX + 1, stripY - 3).fill('#cbe6ff').opacity(0);
+      var gtRegion = g.rect(Math.max(0, barAtJ - barAfterI - 2), cellH + 6).move(barAfterI + 1, stripY - 3).fill('#f3c4a4').opacity(0);
+      var freeRegion = g.rect(Math.max(0, barBeforeR - barAtJ - 2), cellH + 6).move(barAtJ + 1, stripY - 3).fill('#f6e58d').opacity(0);
+      [leRegion, gtRegion, freeRegion].forEach(function (el) {
+        el.on('mousemove', function (e) { showTooltip('Loop invariant region', e); })
+          .on('mouseleave', hideTooltip)
+          .on('click', function () { showPopup('Partition invariant', 'The three regions record what the loop already knows. Only the unrestricted region still needs comparisons with the pivot.'); })
+          .css('cursor', 'pointer');
+      });
+
+      updatePanelForState(state);
+    }
+
+    function updatePanelForState(state) {
+      document.getElementById('frameCaption').textContent = state.message || '';
+      document.getElementById('frameCounter').textContent = 'Frame ' + (currentFrameIndex + 1) + ' of ' + Math.max(1, currentFrames.length);
+    }
+
+    function setFrame(index) {
+      if (!currentFrames.length) currentFrames = [{ state: makeStaticState('Static invariant diagram.'), message: 'Static invariant diagram.' }];
+      currentFrameIndex = Math.max(0, Math.min(index, currentFrames.length - 1));
+      var frame = currentFrames[currentFrameIndex];
+      var state = frame.state || frame;
+      state.message = frame.message || state.message || '';
+      drawPartition(state);
+      document.getElementById('frameCounter').textContent = 'Frame ' + (currentFrameIndex + 1) + ' of ' + currentFrames.length;
+      document.getElementById('frameCaption').textContent = state.message;
+      renderLog();
+    }
+
+    function renderLog() {
+      var start = Math.max(0, currentFrameIndex - 5);
+      var lines = [];
+      for (var k = start; k <= currentFrameIndex && k < currentFrames.length; k++) {
+        lines.push((k + 1) + ': ' + (currentFrames[k].message || currentFrames[k].state.message || ''));
+      }
+      document.getElementById('runLog').textContent = lines.join('\n');
+    }
+
+    function firstFrame() {
+      pausePlayback();
+      setFrame(0);
+    }
+
+    function prevFrame() {
+      pausePlayback();
+      setFrame(currentFrameIndex - 1);
+    }
+
+    function nextFrame() {
+      pausePlayback();
+      setFrame(currentFrameIndex + 1);
+    }
+
+    function updateSpeed(v) {
+      playSpeed = v || 1;
+      if (playing) {
+        pausePlayback();
+        togglePlayback();
+      }
+    }
+
+    function togglePlayback() {
+      if (playing) {
+        pausePlayback();
+        return;
+      }
+      playing = true;
+      document.getElementById('playButton').textContent = 'Pause';
+      playTimer = setInterval(function () {
+        if (currentFrameIndex >= currentFrames.length - 1) {
+          pausePlayback();
+        } else {
+          setFrame(currentFrameIndex + 1);
+        }
+      }, Math.max(120, 650 / playSpeed));
+    }
+
+    function pausePlayback() {
+      playing = false;
+      clearInterval(playTimer);
+      document.getElementById('playButton').textContent = 'Play';
+    }
+
+    function prevStep() {
+      pausePlayback();
+      currentDemoStep = Math.max(0, currentDemoStep - 1);
+      applyDemoStep();
+    }
+
+    function nextStep() {
+      pausePlayback();
+      currentDemoStep = Math.min(demoSteps.length - 1, currentDemoStep + 1);
+      applyDemoStep();
+    }
+
+    function applyDemoStep() {
+      var step = demoSteps[currentDemoStep];
+      currentFrames = [{ state: clone(step.state), message: step.state.message }];
+      currentFrameIndex = 0;
+      document.getElementById('stepLabel').textContent = (currentDemoStep + 1) + ' of ' + demoSteps.length;
+      document.getElementById('demoNarration').textContent = step.text;
+      document.getElementById('statusReadout').textContent = 'demo step';
+      setFrame(0);
+    }
+
+    function toggle_case(on) {
+      pausePlayback();
+      var state = makeCaseState(on);
+      currentFrames = [{ state: state, message: state.message }];
+      currentFrameIndex = 0;
+      document.getElementById('demoNarration').textContent = on ? demoSteps[2].text : demoSteps[1].text;
+      document.getElementById('statusReadout').textContent = on ? 'case: A[j] <= x' : 'case: A[j] > x';
+      setFrame(0);
+    }
+
+    function clone(obj) {
+      return JSON.parse(JSON.stringify(obj));
+    }
+
+    function parseArray(src) {
+      var values = src.split(',').map(function (s) { return Number(s.trim()); }).filter(function (v) { return !Number.isNaN(v); });
+      if (values.length < 2) throw new Error('Enter at least two comma-separated numbers.');
+      if (values.length > 20) throw new Error('Use at most 20 numbers for the trace.');
+      return values;
+    }
+
+    function loadCodeSample(kind) {
+      var map = { sample: sampleCode, buggy: buggyCode, starter: starterCode };
+      document.getElementById('partitionCode').value = map[kind] || sampleCode;
+      ['sample', 'buggy', 'starter'].forEach(function (name) {
+        document.getElementById(name + 'Tab').classList.toggle('active', name === kind);
+      });
+      document.getElementById('statusReadout').textContent = 'not run';
+    }
+
+    function runPartitionCode() {
+      pausePlayback();
+      var button = document.getElementById('runButton');
+      var code = document.getElementById('partitionCode').value;
+      var arr;
+      try {
+        arr = parseArray(document.getElementById('arrayInput').value);
+      } catch (e) {
+        var errState = makeStaticState(e.message);
+        errState.bad = [];
+        currentFrames = [{ state: errState, message: e.message }];
+        document.getElementById('statusReadout').textContent = 'error';
+        setFrame(0);
+        return;
+      }
+      button.disabled = true;
+      document.getElementById('statusReadout').textContent = 'running';
+      var worker = makeWorker(code, arr);
+      var settled = false;
+      var timeout = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        worker.terminate();
+        receiveWorkerResult({ error: 'Timed out after 1500 ms.', frames: [] }, arr);
+        button.disabled = false;
+      }, 1500);
+      worker.onmessage = function (e) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        worker.terminate();
+        receiveWorkerResult(e.data, arr);
+        button.disabled = false;
+      };
+      worker.onerror = function (e) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        worker.terminate();
+        receiveWorkerResult({ error: e.message || 'Worker error.', frames: [] }, arr);
+        button.disabled = false;
+      };
+    }
+
+    function makeWorker(code, arr) {
+      var workerSource = [
+        'var userCode = ' + JSON.stringify(code) + ';',
+        'var inputArray = ' + JSON.stringify(arr) + ';',
+        workerMain.toString(),
+        'workerMain(userCode, inputArray);'
+      ].join('\n');
+      var blob = new Blob([workerSource], { type: 'application/javascript' });
+      var url = URL.createObjectURL(blob);
+      var worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      return worker;
+    }
+
+    function workerMain(userCode, inputArray) {
+      var frames = [];
+      var A = inputArray.slice();
+      var p = 0;
+      var r = A.length - 1;
+      var x = A[r];
+      var maxOps = 600;
+      var maxFrames = 260;
+      var ops = 0;
+      function guessI(j) {
+        var lastLe = p - 1;
+        for (var idx = p; idx < j; idx++) {
+          if (A[idx] <= x) lastLe = idx;
+        }
+        return lastLe;
+      }
+      function push(kind, indices, message, extra) {
+        ops++;
+        if (ops > maxOps || frames.length > maxFrames) throw new Error('Operation/frame cap hit; check for an infinite loop.');
+        var jGuess = r;
+        if (indices && indices.length) jGuess = Math.min.apply(null, indices);
+        var iGuess = guessI(jGuess);
+        var state = {
+          mode: 'trace',
+          array: A.slice(),
+          p: p,
+          i: typeof extra.i === 'number' ? extra.i : iGuess,
+          j: typeof extra.j === 'number' ? extra.j : Math.max(p, Math.min(jGuess, r)),
+          r: r,
+          x: x,
+          pivotIndex: r,
+          touched: indices || [],
+          bad: [],
+          message: message,
+          kind: kind,
+          showValues: true
+        };
+        frames.push({ kind: kind, state: state, indices: indices || [], message: message });
+      }
+      var api = Object.freeze({
+        compare: function (j, pivot) {
+          if (j < p || j >= r || j !== (j | 0)) throw new Error('compare index out of range: ' + j);
+          var result = A[j] <= pivot;
+          push(result ? 'compare-true' : 'compare-false', [j], 'compare A[' + j + ']=' + A[j] + ' with x=' + pivot + ' -> ' + result, { j: j });
+          return result;
+        },
+        swap: function (a, b) {
+          if (a < p || a > r || b < p || b > r || a !== (a | 0) || b !== (b | 0)) throw new Error('swap index out of range: ' + a + ', ' + b);
+          push('swap', [a, b], 'swap A[' + a + '] and A[' + b + ']', { j: Math.min(a, b) });
+          var tmp = A[a];
+          A[a] = A[b];
+          A[b] = tmp;
+        }
+      });
+      try {
+        var factory = new Function(userCode + '\n; return (typeof PARTITION === "function") ? PARTITION : null;');
+        var entry = factory();
+        if (!entry) throw new Error('Define function PARTITION(A, p, r, api).');
+        push('start', [r], 'start with pivot x=' + x + ' at r=' + r, { j: p, i: p - 1 });
+        var q = entry(A.slice(), p, r, api);
+        push('return', [q], 'PARTITION returned ' + q, { j: r, i: q });
+        postMessage({ frames: frames, finalArray: A, result: q, p: p, r: r, x: x });
+      } catch (e) {
+        postMessage({ frames: frames, finalArray: A, error: e.message || String(e), p: p, r: r, x: x });
+      }
+    }
+
+    function receiveWorkerResult(result, originalArray) {
+      var frames = result.frames || [];
+      if (result.error && !frames.length) {
+        frames = [{
+          state: {
+            mode: 'trace',
+            array: originalArray.slice(),
+            p: 0,
+            i: -1,
+            j: 0,
+            r: originalArray.length - 1,
+            x: originalArray[originalArray.length - 1],
+            pivotIndex: originalArray.length - 1,
+            touched: [],
+            bad: [],
+            message: result.error,
+            kind: 'error',
+            showValues: true
+          },
+          message: result.error
+        }];
+      }
+      var verdict = result.error ? { ok: false, message: 'error: ' + result.error, bad: [] } : checkPartition(result.finalArray, result.result, result.x);
+      if (frames.length) {
+        var last = frames[frames.length - 1];
+        last.state.bad = verdict.bad || [];
+        last.state.message = result.error ? verdict.message : verdict.message;
+        last.message = last.state.message;
+      }
+      currentFrames = frames;
+      currentFrameIndex = 0;
+      document.getElementById('statusReadout').textContent = result.error ? 'error' : (verdict.ok ? 'correct' : 'wrong answer');
+      setFrame(0);
+    }
+
+    function checkPartition(A, q, x) {
+      var bad = [];
+      if (typeof q !== 'number' || q < 0 || q >= A.length || A[q] !== x) {
+        return { ok: false, message: 'wrong answer: pivot is not returned at its final boundary.', bad: typeof q === 'number' ? [q] : [] };
+      }
+      for (var a = 0; a < q; a++) if (A[a] > x) bad.push(a);
+      for (var b = q + 1; b < A.length; b++) if (A[b] <= x) bad.push(b);
+      if (bad.length) return { ok: false, message: 'wrong answer: highlighted cells violate the partition property.', bad: bad };
+      return { ok: true, message: 'correct: the pivot separates <= x from > x.', bad: [] };
+    }
+
+    document.addEventListener('fig-resize', function () {
+      draw.viewbox(0, 0, W, H);
+    });
+
+    loadCodeSample('sample');
+    currentFrames = [{ state: makeStaticState('Static invariant diagram.'), message: 'Static invariant diagram.' }];
+    setFrame(0);
+    window.__markRendered();
+    // @FIGURE_CODE_END
+
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

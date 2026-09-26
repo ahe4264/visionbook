@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinhole Camera Geometry</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #151719;
+      --muted: #5c6570;
+      --panel: #ffffff;
+      --edge: #d8dee6;
+      --paper: #fbfcfd;
+      --green: #27df16;
+      --green-dark: #16a30d;
+      --red: #ff1616;
+      --blue: #172dff;
+      --cyan: #50d7f0;
+      --cyan-dark: #1491ad;
+      --plane: rgba(220, 230, 230, 0.78);
+      --plane-real: rgba(172, 188, 190, 0.66);
+      --shadow: 0 18px 44px rgba(21, 31, 44, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #edf1f5;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2vw, 20px);
+    }
+
+    main {
+      width: min(1420px, 100%);
+      display: grid;
+      gap: 12px;
+    }
+
+    .stage,
+    .controls {
+      background: var(--panel);
+      border: 1px solid var(--edge);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .stage {
+      overflow: auto;
+      padding: 10px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 980px;
+      height: min(75vh, 760px);
+      min-height: 540px;
+      background: var(--paper);
+      border-radius: 6px;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) auto minmax(220px, 0.72fr);
+      gap: 16px;
+      align-items: center;
+      padding: 14px 16px;
+    }
+
+    .control-block {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .control-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #1a6fb5;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid #cfd6de;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #eef2f6;
+    }
+
+    .segmented button {
+      min-width: 120px;
+      border: 0;
+      border-right: 1px solid #cfd6de;
+      padding: 10px 12px;
+      background: transparent;
+      color: #36414d;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .segmented button:last-child {
+      border-right: 0;
+    }
+
+    .segmented button[aria-pressed="true"] {
+      background: #18232f;
+      color: #ffffff;
+    }
+
+    .readout {
+      min-height: 58px;
+      display: grid;
+      gap: 2px;
+      padding: 10px 12px;
+      border: 1px solid #d8dee6;
+      border-radius: 8px;
+      background: #f8fafc;
+      font-size: 0.9rem;
+      color: #303944;
+      line-height: 1.25;
+    }
+
+    .readout strong {
+      color: #11161c;
+      font-weight: 800;
+    }
+
+    .axis {
+      stroke: var(--ink);
+      stroke-width: 3.6;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .axis-thin {
+      stroke: #202326;
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .plane {
+      fill: var(--plane);
+      stroke: #17191c;
+      stroke-width: 3.2;
+      stroke-linejoin: round;
+    }
+
+    .real-plane {
+      fill: var(--plane-real);
+      stroke: #17191c;
+      stroke-width: 3.2;
+      stroke-dasharray: 16 13;
+      stroke-linejoin: round;
+    }
+
+    .ray {
+      stroke: rgba(118, 151, 153, 0.34);
+      stroke-width: 3.2;
+      stroke-dasharray: 9 12;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .ray-active {
+      stroke: rgba(68, 118, 124, 0.58);
+      stroke-width: 4.2;
+      stroke-dasharray: 9 10;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .red {
+      stroke: var(--red);
+      stroke-width: 4.5;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .green {
+      stroke: var(--green);
+      stroke-width: 4.8;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .blue {
+      stroke: var(--blue);
+      stroke-width: 4.4;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .guide {
+      stroke: rgba(76, 101, 106, 0.48);
+      stroke-width: 3;
+      stroke-linecap: round;
+      fill: none;
+    }
+
+    .guide-light {
+      stroke: rgba(74, 96, 100, 0.24);
+      stroke-width: 2.6;
+      stroke-linecap: round;
+      stroke-dasharray: 8 9;
+      fill: none;
+    }
+
+    .point {
+      fill: var(--cyan);
+      stroke: #16181b;
+      stroke-width: 3.5;
+    }
+
+    .point-active {
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.24));
+    }
+
+    .point-muted {
+      opacity: 0.55;
+    }
+
+    .pinhole {
+      fill: #070808;
+      stroke: #070808;
+      stroke-width: 2;
+    }
+
+    .caption,
+    .panel-letter,
+    .serif-label {
+      font-family: Georgia, "Times New Roman", serif;
+      fill: var(--ink);
+    }
+
+    .caption {
+      font-size: 27px;
+    }
+
+    .large-label {
+      font-size: 35px;
+      font-weight: 700;
+    }
+
+    .axis-label {
+      font-size: 34px;
+      font-style: italic;
+      font-weight: 700;
+    }
+
+    .small-label {
+      font-size: 25px;
+    }
+
+    .tiny-label {
+      font-size: 18px;
+      fill: #3d454f;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-weight: 700;
+    }
+
+    .panel-letter {
+      font-size: 37px;
+      font-weight: 700;
+    }
+
+    .value-label {
+      font-size: 16px;
+      fill: #3f4853;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-weight: 700;
+    }
+
+    .coord-box {
+      fill: rgba(255, 255, 255, 0.88);
+      stroke: #d4dbe3;
+      stroke-width: 1.4;
+    }
+
+    [data-drag="P"] {
+      cursor: grab;
+    }
+
+    [data-drag="P"]:active {
+      cursor: grabbing;
+    }
+
+    @media (max-width: 820px) {
+      body {
+        padding: 8px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .segmented button {
+        min-width: 0;
+      }
+
+      svg {
+        min-width: 930px;
+        min-height: 520px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main aria-label="Interactive pinhole camera geometry">
+    <section class="stage" aria-label="Pinhole geometry figure">
+      <svg id="figure" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+        <title id="title">Pinhole camera model with real and virtual projection planes</title>
+        <desc id="desc">A two-panel interactive diagram showing a 3D point projecting through a pinhole to real and virtual planes, and the corresponding camera and pixel coordinates on the virtual image plane.</desc>
+        <defs>
+          <marker id="arrow-black" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#151719"></path>
+          </marker>
+          <marker id="arrow-red" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff1616"></path>
+          </marker>
+          <marker id="arrow-green" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#27df16"></path>
+          </marker>
+          <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#172dff"></path>
+          </marker>
+        </defs>
+
+        <rect x="0" y="0" width="1500" height="760" fill="#fbfcfd"></rect>
+        <g id="scene-layer"></g>
+        <g id="image-layer"></g>
+      </svg>
+    </section>
+
+    <section class="controls" aria-label="Projection controls">
+      <label class="control-block">
+        <span class="control-head"><span>Focal length</span><span id="focal-value">f = 1.25</span></span>
+        <input id="focal-slider" type="range" min="0.75" max="1.85" step="0.01" value="1.25">
+      </label>
+
+      <div class="control-block">
+        <span class="control-head"><span>Active projection</span><span id="mode-value">Virtual</span></span>
+        <div class="segmented" role="group" aria-label="Projection mode">
+          <button type="button" id="virtual-button" data-mode="virtual" aria-pressed="true">Virtual upright</button>
+          <button type="button" id="real-button" data-mode="real" aria-pressed="false">Real inverted</button>
+        </div>
+      </div>
+
+      <div class="readout" aria-live="polite">
+        <div><strong id="cam-readout">(x, y) = (0.34, 0.29)</strong> on the active plane</div>
+        <div id="pixel-readout">(n, m) = (372, 292), including principal point offset</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const svg = document.getElementById("figure");
+      const sceneLayer = document.getElementById("scene-layer");
+      const imageLayer = document.getElementById("image-layer");
+      const focalSlider = document.getElementById("focal-slider");
+      const focalValue = document.getElementById("focal-value");
+      const modeValue = document.getElementById("mode-value");
+      const camReadout = document.getElementById("cam-readout");
+      const pixelReadout = document.getElementById("pixel-readout");
+      const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
+
+      const scene = {
+        origin: { x: 340, y: 392 },
+        xVec: { x: 70, y: -82 },
+        yVec: { x: 0, y: -110 },
+        zVec: { x: 82, y: 0 },
+        zPoint: 4.65,
+        planeHalfX: 1.28,
+        planeHalfY: 1.5
+      };
+
+      const image = {
+        rect: { x: 948, y: 134, w: 500, h: 382 },
+        pixelW: 640,
+        pixelH: 460,
+        cx: 435,
+        cy: 245,
+        pixelsPerUnit: 170
+      };
+
+      const state = {
+        f: Number(focalSlider.value),
+        mode: "virtual",
+        P: { X: 1.18, Y: 1.06, Z: scene.zPoint },
+        dragging: false
+      };
+
+      function fmt(value, digits) {
+        return Number(value).toFixed(digits);
+      }
+
+      function clamp(value, low, high) {
+        return Math.max(low, Math.min(high, value));
+      }
+
+      function p3(X, Y, Z) {
+        return {
+          x: scene.origin.x + X * scene.xVec.x + Y * scene.yVec.x + Z * scene.zVec.x,
+          y: scene.origin.y + X * scene.xVec.y + Y * scene.yVec.y + Z * scene.zVec.y
+        };
+      }
+
+      function attrs(obj) {
+        return Object.entries(obj)
+          .map(([key, value]) => `${key}="${value}"`)
+          .join(" ");
+      }
+
+      function line(a, b, cls, extra) {
+        return `<line x1="${fmt(a.x, 2)}" y1="${fmt(a.y, 2)}" x2="${fmt(b.x, 2)}" y2="${fmt(b.y, 2)}" class="${cls}" ${extra || ""}></line>`;
+      }
+
+      function path(points, cls, extra) {
+        const d = points.map((pt, index) => `${index ? "L" : "M"} ${fmt(pt.x, 2)} ${fmt(pt.y, 2)}`).join(" ");
+        return `<path d="${d}" class="${cls}" ${extra || ""}></path>`;
+      }
+
+      function polygon(points, cls, extra) {
+        const pts = points.map((pt) => `${fmt(pt.x, 2)},${fmt(pt.y, 2)}`).join(" ");
+        return `<polygon points="${pts}" class="${cls}" ${extra || ""}></polygon>`;
+      }
+
+      function text(x, y, content, cls, extra) {
+        return `<text x="${fmt(x, 1)}" y="${fmt(y, 1)}" class="${cls}" ${extra || ""}>${content}</text>`;
+      }
+
+      function circle(pt, r, cls, extra) {
+        return `<circle cx="${fmt(pt.x, 2)}" cy="${fmt(pt.y, 2)}" r="${r}" class="${cls}" ${extra || ""}></circle>`;
+      }
+
+      function planeAt(z) {
+        const w = scene.planeHalfX;
+        const h = scene.planeHalfY;
+        return [
+          p3(-w, -h, z),
+          p3(w, -h, z),
+          p3(w, h, z),
+          p3(-w, h, z)
+        ];
+      }
+
+      function projections() {
+        const { X, Y, Z } = state.P;
+        const xVirtual = state.f * X / Z;
+        const yVirtual = state.f * Y / Z;
+        return {
+          virtual: { x: xVirtual, y: yVirtual, z: state.f, sign: 1 },
+          real: { x: -xVirtual, y: -yVirtual, z: -state.f, sign: -1 }
+        };
+      }
+
+      function activeProjection() {
+        return projections()[state.mode];
+      }
+
+      function screenToWorldOnPointDepth(pt) {
+        const dx = pt.x - scene.origin.x - scene.zVec.x * scene.zPoint;
+        const dy = pt.y - scene.origin.y - scene.zVec.y * scene.zPoint;
+        const X = dx / scene.xVec.x;
+        const Y = (dy - X * scene.xVec.y) / scene.yVec.y;
+        return {
+          X: clamp(X, -1.25, 1.75),
+          Y: clamp(Y, -0.9, 1.55),
+          Z: scene.zPoint
+        };
+      }
+
+      function svgPoint(event) {
+        const pt = svg.createSVGPoint();
+        pt.x = event.clientX;
+        pt.y = event.clientY;
+        return pt.matrixTransform(svg.getScreenCTM().inverse());
+      }
+
+      function renderScene() {
+        const O = p3(0, 0, 0);
+        const Xend = p3(2.05, 0, 0);
+        const Yend = p3(0, 2.55, 0);
+        const Zend = p3(0, 0, 5.45);
+        const vCenter = p3(0, 0, state.f);
+        const rCenter = p3(0, 0, -state.f);
+        const P = p3(state.P.X, state.P.Y, state.P.Z);
+        const Pbase = p3(state.P.X, 0, state.P.Z);
+        const Zbase = p3(0, 0, state.P.Z);
+        const proj = projections();
+        const pVirtual = p3(proj.virtual.x, proj.virtual.y, proj.virtual.z);
+        const pReal = p3(proj.real.x, proj.real.y, proj.real.z);
+        const planeVirtual = planeAt(state.f);
+        const planeReal = planeAt(-state.f);
+
+        const virtualPointClass = state.mode === "virtual" ? "point point-active" : "point point-muted";
+        const realPointClass = state.mode === "real" ? "point point-active" : "point point-muted";
+        const virtualLabelWeight = state.mode === "virtual" ? "font-weight: 800;" : "";
+        const realLabelWeight = state.mode === "real" ? "font-weight: 800;" : "";
+
+        const html = [
+          text(300, 58, "Y", "serif-label large-label"),
+          text(346, 72, "World coordinates", "serif-label caption"),
+          line(O, Yend, "axis", 'marker-end="url(#arrow-black)"'),
+          line(O, Xend, "axis", 'marker-end="url(#arrow-black)"'),
+          line(O, Zend, "axis", 'marker-end="url(#arrow-black)"'),
+          text(Xend.x - 34, Xend.y - 5, "X", "serif-label large-label"),
+          text(Zend.x - 34, Zend.y + 50, "Z", "serif-label large-label"),
+          polygon(planeReal, "real-plane"),
+          polygon(planeVirtual, "plane"),
+          line(p3(-scene.planeHalfX, -scene.planeHalfY, -state.f), p3(-scene.planeHalfX, scene.planeHalfY, -state.f), "axis-thin"),
+          line(p3(scene.planeHalfX, -scene.planeHalfY, state.f), p3(scene.planeHalfX, scene.planeHalfY, state.f), "axis-thin"),
+          line(pReal, P, state.mode === "real" ? "ray-active" : "ray"),
+          line(O, P, state.mode === "virtual" ? "ray-active" : "ray"),
+          line(Pbase, P, "guide"),
+          line(Pbase, Zbase, "guide"),
+          line(O, vCenter, "red", 'marker-end="url(#arrow-red)"'),
+          line(O, rCenter, "red", 'marker-end="url(#arrow-red)"'),
+          text((O.x + vCenter.x) / 2 + 16, O.y + 42, "f", "serif-label axis-label"),
+          text((O.x + rCenter.x) / 2 - 22, O.y + 42, "f", "serif-label axis-label"),
+          circle(O, 8.5, "pinhole"),
+          text(O.x - 104, O.y - 28, "(0,0,0)", "serif-label small-label"),
+          text(O.x - 50, O.y + 50, "Pinhole", "serif-label small-label"),
+          line(vCenter, p3(0.86, 0, state.f), "green", 'marker-end="url(#arrow-green)"'),
+          line(vCenter, p3(0, 0.96, state.f), "green", 'marker-end="url(#arrow-green)"'),
+          line(rCenter, p3(-0.86, 0, -state.f), "green", 'marker-end="url(#arrow-green)"'),
+          line(rCenter, p3(0, -0.96, -state.f), "green", 'marker-end="url(#arrow-green)"'),
+          text(p3(0.92, 0, state.f).x + 10, p3(0.92, 0, state.f).y + 24, "x", "serif-label axis-label"),
+          text(p3(0, 1.03, state.f).x - 36, p3(0, 1.03, state.f).y - 12, "y", "serif-label axis-label"),
+          text(p3(-0.95, 0, -state.f).x - 30, p3(-0.95, 0, -state.f).y + 22, "x", "serif-label axis-label"),
+          text(p3(0, -1.03, -state.f).x + 16, p3(0, -1.03, -state.f).y + 18, "y", "serif-label axis-label"),
+          circle(pReal, state.mode === "real" ? 10 : 8.5, realPointClass),
+          circle(pVirtual, state.mode === "virtual" ? 10 : 8.5, virtualPointClass),
+          text(pReal.x - 36, pReal.y + 53, "p", "serif-label large-label", `style="${realLabelWeight}"`),
+          text(pVirtual.x + 14, pVirtual.y - 26, "p", "serif-label large-label", `style="${virtualLabelWeight}"`),
+          circle(P, 10, "point point-active", 'data-drag="P" tabindex="0" aria-label="Drag 3D point P"'),
+          `<circle cx="${fmt(P.x, 2)}" cy="${fmt(P.y, 2)}" r="24" fill="transparent" data-drag="P"></circle>`,
+          text(P.x - 18, P.y - 28, "P", "serif-label large-label"),
+          text(12, 658, "Projection plane", "serif-label caption"),
+          text(414, 658, "Virtual camera plane", "serif-label caption"),
+          text(302, 724, "(a)", "panel-letter"),
+          text(48, 590, `real: x=-fX/Z, y=-fY/Z`, "value-label", `style="${state.mode === "real" ? "fill:#11161c;font-weight:900;" : ""}"`),
+          text(500, 590, `virtual: x=fX/Z, y=fY/Z`, "value-label", `style="${state.mode === "virtual" ? "fill:#11161c;font-weight:900;" : ""}"`)
+        ].join("");
+
+        sceneLayer.innerHTML = html;
+      }
+
+      function imageCoordinates(proj) {
+        const n = image.cx - image.pixelsPerUnit * proj.x;
+        const m = image.cy + image.pixelsPerUnit * proj.y;
+        return { n, m };
+      }
+
+      function imagePointFromPixels(n, m) {
+        const scale = Math.min(image.rect.w / image.pixelW, image.rect.h / image.pixelH);
+        return {
+          x: image.rect.x + n * scale,
+          y: image.rect.y + image.rect.h - m * scale
+        };
+      }
+
+      function renderImagePlane() {
+        const active = activeProjection();
+        const coords = imageCoordinates(active);
+        const scale = Math.min(image.rect.w / image.pixelW, image.rect.h / image.pixelH);
+        const principal = imagePointFromPixels(image.cx, image.cy);
+        const p = imagePointFromPixels(coords.n, coords.m);
+        const origin = { x: image.rect.x, y: image.rect.y + image.rect.h };
+        const nAxisEnd = { x: origin.x + 96, y: origin.y };
+        const mAxisEnd = { x: origin.x, y: origin.y - 96 };
+        const xAxisEnd = { x: principal.x - 94, y: principal.y };
+        const yAxisEnd = { x: principal.x, y: principal.y - 116 };
+        const pToPrincipalX = { x: p.x, y: principal.y };
+        const pToCornerX = { x: p.x, y: origin.y };
+        const modeText = state.mode === "virtual" ? "upright virtual plane" : "inverted real plane";
+        const pxPerUnitScreen = image.pixelsPerUnit * scale;
+
+        const pClamped = {
+          x: clamp(p.x, image.rect.x + 16, image.rect.x + image.rect.w - 16),
+          y: clamp(p.y, image.rect.y + 16, image.rect.y + image.rect.h - 16)
+        };
+        const pointWasClamped = Math.abs(pClamped.x - p.x) > 0.01 || Math.abs(pClamped.y - p.y) > 0.01;
+
+        const html = [
+          `<rect x="${image.rect.x}" y="${image.rect.y}" width="${image.rect.w}" height="${image.rect.h}" fill="#ffffff" stroke="#151719" stroke-width="3.4"></rect>`,
+          text(image.rect.x + 258, image.rect.y + 64, "Camera coordinates", "serif-label caption"),
+          line(principal, xAxisEnd, "green", 'marker-end="url(#arrow-green)"'),
+          line(principal, yAxisEnd, "green", 'marker-end="url(#arrow-green)"'),
+          text(xAxisEnd.x + 31, xAxisEnd.y + 34, "x", "serif-label axis-label"),
+          text(yAxisEnd.x + 20, yAxisEnd.y + 26, "y", "serif-label axis-label"),
+          text(principal.x + 5, principal.y + 35, "(0,0)", "serif-label small-label"),
+          line(origin, nAxisEnd, "blue", 'marker-end="url(#arrow-blue)"'),
+          line(origin, mAxisEnd, "blue", 'marker-end="url(#arrow-blue)"'),
+          text(nAxisEnd.x + 2, nAxisEnd.y + 36, "n", "serif-label axis-label"),
+          text(mAxisEnd.x + 14, mAxisEnd.y - 4, "m", "serif-label axis-label"),
+          text(origin.x - 62, origin.y + 30, "(0,0)", "serif-label small-label"),
+          text(origin.x + 98, origin.y - 38, "Image coordinates", "serif-label caption"),
+          text(image.rect.x + 132, image.rect.y + image.rect.h + 42, "Virtual camera plane", "serif-label caption"),
+          line(principal, pClamped, "green", 'stroke-dasharray="7 8"'),
+          line(pClamped, pToPrincipalX, "guide-light"),
+          line(pToCornerX, pClamped, "blue", 'stroke-dasharray="7 8"'),
+          line(origin, pToCornerX, "blue", 'stroke-dasharray="7 8"'),
+          circle(principal, 4.5, "pinhole"),
+          circle(pClamped, 10, "point point-active"),
+          text(pClamped.x - 14, pClamped.y + (pClamped.y < image.rect.y + 44 ? 42 : -22), "p", "serif-label large-label"),
+          `<rect x="${image.rect.x + 17}" y="${image.rect.y + 16}" width="245" height="76" rx="6" class="coord-box"></rect>`,
+          text(image.rect.x + 31, image.rect.y + 43, `active: ${modeText}`, "value-label"),
+          text(image.rect.x + 31, image.rect.y + 68, `c = (${Math.round(image.cx)}, ${Math.round(image.cy)}) px`, "value-label"),
+          text(image.rect.x + 31, image.rect.y + 93, `scale = ${Math.round(image.pixelsPerUnit * state.f)} px per X/Z`, "value-label"),
+          text(image.rect.x + image.rect.w - 70, image.rect.y + image.rect.h + 104, "(b)", "panel-letter"),
+          text(image.rect.x + image.rect.w - 182, image.rect.y + image.rect.h + 74, pointWasClamped ? "point clipped to plane edge" : "", "value-label")
+        ].join("");
+
+        imageLayer.innerHTML = html;
+
+        focalValue.textContent = `f = ${fmt(state.f, 2)}`;
+        modeValue.textContent = state.mode === "virtual" ? "Virtual" : "Real";
+        camReadout.textContent = `(x, y) = (${fmt(active.x, 2)}, ${fmt(active.y, 2)})`;
+        pixelReadout.textContent = `(n, m) = (${Math.round(coords.n)}, ${Math.round(coords.m)}) = c + projected offset`;
+
+        return { principal, p, pxPerUnitScreen };
+      }
+
+      function render() {
+        renderScene();
+        renderImagePlane();
+      }
+
+      focalSlider.addEventListener("input", () => {
+        state.f = Number(focalSlider.value);
+        render();
+      });
+
+      modeButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          state.mode = button.dataset.mode;
+          modeButtons.forEach((item) => {
+            item.setAttribute("aria-pressed", String(item === button));
+          });
+          render();
+        });
+      });
+
+      svg.addEventListener("pointerdown", (event) => {
+        if (!event.target.closest("[data-drag='P']")) {
+          return;
+        }
+        state.dragging = true;
+        svg.setPointerCapture(event.pointerId);
+        state.P = screenToWorldOnPointDepth(svgPoint(event));
+        render();
+      });
+
+      svg.addEventListener("pointermove", (event) => {
+        if (!state.dragging) {
+          return;
+        }
+        state.P = screenToWorldOnPointDepth(svgPoint(event));
+        render();
+      });
+
+      function endDrag(event) {
+        if (!state.dragging) {
+          return;
+        }
+        state.dragging = false;
+        if (svg.hasPointerCapture(event.pointerId)) {
+          svg.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      svg.addEventListener("pointerup", endDrag);
+      svg.addEventListener("pointercancel", endDrag);
+
+      window.addEventListener("keydown", (event) => {
+        const step = event.shiftKey ? 0.12 : 0.05;
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        if (event.key === "ArrowLeft") state.P.X = clamp(state.P.X - step, -1.25, 1.75);
+        if (event.key === "ArrowRight") state.P.X = clamp(state.P.X + step, -1.25, 1.75);
+        if (event.key === "ArrowUp") state.P.Y = clamp(state.P.Y + step, -0.9, 1.55);
+        if (event.key === "ArrowDown") state.P.Y = clamp(state.P.Y - step, -0.9, 1.55);
+        render();
+      });
+
+      render();
+    }());
+  </script>
+</body>
+</html>

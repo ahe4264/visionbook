@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinhole Image Formation and Sensor Sampling</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #141414;
+      --muted: #55616c;
+      --paper: #ffffff;
+      --panel: #f5f7f9;
+      --line: #d6dee6;
+      --grid: #789096;
+      --cyan: #48c9ef;
+      --green: #21df24;
+      --soft-green: #b9fb97;
+      --red: #ff3044;
+      --yellow: #fff02a;
+      --orange: #d18200;
+      --teal: #6d8586;
+      --shadow: 0 18px 42px rgba(25, 37, 48, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #e8edf2;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .figure-shell {
+      width: min(1380px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .stage,
+    .controls {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .stage {
+      min-width: 0;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      min-width: 930px;
+      height: min(78vh, 760px);
+      min-height: 560px;
+      background: #fff;
+      border-radius: 6px;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .controls {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .control {
+      display: grid;
+      gap: 7px;
+    }
+
+    .control-head,
+    .readout-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .control-head strong,
+    .readout-row strong {
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #187a80;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+
+    .segmented button {
+      min-height: 36px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .segmented button:last-child {
+      border-right: 0;
+    }
+
+    .segmented button[aria-pressed="true"] {
+      background: #183f43;
+      color: #fff;
+      font-weight: 720;
+    }
+
+    .readouts {
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+      border-top: 1px solid var(--line);
+    }
+
+    .matrix {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfd;
+      color: #102023;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      overflow-x: auto;
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .axis-label,
+    .label {
+      font-family: Georgia, "Times New Roman", serif;
+      fill: #0f1113;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+      font-weight: 700;
+    }
+
+    .ui-label {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: #172026;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 4px;
+      stroke-linejoin: round;
+      font-weight: 700;
+    }
+
+    .small-label {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: #26333a;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 3px;
+      stroke-linejoin: round;
+      font-weight: 650;
+    }
+
+    .sensor-grid {
+      stroke: var(--grid);
+      stroke-width: 1.3;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .plane-edge {
+      stroke: var(--teal);
+      stroke-width: 3.2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .drag-point {
+      cursor: grab;
+    }
+
+    .drag-point:active {
+      cursor: grabbing;
+    }
+
+    @media (max-width: 980px) {
+      body {
+        padding: 10px;
+      }
+
+      .figure-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        order: 2;
+      }
+
+      svg {
+        height: 620px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="figure-shell">
+    <main class="stage" aria-label="Interactive pinhole camera geometry">
+      <svg id="figure" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+        <title id="title">Pinhole image formation and sensor discretization</title>
+        <desc id="desc">A camera center projects a 3D point through a virtual image plane and onto a discrete physical sensor grid.</desc>
+        <defs>
+          <marker id="arrow-black" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#111"></path>
+          </marker>
+          <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#18dc21"></path>
+          </marker>
+          <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#d18200"></path>
+          </marker>
+          <filter id="point-shadow" x="-80%" y="-80%" width="260%" height="260%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.28"></feDropShadow>
+          </filter>
+        </defs>
+        <rect width="1280" height="760" fill="#fff"></rect>
+        <g id="drawing"></g>
+      </svg>
+    </main>
+
+    <aside class="controls" aria-label="Camera intrinsic controls">
+      <h1>Pinhole and Sensor Sampling</h1>
+
+      <div class="control">
+        <div class="control-head"><strong>Focal length f</strong><span id="fOut">35 mm</span></div>
+        <input id="fSlider" type="range" min="25" max="60" step="1" value="35">
+      </div>
+
+      <div class="control">
+        <div class="control-head"><strong>Sensor width w</strong><span id="wOut">36 mm</span></div>
+        <input id="wSlider" type="range" min="24" max="48" step="1" value="36">
+      </div>
+
+      <div class="control">
+        <div class="control-head"><strong>Pixel resolution</strong><span id="resOut">18 x 11</span></div>
+        <input id="resSlider" type="range" min="12" max="32" step="1" value="18">
+      </div>
+
+      <div class="control">
+        <div class="control-head"><strong>Readout</strong><span id="modeOut">pixel indices</span></div>
+        <div class="segmented" role="group" aria-label="Coordinate readout mode">
+          <button type="button" data-mode="plane" aria-pressed="false">plane</button>
+          <button type="button" data-mode="sensor" aria-pressed="false">sensor</button>
+          <button type="button" data-mode="pixel" aria-pressed="true">pixel</button>
+        </div>
+      </div>
+
+      <div class="readouts" aria-live="polite">
+        <div class="readout-row"><span>Point P = (Xc, Yc, Zc)</span><strong id="pointOut">-</strong></div>
+        <div class="readout-row"><span>Projected (x, y)</span><strong id="planeOut">-</strong></div>
+        <div class="readout-row"><span>Sensor centered</span><strong id="sensorOut">-</strong></div>
+        <div class="readout-row"><span>Continuous pixel</span><strong id="pixelOut">-</strong></div>
+        <div class="readout-row"><span>Snapped pixel</span><strong id="snapOut">-</strong></div>
+        <div class="readout-row"><span>Pixel pitch</span><strong id="pitchOut">-</strong></div>
+        <div class="readout-row"><span>Horizontal FOV</span><strong id="fovOut">-</strong></div>
+      </div>
+
+      <pre id="matrixOut" class="matrix"></pre>
+      <p class="hint">Physical sensor convention: positive camera X and Y hit the sensor at -x and -y behind the pinhole.</p>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const svg = document.getElementById("figure");
+      const drawing = document.getElementById("drawing");
+      const fSlider = document.getElementById("fSlider");
+      const wSlider = document.getElementById("wSlider");
+      const resSlider = document.getElementById("resSlider");
+      const buttons = Array.from(document.querySelectorAll("[data-mode]"));
+
+      const out = {
+        f: document.getElementById("fOut"),
+        w: document.getElementById("wOut"),
+        res: document.getElementById("resOut"),
+        mode: document.getElementById("modeOut"),
+        point: document.getElementById("pointOut"),
+        plane: document.getElementById("planeOut"),
+        sensor: document.getElementById("sensorOut"),
+        pixel: document.getElementById("pixelOut"),
+        snap: document.getElementById("snapOut"),
+        pitch: document.getElementById("pitchOut"),
+        fov: document.getElementById("fovOut"),
+        matrix: document.getElementById("matrixOut")
+      };
+
+      const state = {
+        f: Number(fSlider.value),
+        w: Number(wSlider.value),
+        n: Number(resSlider.value),
+        mode: "pixel",
+        X: 7.2,
+        Y: 8.8,
+        Z: 72
+      };
+
+      const origin = { x: 590, y: 394 };
+      const basis = {
+        z: { x: 7.0, y: 0 },
+        x: { x: 6.35, y: -4.05 },
+        y: { x: 0, y: -7.45 }
+      };
+
+      const labels = {
+        plane: "camera plane (x, y)",
+        sensor: "sensor centered",
+        pixel: "pixel indices"
+      };
+
+      let dragActive = false;
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function fmt(value, digits) {
+        return Number(value).toFixed(digits);
+      }
+
+      function project(z, x, y) {
+        return {
+          x: origin.x + z * basis.z.x + x * basis.x.x + y * basis.y.x,
+          y: origin.y + z * basis.z.y + x * basis.x.y + y * basis.y.y
+        };
+      }
+
+      function pstr(point) {
+        return fmt(point.x, 1) + "," + fmt(point.y, 1);
+      }
+
+      function points(pointsArray) {
+        return pointsArray.map(pstr).join(" ");
+      }
+
+      function line(a, b, attrs) {
+        return "<line x1=\"" + fmt(a.x, 1) + "\" y1=\"" + fmt(a.y, 1) + "\" x2=\"" + fmt(b.x, 1) + "\" y2=\"" + fmt(b.y, 1) + "\" " + attrs + " />";
+      }
+
+      function poly(pointsArray, attrs) {
+        return "<polygon points=\"" + points(pointsArray) + "\" " + attrs + " />";
+      }
+
+      function text(x, y, content, attrs) {
+        return "<text x=\"" + fmt(x, 1) + "\" y=\"" + fmt(y, 1) + "\" " + attrs + ">" + content + "</text>";
+      }
+
+      function planeCorners(z, w, h) {
+        return {
+          tl: project(z, -w / 2, h / 2),
+          tr: project(z, w / 2, h / 2),
+          br: project(z, w / 2, -h / 2),
+          bl: project(z, -w / 2, -h / 2)
+        };
+      }
+
+      function pixelCorner(z, pitch, ox, oy, col, row) {
+        return project(z, (col - ox) * pitch, (oy - row) * pitch);
+      }
+
+      function pixelPolygon(z, pitch, ox, oy, col, row) {
+        return [
+          pixelCorner(z, pitch, ox, oy, col, row),
+          pixelCorner(z, pitch, ox, oy, col + 1, row),
+          pixelCorner(z, pitch, ox, oy, col + 1, row + 1),
+          pixelCorner(z, pitch, ox, oy, col, row + 1)
+        ];
+      }
+
+      function measure() {
+        const n = state.n;
+        const m = Math.max(8, Math.round(n * 0.62));
+        const pitch = state.w / n;
+        const h = m * pitch;
+        const ox = n / 2;
+        const oy = m / 2;
+        const x = state.f * state.X / state.Z;
+        const y = state.f * state.Y / state.Z;
+        const xs = -x;
+        const ys = -y;
+        const nFloat = ox + xs / pitch;
+        const mFloat = oy - ys / pitch;
+        const nSnap = clamp(Math.floor(nFloat), 0, n - 1);
+        const mSnap = clamp(Math.floor(mFloat), 0, m - 1);
+        const snapXs = (nSnap + 0.5 - ox) * pitch;
+        const snapYs = (oy - (mSnap + 0.5)) * pitch;
+        const fpx = state.f / pitch;
+        const fov = 2 * Math.atan(state.w / (2 * state.f)) * 180 / Math.PI;
+        return { n, m, pitch, h, ox, oy, x, y, xs, ys, nFloat, mFloat, nSnap, mSnap, snapXs, snapYs, fpx, fov };
+      }
+
+      function coloredCells(data) {
+        const z = -state.f;
+        const cells = [];
+        const hot = [
+          { c: data.nSnap, r: data.mSnap, fill: "var(--red)", opacity: 0.92 },
+          { c: data.nSnap - 1, r: data.mSnap, fill: "var(--red)", opacity: 0.72 },
+          { c: data.nSnap, r: data.mSnap - 1, fill: "var(--yellow)", opacity: 0.82 },
+          { c: data.nSnap - 1, r: data.mSnap - 1, fill: "var(--yellow)", opacity: 0.75 },
+          { c: data.nSnap + 1, r: data.mSnap - 2, fill: "var(--soft-green)", opacity: 0.9 },
+          { c: data.nSnap + 2, r: data.mSnap - 2, fill: "var(--soft-green)", opacity: 0.9 },
+          { c: data.nSnap + 1, r: data.mSnap - 3, fill: "var(--soft-green)", opacity: 0.78 }
+        ];
+        hot.forEach(item => {
+          if (item.c >= 0 && item.c < data.n && item.r >= 0 && item.r < data.m) {
+            cells.push(poly(pixelPolygon(z, data.pitch, data.ox, data.oy, item.c, item.r), "fill=\"" + item.fill + "\" opacity=\"" + item.opacity + "\""));
+          }
+        });
+        return cells.join("");
+      }
+
+      function gridLines(z, data) {
+        let s = "";
+        for (let c = 0; c <= data.n; c += 1) {
+          s += line(pixelCorner(z, data.pitch, data.ox, data.oy, c, 0), pixelCorner(z, data.pitch, data.ox, data.oy, c, data.m), "class=\"sensor-grid\"");
+        }
+        for (let r = 0; r <= data.m; r += 1) {
+          s += line(pixelCorner(z, data.pitch, data.ox, data.oy, 0, r), pixelCorner(z, data.pitch, data.ox, data.oy, data.n, r), "class=\"sensor-grid\"");
+        }
+        return s;
+      }
+
+      function objectScene() {
+        const z = 68;
+        const face = [
+          project(z, -1, -23),
+          project(z, 24, -23),
+          project(z, 24, 31),
+          project(z, -1, 31)
+        ];
+        const side = [
+          project(z, 24, -23),
+          project(z + 6, 21, -18),
+          project(z + 6, 21, 35),
+          project(z, 24, 31)
+        ];
+        const roof = [
+          project(z, -1, 31),
+          project(z, 24, 31),
+          project(z + 6, 21, 35),
+          project(z + 2, 8, 42),
+          project(z - 4, -7, 31)
+        ];
+        const win1 = [project(z - 0.1, 4, -11), project(z - 0.1, 11, -11), project(z - 0.1, 11, 5), project(z - 0.1, 4, 5)];
+        const win2 = [project(z - 0.1, 15, 8), project(z - 0.1, 22, 8), project(z - 0.1, 22, 23), project(z - 0.1, 15, 23)];
+        const win3 = [project(z - 0.1, 16, -19), project(z - 0.1, 23, -19), project(z - 0.1, 23, -5), project(z - 0.1, 16, -5)];
+        return [
+          poly(side, "fill=\"#b8fb98\" opacity=\"0.94\""),
+          poly(face, "fill=\"#bbfb99\" opacity=\"0.96\""),
+          poly(roof, "fill=\"var(--red)\" opacity=\"0.98\""),
+          poly(win1, "fill=\"var(--yellow)\" opacity=\"0.95\""),
+          poly(win2, "fill=\"var(--yellow)\" opacity=\"0.95\""),
+          poly(win3, "fill=\"var(--yellow)\" opacity=\"0.95\"")
+        ].join("");
+      }
+
+      function renderAxes() {
+        const yTop = { x: origin.x, y: 48 };
+        const zLeft = { x: 88, y: origin.y };
+        const zRight = { x: 1238, y: origin.y };
+        const xEnd = project(34, 34, 0);
+        const cameraLabelAnchor = { x: origin.x - 14, y: origin.y + 116 };
+        return [
+          line(zLeft, zRight, "stroke=\"#111\" stroke-width=\"3.2\" marker-end=\"url(#arrow-black)\""),
+          line(origin, yTop, "stroke=\"#111\" stroke-width=\"3.2\" marker-end=\"url(#arrow-black)\""),
+          line(origin, xEnd, "stroke=\"#111\" stroke-width=\"3.2\" marker-end=\"url(#arrow-black)\""),
+          "<circle cx=\"" + origin.x + "\" cy=\"" + origin.y + "\" r=\"13\" fill=\"#111\" />",
+          text(origin.x + 18, 53, "Y<tspan baseline-shift=\"sub\" font-size=\"30\">c</tspan>", "class=\"axis-label\" font-size=\"54\""),
+          text(1230, origin.y + 64, "Z<tspan baseline-shift=\"sub\" font-size=\"30\">c</tspan>", "class=\"axis-label\" font-size=\"54\""),
+          text(xEnd.x - 70, xEnd.y - 20, "X<tspan baseline-shift=\"sub\" font-size=\"30\">c</tspan>", "class=\"axis-label\" font-size=\"54\""),
+          text(cameraLabelAnchor.x - 154, cameraLabelAnchor.y + 10, "Camera", "class=\"label\" font-size=\"38\""),
+          text(cameraLabelAnchor.x - 124, cameraLabelAnchor.y + 50, "center", "class=\"label\" font-size=\"38\""),
+          line({ x: cameraLabelAnchor.x - 6, y: cameraLabelAnchor.y - 42 }, { x: origin.x - 8, y: origin.y + 20 }, "stroke=\"#7b8e91\" stroke-width=\"3.5\" marker-end=\"url(#arrow-black)\" opacity=\"0.9\"")
+        ].join("");
+      }
+
+      function dimensionLine(data) {
+        const sensorCenter = project(-state.f, 0, 0);
+        const y = origin.y + 288;
+        const left = { x: sensorCenter.x, y };
+        const right = { x: origin.x, y };
+        const widthA = project(-state.f, -state.w / 2, -data.h / 2 - 2);
+        const widthB = project(-state.f, state.w / 2, -data.h / 2 - 2);
+        return [
+          line({ x: sensorCenter.x, y: origin.y + 14 }, { x: sensorCenter.x, y: y + 22 }, "stroke=\"#111\" stroke-width=\"1.4\" opacity=\"0.7\""),
+          line({ x: origin.x, y: origin.y + 14 }, { x: origin.x, y: y + 22 }, "stroke=\"#111\" stroke-width=\"1.4\" opacity=\"0.7\""),
+          line(left, right, "stroke=\"#111\" stroke-width=\"3\" marker-start=\"url(#arrow-black)\" marker-end=\"url(#arrow-black)\""),
+          text((left.x + right.x) / 2 - 20, y + 52, "f", "class=\"label\" font-size=\"48\" font-style=\"italic\""),
+          line(widthA, widthB, "stroke=\"#111\" stroke-width=\"3\" marker-start=\"url(#arrow-black)\" marker-end=\"url(#arrow-black)\""),
+          text(widthA.x + 70, widthA.y + 35, "w", "class=\"label\" font-size=\"42\" font-style=\"italic\"")
+        ].join("");
+      }
+
+      function renderScene() {
+        const data = measure();
+        const sensor = planeCorners(-state.f, state.w, data.h);
+        const virtualPlane = planeCorners(state.f, state.w, data.h);
+        const pWorld = project(state.Z, state.X, state.Y);
+        const pVirtual = project(state.f, data.x, data.y);
+        const pSensor = project(-state.f, data.xs, data.ys);
+        const pSnap = project(-state.f, data.snapXs, data.snapYs);
+        const principal = project(-state.f, 0, 0);
+        const topLeft = pixelCorner(-state.f, data.pitch, data.ox, data.oy, 0, 0);
+        const topPrincipal = pixelCorner(-state.f, data.pitch, data.ox, data.oy, data.ox, 0);
+        const sensorModeText = data.nSnap + ", " + data.mSnap;
+        let dynamicLabel = "(n, m) = (" + sensorModeText + ")";
+        if (state.mode === "plane") {
+          dynamicLabel = "(x, y) = (" + fmt(data.x, 2) + ", " + fmt(data.y, 2) + ") mm";
+        } else if (state.mode === "sensor") {
+          dynamicLabel = "(xs, ys) = (" + fmt(data.xs, 2) + ", " + fmt(data.ys, 2) + ") mm";
+        }
+
+        const snapCell = poly(pixelPolygon(-state.f, data.pitch, data.ox, data.oy, data.nSnap, data.mSnap), "fill=\"none\" stroke=\"#111\" stroke-width=\"3.3\" vector-effect=\"non-scaling-stroke\"");
+        const sensorOutline = poly([sensor.tl, sensor.tr, sensor.br, sensor.bl], "fill=\"rgba(238,248,249,0.55)\" class=\"plane-edge\"");
+        const virtualOutline = poly([virtualPlane.tl, virtualPlane.tr, virtualPlane.br, virtualPlane.bl], "fill=\"rgba(229,239,239,0.72)\" class=\"plane-edge\"");
+
+        return [
+          renderAxes(),
+          objectScene(),
+          sensorOutline,
+          coloredCells(data),
+          gridLines(-state.f, data),
+          snapCell,
+          virtualOutline,
+          line(origin, pWorld, "stroke=\"#111\" stroke-width=\"2.2\" stroke-dasharray=\"7 7\" opacity=\"0.92\""),
+          line(origin, pSensor, "stroke=\"#111\" stroke-width=\"2.2\" stroke-dasharray=\"7 7\" opacity=\"0.88\""),
+          line(origin, pVirtual, "stroke=\"#6c8080\" stroke-width=\"2.2\" stroke-dasharray=\"7 7\" opacity=\"0.9\""),
+          line(pVirtual, { x: pVirtual.x + 74, y: pVirtual.y - 48 }, "stroke=\"var(--green)\" stroke-width=\"3.2\" marker-end=\"url(#arrow-green)\""),
+          line(pVirtual, { x: pVirtual.x, y: pVirtual.y - 92 }, "stroke=\"var(--green)\" stroke-width=\"3.2\" marker-end=\"url(#arrow-green)\""),
+          text(pVirtual.x + 70, pVirtual.y - 55, "x", "class=\"label\" font-size=\"34\" font-style=\"italic\""),
+          text(pVirtual.x + 10, pVirtual.y - 86, "y", "class=\"label\" font-size=\"34\" font-style=\"italic\""),
+          "<circle cx=\"" + fmt(pVirtual.x, 1) + "\" cy=\"" + fmt(pVirtual.y, 1) + "\" r=\"9\" fill=\"var(--cyan)\" stroke=\"#111\" stroke-width=\"3\" filter=\"url(#point-shadow)\" />",
+          "<circle cx=\"" + fmt(pSensor.x, 1) + "\" cy=\"" + fmt(pSensor.y, 1) + "\" r=\"9\" fill=\"var(--cyan)\" stroke=\"#111\" stroke-width=\"3\" filter=\"url(#point-shadow)\" />",
+          "<circle cx=\"" + fmt(pSnap.x, 1) + "\" cy=\"" + fmt(pSnap.y, 1) + "\" r=\"5\" fill=\"#111\" />",
+          "<circle id=\"pointP\" class=\"drag-point\" cx=\"" + fmt(pWorld.x, 1) + "\" cy=\"" + fmt(pWorld.y, 1) + "\" r=\"13\" fill=\"var(--cyan)\" stroke=\"#111\" stroke-width=\"3.5\" filter=\"url(#point-shadow)\" tabindex=\"0\" role=\"slider\" aria-label=\"3D point P\" />",
+          text(pWorld.x - 34, pWorld.y - 30, "P", "class=\"label\" font-size=\"48\""),
+          line(topLeft, topPrincipal, "stroke=\"var(--orange)\" stroke-width=\"2.6\" stroke-dasharray=\"5 5\" marker-end=\"url(#arrow-orange)\""),
+          line(topPrincipal, principal, "stroke=\"var(--orange)\" stroke-width=\"2.6\" stroke-dasharray=\"5 5\" marker-end=\"url(#arrow-orange)\""),
+          "<circle cx=\"" + fmt(principal.x, 1) + "\" cy=\"" + fmt(principal.y, 1) + "\" r=\"6\" fill=\"#111\" />",
+          text(principal.x + 12, principal.y - 12, "(ox, oy)", "class=\"small-label\" font-size=\"16\""),
+          text(sensor.tl.x - 35, sensor.tl.y - 42, "Image plane / sensor", "class=\"label\" font-size=\"32\""),
+          text(sensor.tl.x + 46, sensor.tl.y + 150, "N pixels", "class=\"label\" font-size=\"31\" transform=\"rotate(-36 " + fmt(sensor.tl.x + 46, 1) + " " + fmt(sensor.tl.y + 150, 1) + ")\""),
+          text(sensor.bl.x - 58, sensor.bl.y - 120, "M pixels", "class=\"label\" font-size=\"31\" transform=\"rotate(-90 " + fmt(sensor.bl.x - 58, 1) + " " + fmt(sensor.bl.y - 120, 1) + ")\""),
+          text(virtualPlane.br.x - 190, virtualPlane.br.y - 4, "Virtual image plane", "class=\"label\" font-size=\"31\" transform=\"rotate(-43 " + fmt(virtualPlane.br.x - 190, 1) + " " + fmt(virtualPlane.br.y - 4, 1) + ")\""),
+          text(1025, origin.y - 44, "Optical /", "class=\"label\" font-size=\"39\""),
+          text(970, origin.y - 4, "principal axis", "class=\"label\" font-size=\"39\""),
+          text(pSensor.x + 18, pSensor.y + 5, dynamicLabel, "class=\"small-label\" font-size=\"16\""),
+          text(sensor.br.x - 92, sensor.br.y + 38, "pixel size = " + fmt(data.pitch, 2) + " mm", "class=\"small-label\" font-size=\"15\""),
+          dimensionLine(data)
+        ].join("");
+      }
+
+      function updateReadouts() {
+        const data = measure();
+        const modeNames = { plane: "camera-plane", sensor: "sensor-centered", pixel: "pixel indices" };
+        out.f.textContent = state.f + " mm";
+        out.w.textContent = state.w + " mm";
+        out.res.textContent = data.n + " x " + data.m;
+        out.mode.textContent = modeNames[state.mode];
+        out.point.textContent = "(" + fmt(state.X, 1) + ", " + fmt(state.Y, 1) + ", " + fmt(state.Z, 1) + ") mm";
+        out.plane.textContent = "(" + fmt(data.x, 2) + ", " + fmt(data.y, 2) + ") mm";
+        out.sensor.textContent = "(" + fmt(data.xs, 2) + ", " + fmt(data.ys, 2) + ") mm";
+        out.pixel.textContent = "(" + fmt(data.nFloat, 2) + ", " + fmt(data.mFloat, 2) + ")";
+        out.snap.textContent = "(" + data.nSnap + ", " + data.mSnap + ")";
+        out.pitch.textContent = fmt(data.pitch, 3) + " mm/px";
+        out.fov.textContent = fmt(data.fov, 1) + " deg";
+        out.matrix.textContent =
+          "K_sensor =\n" +
+          "[ " + fmt(-data.fpx, 1).padStart(7) + "   0.0  " + fmt(data.ox, 1).padStart(5) + " ]\n" +
+          "[    0.0 " + fmt(data.fpx, 1).padStart(7) + "  " + fmt(data.oy, 1).padStart(5) + " ]\n" +
+          "[    0.0    0.0    1.0 ]";
+        buttons.forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
+        });
+      }
+
+      function render() {
+        drawing.innerHTML = renderScene();
+        updateReadouts();
+      }
+
+      function svgPoint(event) {
+        const rect = svg.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * 1280 / rect.width;
+        const y = (event.clientY - rect.top) * 760 / rect.height;
+        return { x, y };
+      }
+
+      function setPointFromSvg(point) {
+        const rawZ = (point.x - origin.x) / basis.z.x;
+        const z = clamp(rawZ, state.f + 12, 96);
+        const rawX = (point.x - origin.x - z * basis.z.x) / basis.x.x;
+        const x = clamp(rawX, -13, 22);
+        const rawY = (point.y - origin.y - x * basis.x.y) / basis.y.y;
+        const y = clamp(rawY, -13, 20);
+        state.X = x;
+        state.Y = y;
+        state.Z = Math.max(z, state.f + 10);
+        render();
+      }
+
+      fSlider.addEventListener("input", () => {
+        state.f = Number(fSlider.value);
+        state.Z = Math.max(state.Z, state.f + 12);
+        render();
+      });
+
+      wSlider.addEventListener("input", () => {
+        state.w = Number(wSlider.value);
+        render();
+      });
+
+      resSlider.addEventListener("input", () => {
+        state.n = Number(resSlider.value);
+        render();
+      });
+
+      buttons.forEach(button => {
+        button.addEventListener("click", () => {
+          state.mode = button.dataset.mode;
+          render();
+        });
+      });
+
+      svg.addEventListener("pointerdown", event => {
+        if (event.target && event.target.id === "pointP") {
+          dragActive = true;
+          svg.setPointerCapture(event.pointerId);
+          setPointFromSvg(svgPoint(event));
+        }
+      });
+
+      svg.addEventListener("pointermove", event => {
+        if (dragActive) {
+          setPointFromSvg(svgPoint(event));
+        }
+      });
+
+      svg.addEventListener("pointerup", event => {
+        dragActive = false;
+        if (svg.hasPointerCapture(event.pointerId)) {
+          svg.releasePointerCapture(event.pointerId);
+        }
+      });
+
+      svg.addEventListener("pointercancel", () => {
+        dragActive = false;
+      });
+
+      svg.addEventListener("keydown", event => {
+        if (event.target && event.target.id === "pointP") {
+          const step = event.shiftKey ? 2 : 0.7;
+          if (event.key === "ArrowLeft") state.X -= step;
+          if (event.key === "ArrowRight") state.X += step;
+          if (event.key === "ArrowUp") state.Y += step;
+          if (event.key === "ArrowDown") state.Y -= step;
+          if (event.key === "PageUp") state.Z += step;
+          if (event.key === "PageDown") state.Z -= step;
+          state.X = clamp(state.X, -13, 22);
+          state.Y = clamp(state.Y, -13, 20);
+          state.Z = clamp(state.Z, state.f + 12, 96);
+          render();
+        }
+      });
+
+      render();
+    }());
+  </script>
+</body>
+</html>

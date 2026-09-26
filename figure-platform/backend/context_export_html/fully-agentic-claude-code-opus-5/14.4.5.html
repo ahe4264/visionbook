@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parameter Curves on a Parametric Surface</title>
+<style>
+  :root{
+    --orange:#E8901F;
+    --orange-dk:#C4760F;
+    --purple:#B354A8;
+    --purple-dk:#8E3C85;
+    --ink:#1b1b1f;
+    --muted:#5d6068;
+    --line:#d8dae0;
+    --bg:#ffffff;
+    --panel:#ffffff;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:#f4f5f7;color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1280px;margin:0 auto;padding:18px 18px 48px;}
+  header h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:.2px;}
+  header p{margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:1.5;max-width:900px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        box-shadow:0 1px 2px rgba(16,18,24,.05);}
+  .stage{display:grid;grid-template-columns:minmax(0,1fr) 128px minmax(0,1.35fr);
+         gap:0;align-items:stretch;padding:8px;}
+  .panel{position:relative;min-width:0;}
+  .panel canvas{display:block;width:100%;height:420px;border-radius:8px;}
+  #uvcanvas{cursor:crosshair;}
+  #xyzcanvas{cursor:grab;}
+  #xyzcanvas.drag{cursor:grabbing;}
+  .cap{position:absolute;left:10px;bottom:6px;font-size:11.5px;color:var(--muted);
+       letter-spacing:.3px;text-transform:uppercase;font-weight:600;}
+  .hint{position:absolute;right:10px;bottom:6px;font-size:11px;color:#9aa0ab;}
+  .arrowcell{display:flex;align-items:center;justify-content:center;}
+  .arrowcell svg{width:124px;height:150px;overflow:visible;}
+  .controls{margin-top:14px;padding:14px 16px 16px;}
+  .row{display:flex;flex-wrap:wrap;gap:14px 20px;align-items:flex-end;}
+  .fieldgrp{display:flex;flex-direction:column;gap:5px;}
+  .fieldgrp label{font-size:11.5px;color:var(--muted);font-weight:600;letter-spacing:.3px;}
+  .eqline{display:flex;align-items:center;gap:6px;}
+  .eqline .lhs{font-family:Georgia,"Times New Roman",serif;font-style:italic;font-size:15px;width:56px;text-align:right;color:#2a2c33;}
+  input[type=text]{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fbfbfc;
+    color:var(--ink);width:210px;}
+  input[type=text].num{width:66px;text-align:center;}
+  input[type=text]:focus{outline:2px solid #b9d4ff;border-color:#7fb0f5;}
+  input.bad{border-color:#e05252;background:#fff5f5;}
+  select{font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fbfbfc;}
+  .sliderbox{display:flex;flex-direction:column;gap:3px;width:100%;flex:0 0 auto;}
+  .sliderbox .top{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;}
+  .sliderbox .top b{font-family:Georgia,serif;font-style:italic;font-weight:600;font-size:15px;}
+  .sliderbox .top span{font-family:"SFMono-Regular",Consolas,monospace;font-size:12.5px;color:var(--muted);}
+  input[type=range]{width:100%;accent-color:#888;height:20px;}
+  input#uslider{accent-color:var(--orange);}
+  input#vslider{accent-color:var(--purple);}
+  .chips{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;color:#33363d;}
+  .chips label{display:flex;gap:6px;align-items:center;cursor:pointer;}
+  button{font-size:13px;padding:7px 13px;border-radius:6px;border:1px solid var(--line);
+    background:#fff;cursor:pointer;color:#2a2c33;font-weight:600;}
+  button:hover{background:#f2f3f6;}
+  button.on{background:#2a2c33;color:#fff;border-color:#2a2c33;}
+  .readout{margin-top:12px;padding:12px 16px;font-size:13px;line-height:1.65;color:#33363d;}
+  .readout code{font-family:"SFMono-Regular",Consolas,monospace;font-size:12.5px;background:#f2f3f6;
+     padding:1px 5px;border-radius:4px;}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:baseline;margin-right:3px;}
+  .err{color:#c33;font-size:12.5px;min-height:16px;margin-top:8px;font-family:"SFMono-Regular",Consolas,monospace;}
+  .mi{font-family:Georgia,serif;font-style:italic;}
+  hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
+  @media (max-width: 880px){
+    .stage{grid-template-columns:1fr;}
+    .arrowcell{transform:rotate(90deg);height:96px;}
+    .panel canvas{height:340px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>From the <span class="mi">uv</span>-plane to curves on a parametric surface</h1>
+    <p>A parametrization <span class="mi">r</span>(<span class="mi">u</span>,&nbsp;<span class="mi">v</span>) = ⟨<span class="mi">x</span>(<span class="mi">u</span>,<span class="mi">v</span>), <span class="mi">y</span>(<span class="mi">u</span>,<span class="mi">v</span>), <span class="mi">z</span>(<span class="mi">u</span>,<span class="mi">v</span>)⟩ maps the flat parameter domain on the left onto the surface on the right.
+    A <b>vertical line <span class="mi">u</span> = constant</b> maps to the orange <b>constant-<span class="mi">u</span> curve</b>; a <b>horizontal line <span class="mi">v</span> = constant</b> maps to the purple <b>constant-<span class="mi">v</span> curve</b>.
+    The whole families of these curves are the curvilinear coordinate grid drawn in gray on the surface.</p>
+  </header>
+
+  <div class="card stage">
+    <div class="panel">
+      <canvas id="uvcanvas"></canvas>
+      <div class="cap">Parameter domain</div>
+      <div class="hint">drag to move the lines</div>
+    </div>
+    <div class="arrowcell">
+      <svg viewBox="0 0 124 150" aria-label="maps to">
+        <defs>
+          <linearGradient id="agrad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stop-color="#fdf0d4"/>
+            <stop offset="1" stop-color="#f7d99c"/>
+          </linearGradient>
+        </defs>
+        <path d="M 6,126
+                 C 14,86 40,46 84,34
+                 L 80,14
+                 L 120,49
+                 L 76,73
+                 L 74,54
+                 C 44,66 26,96 22,128
+                 Z"
+              fill="url(#agrad)" stroke="#a7abb3" stroke-width="2.4" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="panel">
+      <canvas id="xyzcanvas"></canvas>
+      <div class="cap">Surface in <span class="mi" style="text-transform:none">xyz</span>-space</div>
+      <div class="hint">drag to rotate</div>
+    </div>
+  </div>
+
+  <div class="card controls">
+    <div class="row">
+      <div class="fieldgrp">
+        <label>Parametrization r(u, v)</label>
+        <div class="eqline"><span class="lhs">x(u,v) =</span><input type="text" id="fx" spellcheck="false"></div>
+        <div class="eqline"><span class="lhs">y(u,v) =</span><input type="text" id="fy" spellcheck="false"></div>
+        <div class="eqline"><span class="lhs">z(u,v) =</span><input type="text" id="fz" spellcheck="false"></div>
+      </div>
+      <div class="fieldgrp">
+        <label>Parameter domain</label>
+        <div class="eqline"><span class="lhs">u from</span><input type="text" class="num" id="umin"><span class="lhs" style="width:auto">to</span><input type="text" class="num" id="umax"></div>
+        <div class="eqline"><span class="lhs">v from</span><input type="text" class="num" id="vmin"><span class="lhs" style="width:auto">to</span><input type="text" class="num" id="vmax"></div>
+        <div class="eqline" style="margin-top:4px"><span class="lhs" style="width:auto;font-style:normal;font-family:inherit;font-size:11.5px;color:var(--muted);font-weight:600">Example:</span>
+          <select id="preset">
+            <option value="patch">Curved patch (default)</option>
+            <option value="cone">Cone: ⟨u cos v, u sin v, u⟩</option>
+            <option value="sphere">Sphere</option>
+            <option value="cyl">Cylinder</option>
+            <option value="helicoid">Helicoid</option>
+            <option value="torus">Torus</option>
+            <option value="saddle">Saddle z = u² − v²</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;flex:1 1 320px;min-width:300px">
+        <div class="sliderbox">
+          <div class="top"><span><span class="sw" style="background:var(--orange)"></span>constant-<b>u</b> curve at <b>u</b> = <span id="ulab"></span></span><span>varies <span class="mi">v</span></span></div>
+          <input type="range" id="uslider" min="0" max="1000" value="500">
+        </div>
+        <div class="sliderbox">
+          <div class="top"><span><span class="sw" style="background:var(--purple)"></span>constant-<b>v</b> curve at <b>v</b> = <span id="vlab"></span></span><span>varies <span class="mi">u</span></span></div>
+          <input type="range" id="vslider" min="0" max="1000" value="500">
+        </div>
+      </div>
+    </div>
+    <hr class="sep">
+    <div class="chips">
+      <label><input type="checkbox" id="showgrid" checked> coordinate grid (families of <span class="mi">u</span>- and <span class="mi">v</span>-curves)</label>
+      <label><input type="checkbox" id="showtan"> tangent vectors <span class="mi">r</span><sub>u</sub>, <span class="mi">r</span><sub>v</sub></label>
+      <label><input type="checkbox" id="showpt" checked> image point <span class="mi">r</span>(<span class="mi">u</span>,<span class="mi">v</span>)</label>
+      <button id="sweep">▶ Sweep</button>
+      <button id="reset">Reset view</button>
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card readout" id="readout"></div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Tiny expression compiler:  "u*cos(v)"  ->  f(u,v)
+   Recursive-descent, supports + - * / ^, unary -, functions,
+   constants pi/e, and implicit multiplication (2u, 3sin(v)).
+   ============================================================ */
+const FUNCS = {
+  sin:Math.sin, cos:Math.cos, tan:Math.tan, asin:Math.asin, acos:Math.acos,
+  atan:Math.atan, sinh:Math.sinh, cosh:Math.cosh, tanh:Math.tanh,
+  exp:Math.exp, ln:Math.log, log:Math.log, log10:Math.log10,
+  sqrt:Math.sqrt, abs:Math.abs, sign:Math.sign, floor:Math.floor, ceil:Math.ceil,
+  atan2:Math.atan2, pow:Math.pow, min:Math.min, max:Math.max
+};
+const CONSTS = { pi:Math.PI, e:Math.E, PI:Math.PI };
+
+function tokenize(s){
+  const t=[]; let i=0;
+  while(i<s.length){
+    const c=s[i];
+    if(/\s/.test(c)){ i++; continue; }
+    if(/[0-9.]/.test(c)){
+      let j=i; while(j<s.length && /[0-9.]/.test(s[j])) j++;
+      const txt=s.slice(i,j);
+      if(isNaN(parseFloat(txt))) throw new Error("bad number '"+txt+"'");
+      t.push({k:'num', v:parseFloat(txt)}); i=j; continue;
+    }
+    if(/[A-Za-z_]/.test(c)){
+      let j=i; while(j<s.length && /[A-Za-z_0-9]/.test(s[j])) j++;
+      t.push({k:'id', v:s.slice(i,j)}); i=j; continue;
+    }
+    if("+-*/^(),".indexOf(c)>=0){ t.push({k:'op', v:c}); i++; continue; }
+    throw new Error("unexpected character '"+c+"'");
+  }
+  return t;
+}
+
+function compile(src){
+  const T=tokenize(src); let p=0;
+  const peek=()=>T[p];
+  const eat=(k,v)=>{ const tk=T[p]; if(!tk||tk.k!==k||(v!==undefined&&tk.v!==v))
+      throw new Error("expected "+(v||k)); p++; return tk; };
+
+  function parseExpr(){
+    let node=parseTerm();
+    while(peek() && peek().k==='op' && (peek().v==='+'||peek().v==='-')){
+      const op=T[p++].v; const rhs=parseTerm();
+      const L=node, R=rhs;
+      node = op==='+' ? (u,v)=>L(u,v)+R(u,v) : (u,v)=>L(u,v)-R(u,v);
+    }
+    return node;
+  }
+  function startsAtom(tk){
+    if(!tk) return false;
+    if(tk.k==='num'||tk.k==='id') return true;
+    return tk.k==='op' && tk.v==='(';
+  }
+  function parseTerm(){
+    let node=parseUnary();
+    for(;;){
+      const tk=peek();
+      if(tk && tk.k==='op' && (tk.v==='*'||tk.v==='/')){
+        const op=T[p++].v; const R=parseUnary(); const L=node;
+        node = op==='*' ? (u,v)=>L(u,v)*R(u,v) : (u,v)=>L(u,v)/R(u,v);
+      } else if(startsAtom(tk)){            // implicit multiplication
+        const R=parseUnary(); const L=node;
+        node = (u,v)=>L(u,v)*R(u,v);
+      } else break;
+    }
+    return node;
+  }
+  function parseUnary(){
+    const tk=peek();
+    if(tk && tk.k==='op' && (tk.v==='-'||tk.v==='+')){
+      const op=T[p++].v; const R=parseUnary();
+      return op==='-' ? (u,v)=>-R(u,v) : R;
+    }
+    return parsePow();
+  }
+  function parsePow(){
+    const base=parseAtom();
+    const tk=peek();
+    if(tk && tk.k==='op' && tk.v==='^'){
+      p++; const ex=parseUnary();             // right-associative
+      return (u,v)=>Math.pow(base(u,v), ex(u,v));
+    }
+    return base;
+  }
+  function parseAtom(){
+    const tk=peek();
+    if(!tk) throw new Error("unexpected end of expression");
+    if(tk.k==='num'){ p++; const c=tk.v; return ()=>c; }
+    if(tk.k==='op' && tk.v==='('){ p++; const e=parseExpr(); eat('op',')'); return e; }
+    if(tk.k==='id'){
+      p++; const name=tk.v;
+      if(peek() && peek().k==='op' && peek().v==='('){
+        p++; const args=[];
+        if(!(peek() && peek().k==='op' && peek().v===')')){
+          args.push(parseExpr());
+          while(peek() && peek().k==='op' && peek().v===','){ p++; args.push(parseExpr()); }
+        }
+        eat('op',')');
+        const f=FUNCS[name];
+        if(!f) throw new Error("unknown function '"+name+"'");
+        if(args.length===1){ const a=args[0]; return (u,v)=>f(a(u,v)); }
+        if(args.length===2){ const a=args[0],b=args[1]; return (u,v)=>f(a(u,v),b(u,v)); }
+        return (u,v)=>f.apply(null,args.map(g=>g(u,v)));
+      }
+      if(name==='u') return (u,v)=>u;
+      if(name==='v') return (u,v)=>v;
+      if(name in CONSTS){ const c=CONSTS[name]; return ()=>c; }
+      throw new Error("unknown symbol '"+name+"'");
+    }
+    throw new Error("unexpected '"+tk.v+"'");
+  }
+  const fn=parseExpr();
+  if(p<T.length) throw new Error("unexpected '"+T[p].v+"'");
+  // sanity check
+  const test=fn(1,1);
+  if(typeof test!=='number') throw new Error("expression is not numeric");
+  return fn;
+}
+
+/* ============================================================
+   Presets
+   ============================================================ */
+const PRESETS = {
+  patch:   {x:"v", y:"u", z:"4 - 0.18*u^2 - 0.10*v^2", umin:0, umax:4, vmin:0, vmax:3, u0:2.55, v0:0.95,
+            az:26, el:19},
+  cone:    {x:"u*cos(v)", y:"u*sin(v)", z:"u", umin:0, umax:2.2, vmin:0, vmax:6.283, u0:1.4, v0:1.0, az:32, el:22},
+  sphere:  {x:"2*sin(u)*cos(v)", y:"2*sin(u)*sin(v)", z:"2*cos(u)", umin:0, umax:3.1416, vmin:0, vmax:6.283, u0:1.1, v0:1.0, az:30, el:18},
+  cyl:     {x:"1.6*cos(u)", y:"1.6*sin(u)", z:"v", umin:0, umax:6.283, vmin:0, vmax:3, u0:1.2, v0:1.6, az:30, el:16},
+  helicoid:{x:"u*cos(v)", y:"u*sin(v)", z:"0.5*v", umin:0, umax:2, vmin:0, vmax:6.283, u0:1.2, v0:2.4, az:34, el:24},
+  torus:   {x:"(2+0.8*cos(v))*cos(u)", y:"(2+0.8*cos(v))*sin(u)", z:"0.8*sin(v)", umin:0, umax:6.283, vmin:0, vmax:6.283, u0:1.0, v0:1.4, az:36, el:26},
+  saddle:  {x:"u", y:"v", z:"u^2 - v^2", umin:-1.6, umax:1.6, vmin:-1.6, vmax:1.6, u0:0.6, v0:-0.5, az:34, el:22}
+};
+
+/* ============================================================
+   State
+   ============================================================ */
+const S = {
+  sx:"", sy:"", sz:"",
+  fx:null, fy:null, fz:null,
+  umin:0, umax:4, vmin:0, vmax:3,
+  u0:2.55, v0:0.95,
+  az:26*Math.PI/180, el:19*Math.PI/180,
+  showGrid:true, showTan:false, showPt:true,
+  sweeping:false
+};
+const NGRID = 5;          // number of interior-ish grid curves per family
+const NS    = 40;         // surface tessellation
+const NC    = 110;        // samples along a highlighted curve
+
+const $ = id => document.getElementById(id);
+const uvC = $('uvcanvas'), xyzC = $('xyzcanvas');
+const uvX = uvC.getContext('2d'), xyzX = xyzC.getContext('2d');
+
+function r(u,v){ return [S.fx(u,v), S.fy(u,v), S.fz(u,v)]; }
+function finite(P){ return isFinite(P[0])&&isFinite(P[1])&&isFinite(P[2]); }
+
+/* ---------- canvas sizing ---------- */
+function fit(cv, ctx){
+  const dpr = window.devicePixelRatio||1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if(cv.width!==Math.round(w*dpr) || cv.height!==Math.round(h*dpr)){
+    cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  }
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {w,h};
+}
+
+/* ---------- rich text (roman + italic serif math) ---------- */
+function richWidth(ctx, parts, size){
+  let w=0;
+  for(const [txt,it] of parts){
+    ctx.font = (it?'italic ':'')+size+'px Georgia, "Times New Roman", serif';
+    w += ctx.measureText(txt).width;
+  }
+  return w;
+}
+function rich(ctx, parts, x, y, size, align){
+  const w = richWidth(ctx, parts, size);
+  let cx = align==='center' ? x-w/2 : align==='right' ? x-w : x;
+  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
+  for(const [txt,it] of parts){
+    ctx.font = (it?'italic ':'')+size+'px Georgia, "Times New Roman", serif';
+    ctx.fillText(txt, cx, y);
+    cx += ctx.measureText(txt).width;
+  }
+  return w;
+}
+function arrowHead(ctx, x, y, dx, dy, len, wid, color){
+  const L=Math.hypot(dx,dy); if(L<1e-9) return;
+  dx/=L; dy/=L;
+  const px=-dy, py=dx;
+  ctx.beginPath();
+  ctx.moveTo(x,y);
+  ctx.lineTo(x-dx*len+px*wid, y-dy*len+py*wid);
+  ctx.lineTo(x-dx*len-px*wid, y-dy*len-py*wid);
+  ctx.closePath(); ctx.fillStyle=color; ctx.fill();
+}
+
+/* ============================================================
+   LEFT PANEL : the uv parameter plane
+   ============================================================ */
+function drawUV(){
+  const {w,h} = fit(uvC, uvX);
+  const ctx = uvX;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+
+  // world window: domain plus the origin, padded
+  let x0=Math.min(S.umin,0), x1=Math.max(S.umax,0);
+  let y0=Math.min(S.vmin,0), y1=Math.max(S.vmax,0);
+  const padx=(x1-x0)*0.30+1e-6, pady=(y1-y0)*0.30+1e-6;
+  x0-=padx*0.55; x1+=padx; y0-=pady*0.55; y1+=pady;
+  const m = {l:26,r:34,t:30,b:26};
+  const sc = Math.min((w-m.l-m.r)/(x1-x0), (h-m.t-m.b)/(y1-y0));
+  const ox = m.l + ((w-m.l-m.r) - sc*(x1-x0))/2;
+  const oy = h-m.b - ((h-m.t-m.b) - sc*(y1-y0))/2;
+  const X = u => ox + sc*(u-x0);
+  const Y = v => oy - sc*(v-y0);
+
+  // parameter domain rectangle
+  ctx.fillStyle='#f7f8fa';
+  ctx.fillRect(X(S.umin), Y(S.vmax), sc*(S.umax-S.umin), sc*(S.vmax-S.vmin));
+  ctx.strokeStyle='#dfe1e7'; ctx.lineWidth=1;
+  ctx.strokeRect(X(S.umin), Y(S.vmax), sc*(S.umax-S.umin), sc*(S.vmax-S.vmin));
+
+  // families of constant-u / constant-v lines (the grid that maps to the surface grid)
+  if(S.showGrid){
+    ctx.strokeStyle='#c2c5cc'; ctx.lineWidth=1;
+    for(const uu of gridVals(S.umin,S.umax)){
+      ctx.beginPath(); ctx.moveTo(X(uu),Y(S.vmin)); ctx.lineTo(X(uu),Y(S.vmax)); ctx.stroke();
+    }
+    for(const vv of gridVals(S.vmin,S.vmax)){
+      ctx.beginPath(); ctx.moveTo(X(S.umin),Y(vv)); ctx.lineTo(X(S.umax),Y(vv)); ctx.stroke();
+    }
+  }
+
+  // axes
+  ctx.strokeStyle='#111'; ctx.lineWidth=2.1; ctx.lineCap='butt';
+  const axY = Y(0), axX = X(0);
+  ctx.beginPath(); ctx.moveTo(ox, axY); ctx.lineTo(w-m.r+8, axY); ctx.stroke();       // u axis
+  ctx.beginPath(); ctx.moveTo(axX, oy); ctx.lineTo(axX, m.t-14); ctx.stroke();        // v axis
+  arrowHead(ctx, w-m.r+8, axY, 1, 0, 13, 5.4, '#111');
+  arrowHead(ctx, axX, m.t-14, 0, -1, 13, 5.4, '#111');
+  ctx.fillStyle='#111';
+  rich(ctx, [['u',true]], w-m.r+4, axY-12, 21, 'right');
+  rich(ctx, [['v',true]], axX+11, m.t-16, 21, 'left');
+
+  // the two highlighted parameter lines
+  const yTop = Y(S.vmax), yBot = Y(S.vmin), xL = X(S.umin), xR = X(S.umax);
+  ctx.lineCap='round';
+  // v = const  (horizontal, purple)
+  ctx.strokeStyle=getCSS('--purple'); ctx.lineWidth=4.2;
+  ctx.beginPath(); ctx.moveTo(xL, Y(S.v0)); ctx.lineTo(xR, Y(S.v0)); ctx.stroke();
+  // u = const  (vertical, orange)
+  ctx.strokeStyle=getCSS('--orange'); ctx.lineWidth=4.2;
+  ctx.beginPath(); ctx.moveTo(X(S.u0), yBot); ctx.lineTo(X(S.u0), yTop); ctx.stroke();
+
+  // labels
+  ctx.fillStyle='#1b1b1f';
+  const lu = [['u',true],[' constant',false]];
+  let lx = X(S.u0)+10, ly = yTop+20;
+  if(lx + richWidth(ctx,lu,18) > w-6){ lx = X(S.u0)-10; rich(ctx,lu,lx,ly,18,'right'); }
+  else rich(ctx,lu,lx,ly,18,'left');
+  const lv = [['v',true],[' constant',false]];
+  let vx = xR-4, vy = Y(S.v0)-11;
+  if(vy<12) vy = Y(S.v0)+22;
+  rich(ctx,lv,vx,vy,18,'right');
+
+  // intersection point
+  if(S.showPt){
+    ctx.beginPath(); ctx.arc(X(S.u0), Y(S.v0), 5.0, 0, 7); ctx.fillStyle='#1b1b1f'; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1.6; ctx.stroke();
+    ctx.fillStyle='#1b1b1f';
+    rich(ctx, [['(',false],['u',true],[', ',false],['v',true],[')',false]],
+         X(S.u0)+9, Y(S.v0)+20, 15, 'left');
+  }
+  uvMap = {X,Y,sc,x0,y0,ox,oy};
+}
+let uvMap=null;
+function getCSS(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function gridVals(a,b){
+  const out=[];
+  for(let k=0;k<=NGRID;k++) out.push(a + (b-a)*k/NGRID);
+  return out;
+}
+
+/* ============================================================
+   RIGHT PANEL : the surface in xyz-space
+   ============================================================ */
+function camera(){
+  const az=S.az, el=S.el;
+  const d  = [Math.cos(el)*Math.cos(az), Math.cos(el)*Math.sin(az), Math.sin(el)]; // toward camera
+  const rt = [-Math.sin(az), Math.cos(az), 0];
+  const up = [-Math.sin(el)*Math.cos(az), -Math.sin(el)*Math.sin(az), Math.cos(el)];
+  return {d,rt,up};
+}
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+function norm(a){ const L=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/L,a[1]/L,a[2]/L]; }
+
+function drawXYZ(){
+  const {w,h} = fit(xyzC, xyzX);
+  const ctx = xyzX;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+  const cam = camera();
+
+  /* --- tessellate the surface --- */
+  const P = new Array(NS+1);
+  let bb=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<=NS;i++){
+    P[i]=new Array(NS+1);
+    const u = S.umin + (S.umax-S.umin)*i/NS;
+    for(let j=0;j<=NS;j++){
+      const v = S.vmin + (S.vmax-S.vmin)*j/NS;
+      const p = r(u,v);
+      P[i][j] = p;
+      if(finite(p)){
+        for(let k=0;k<3;k++){ if(p[k]<bb[k]) bb[k]=p[k]; if(p[k]>bb[3+k]) bb[3+k]=p[k]; }
+      }
+    }
+  }
+  if(!isFinite(bb[0])){ ctx.fillStyle='#999'; ctx.font='14px sans-serif';
+    ctx.fillText('surface is undefined on this domain', 20, 30); return; }
+  for(let k=0;k<3;k++){ bb[k]=Math.min(bb[k],0); bb[3+k]=Math.max(bb[3+k],0); }
+  const span = Math.max(bb[3]-bb[0], bb[4]-bb[1], bb[5]-bb[2], 1e-6);
+
+  /* axis endpoints */
+  const axNeg=[],axPos=[];
+  for(let k=0;k<3;k++){
+    axPos[k] = Math.max(bb[3+k], 0.34*span)*1.16;
+    axNeg[k] = Math.min(bb[k], 0)*1.16;
+  }
+
+  /* --- fit to canvas --- */
+  const flat = p => [dot(p,cam.rt), dot(p,cam.up)];
+  let mnx=Infinity,mny=Infinity,mxx=-Infinity,mxy=-Infinity;
+  const consider = p => { if(!finite(p)) return; const q=flat(p);
+    if(q[0]<mnx)mnx=q[0]; if(q[0]>mxx)mxx=q[0]; if(q[1]<mny)mny=q[1]; if(q[1]>mxy)mxy=q[1]; };
+  for(let i=0;i<=NS;i+=2) for(let j=0;j<=NS;j+=2) consider(P[i][j]);
+  for(let k=0;k<3;k++){
+    const a=[0,0,0]; a[k]=axPos[k]; consider(a);
+    const b=[0,0,0]; b[k]=axNeg[k]; consider(b);
+  }
+  const padPx = 46;
+  const sc = Math.min((w-2*padPx)/Math.max(mxx-mnx,1e-6), (h-2*padPx)/Math.max(mxy-mny,1e-6));
+  const cx = w/2 - sc*(mnx+mxx)/2, cy = h/2 + sc*(mny+mxy)/2;
+  const proj = p => { const q=flat(p); return [cx+sc*q[0], cy-sc*q[1]]; };
+  const depth = p => dot(p,cam.d);
+  const eps = span*0.014;
+
+  /* --- axes (drawn behind the surface, as in the textbook figure) --- */
+  ctx.lineCap='butt'; ctx.lineJoin='round';
+  const names=['x','y','z'];
+  for(let k=0;k<3;k++){
+    const a=[0,0,0]; a[k]=axNeg[k]===0? 0 : axNeg[k];
+    const b=[0,0,0]; b[k]=axPos[k];
+    const A=proj(a), B=proj(b);
+    ctx.strokeStyle='#111'; ctx.lineWidth=2.1;
+    ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.stroke();
+    arrowHead(ctx, B[0],B[1], B[0]-A[0], B[1]-A[1], 14, 5.6, '#111');
+    const dx=B[0]-A[0], dy=B[1]-A[1], L=Math.hypot(dx,dy)||1;
+    const lx = B[0] + dx/L*16 + (k===2? 6: (dx<0? -4: 4));
+    const ly = B[1] + dy/L*16 + (k===2? 4 : (dy>0? 14 : -6));
+    ctx.fillStyle='#111';
+    rich(ctx, [[names[k],true]], lx, ly, 21, dx<-1?'right':'left');
+  }
+
+  /* --- build depth-sorted drawables --- */
+  const items=[];
+  const light = norm([ -0.42*cam.rt[0] + 0.55*cam.up[0] + 0.72*cam.d[0],
+                       -0.42*cam.rt[1] + 0.55*cam.up[1] + 0.72*cam.d[1],
+                       -0.42*cam.rt[2] + 0.55*cam.up[2] + 0.72*cam.d[2] ]);
+  for(let i=0;i<NS;i++){
+    for(let j=0;j<NS;j++){
+      const A=P[i][j], B=P[i+1][j], C=P[i+1][j+1], D=P[i][j+1];
+      if(!(finite(A)&&finite(B)&&finite(C)&&finite(D))) continue;
+      const n = norm(cross(sub(C,A), sub(D,B)));
+      let sh = Math.abs(dot(n,light));
+      sh = 0.52 + 0.48*Math.pow(sh, 0.85);
+      const g = Math.round(178 + 72*sh);          // 178 .. 250 grey ramp
+      const col = 'rgb('+g+','+g+','+(g+2>255?255:g+2)+')';
+      const a=proj(A),b=proj(B),c=proj(C),d=proj(D);
+      items.push({z:(depth(A)+depth(B)+depth(C)+depth(D))/4, k:0,
+                  p:[a[0],a[1],b[0],b[1],c[0],c[1],d[0],d[1]], c:col});
+    }
+  }
+  const pushCurve = (pts, color, width, bias) => {
+    for(let i=0;i<pts.length-1;i++){
+      const A=pts[i], B=pts[i+1];
+      if(!(finite(A)&&finite(B))) continue;
+      const a=proj(A), b=proj(B);
+      items.push({z:(depth(A)+depth(B))/2 + bias, k:1,
+                  p:[a[0],a[1],b[0],b[1]], c:color, w:width});
+    }
+  };
+  const sampleU = (u,n) => { const o=[]; for(let j=0;j<=n;j++) o.push(r(u, S.vmin+(S.vmax-S.vmin)*j/n)); return o; };
+  const sampleV = (v,n) => { const o=[]; for(let i=0;i<=n;i++) o.push(r(S.umin+(S.umax-S.umin)*i/n, v)); return o; };
+
+  if(S.showGrid){
+    for(const uu of gridVals(S.umin,S.umax)) pushCurve(sampleU(uu,64), '#7d8088', 1.75, eps*1.55);
+    for(const vv of gridVals(S.vmin,S.vmax)) pushCurve(sampleV(vv,64), '#7d8088', 1.75, eps*1.55);
+  }
+  const uCurve = sampleU(S.u0, NC);     // u constant -> varies v  (orange)
+  const vCurve = sampleV(S.v0, NC);     // v constant -> varies u  (purple)
+  pushCurve(uCurve, getCSS('--orange'), 5.2, eps*2.7);
+  pushCurve(vCurve, getCSS('--purple'), 5.2, eps*2.6);
+
+  items.sort((a,b)=>a.z-b.z);
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  for(const it of items){
+    if(it.k===0){
+      const p=it.p;
+      ctx.beginPath(); ctx.moveTo(p[0],p[1]); ctx.lineTo(p[2],p[3]);
+      ctx.lineTo(p[4],p[5]); ctx.lineTo(p[6],p[7]); ctx.closePath();
+      ctx.fillStyle=it.c; ctx.fill();
+      ctx.strokeStyle=it.c; ctx.lineWidth=0.8; ctx.stroke();   // seal seams
+    } else {
+      const p=it.p;
+      ctx.beginPath(); ctx.moveTo(p[0],p[1]); ctx.lineTo(p[2],p[3]);
+      ctx.strokeStyle=it.c; ctx.lineWidth=it.w; ctx.stroke();
+    }
+  }
+
+  /* --- point r(u0,v0), tangent vectors, curve labels (always on top) --- */
+  const Pt = r(S.u0,S.v0);
+  if(S.showTan && finite(Pt)){
+    const hu=(S.umax-S.umin)*1e-3, hv=(S.vmax-S.vmin)*1e-3;
+    const ru = sub(r(S.u0+hu,S.v0), r(S.u0-hu,S.v0)).map(t=>t/(2*hu));
+    const rv = sub(r(S.u0,S.v0+hv), r(S.u0,S.v0-hv)).map(t=>t/(2*hv));
+    const L = 0.30*span;
+    const drawVec=(V,color,label,sub_)=>{
+      const n=Math.hypot(V[0],V[1],V[2]); if(!isFinite(n)||n<1e-9) return;
+      const E=[Pt[0]+V[0]/n*L, Pt[1]+V[1]/n*L, Pt[2]+V[2]/n*L];
+      const A=proj(Pt), B=proj(E);
+      ctx.strokeStyle=color; ctx.lineWidth=3.0;
+      ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.stroke();
+      arrowHead(ctx,B[0],B[1],B[0]-A[0],B[1]-A[1],12,5,color);
+      const ux=(B[0]-A[0])/Math.hypot(B[0]-A[0],B[1]-A[1]||1e-9);
+      const lx0 = B[0] + (ux<0? -8 : 8), ly0 = B[1] - 8;
+      ctx.save(); ctx.lineWidth=3.6; ctx.lineJoin='round'; ctx.strokeStyle='rgba(255,255,255,0.94)';
+      ctx.font='italic 17px Georgia, serif'; ctx.strokeText(label, lx0, ly0);
+      const wl=ctx.measureText(label).width;
+      ctx.font='italic 12px Georgia, serif'; ctx.strokeText(sub_, lx0+wl, ly0+4);
+      ctx.restore();
+      ctx.fillStyle=color;
+      const w1 = rich(ctx,[[label,true]], lx0, ly0, 17,'left');
+      ctx.font='italic 12px Georgia, serif'; ctx.fillText(sub_, lx0+w1, ly0+4);
+    };
+    drawVec(ru, getCSS('--purple-dk'), 'r', 'u');
+    drawVec(rv, getCSS('--orange-dk'), 'r', 'v');
+  }
+  if(S.showPt && finite(Pt)){
+    const A=proj(Pt);
+    ctx.beginPath(); ctx.arc(A[0],A[1],5.2,0,7); ctx.fillStyle='#1b1b1f'; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1.7; ctx.stroke();
+    const lp=[['r',true],['(',false],['u',true],[', ',false],['v',true],[')',false]];
+    ctx.save(); ctx.lineWidth=3.6; ctx.lineJoin='round'; ctx.strokeStyle='rgba(255,255,255,0.93)';
+    let hx=A[0]+9;
+    for(const [txt,it] of lp){
+      ctx.font=(it?'italic ':'')+'15px Georgia, serif';
+      ctx.strokeText(txt,hx,A[1]+19); hx+=ctx.measureText(txt).width;
+    }
+    ctx.restore();
+    ctx.fillStyle='#1b1b1f';
+    rich(ctx,lp, A[0]+9, A[1]+19, 15,'left');
+  }
+
+  // labels at the ends of the highlighted curves
+  labelCurve(ctx, uCurve, proj, depth, cam, [['Constant ',false],['u',true],['-curve',false]],
+             getCSS('--orange-dk'), w, h);
+  labelCurve(ctx, vCurve, proj, depth, cam, [['Constant ',false],['v',true],['-curve',false]],
+             getCSS('--purple-dk'), w, h);
+}
+
+function labelCurve(ctx, pts, proj, depth, cam, parts, color, w, h){
+  // choose the visible endpoint that is nearest the viewer and farthest right/top
+  let best=null;
+  for(const idx of [0, pts.length-1]){
+    const p=pts[idx]; if(!finite(p)) continue;
+    const q=proj(p);
+    const score = q[0] - q[1]*0.6 + depth(p)*0.0;
+    if(!best || score>best.s) best={q, s:score};
+  }
+  if(!best) return;
+  const size=17.5;
+  const wtxt = richWidth(ctx,parts,size);
+  let x = best.q[0]+14, y = best.q[1]-8, align='left';
+  if(x + wtxt > w-6){ x = Math.min(w-6, best.q[0]+14); align='right'; }
+  if(align==='right' && x-wtxt < 4){ x = wtxt+6; }
+  y = Math.max(20, Math.min(h-10, y));
+  // soft halo for readability over the surface
+  ctx.save();
+  ctx.lineWidth=4; ctx.strokeStyle='rgba(255,255,255,0.92)';
+  ctx.lineJoin='round';
+  const xs = align==='right'? x-wtxt : x;
+  ctx.font=size+'px Georgia, serif';
+  let cxx=xs;
+  for(const [txt,it] of parts){
+    ctx.font=(it?'italic ':'')+size+'px Georgia, serif';
+    ctx.strokeText(txt,cxx,y); cxx+=ctx.measureText(txt).width;
+  }
+  ctx.restore();
+  ctx.fillStyle=color;
+  rich(ctx,parts,x,y,size,align);
+}
+
+/* ============================================================
+   Readout
+   ============================================================ */
+function fmt(t){ return (Math.abs(t)<1e-9?0:t).toFixed(2); }
+function updateReadout(){
+  const P = r(S.u0,S.v0);
+  const ok = finite(P);
+  $('readout').innerHTML =
+    '<b>r</b>(<span class="mi">u</span>,&nbsp;<span class="mi">v</span>) = ⟨ <code>'+esc(S.sx)+'</code>, <code>'+esc(S.sy)+'</code>, <code>'+esc(S.sz)+'</code> ⟩ &nbsp;&nbsp;for&nbsp; '
+    + fmt(S.umin)+' ≤ <span class="mi">u</span> ≤ '+fmt(S.umax)+', &nbsp;'+fmt(S.vmin)+' ≤ <span class="mi">v</span> ≤ '+fmt(S.vmax)+'<br>'
+    + '<span class="sw" style="background:var(--orange)"></span><b>Constant-<span class="mi">u</span> curve</b> &nbsp;<span class="mi">u</span> = '+fmt(S.u0)
+    + ': &nbsp;<span class="mi">r</span>('+fmt(S.u0)+', <span class="mi">v</span>) — only <span class="mi">v</span> varies, so its tangent is <span class="mi">r</span><sub>v</sub>.<br>'
+    + '<span class="sw" style="background:var(--purple)"></span><b>Constant-<span class="mi">v</span> curve</b> &nbsp;<span class="mi">v</span> = '+fmt(S.v0)
+    + ': &nbsp;<span class="mi">r</span>(<span class="mi">u</span>, '+fmt(S.v0)+') — only <span class="mi">u</span> varies, so its tangent is <span class="mi">r</span><sub>u</sub>.<br>'
+    + 'They meet at &nbsp;<span class="mi">r</span>('+fmt(S.u0)+', '+fmt(S.v0)+') = '
+    + (ok ? '⟨ '+fmt(P[0])+', '+fmt(P[1])+', '+fmt(P[2])+' ⟩' : '<i>undefined</i>')
+    + '. &nbsp;Every point of the surface lies on exactly one curve of each family — that is why the two families form a coordinate grid on the surface.';
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ============================================================
+   Wiring
+   ============================================================ */
+let need=true;
+function redraw(){ need=true; }
+function loop(){
+  if(need){ need=false;
+    try{ drawUV(); drawXYZ(); updateReadout(); }
+    catch(e){ $('err').textContent = 'Render error: '+e.message; }
+  }
+  requestAnimationFrame(loop);
+}
+
+function setSliders(){
+  $('uslider').value = Math.round(1000*(S.u0-S.umin)/Math.max(S.umax-S.umin,1e-9));
+  $('vslider').value = Math.round(1000*(S.v0-S.vmin)/Math.max(S.vmax-S.vmin,1e-9));
+  $('ulab').textContent = fmt(S.u0);
+  $('vlab').textContent = fmt(S.v0);
+}
+
+function recompile(){
+  const ids=['fx','fy','fz'], keys=['sx','sy','sz'], fns=['fx','fy','fz'];
+  let msg='';
+  for(let k=0;k<3;k++){
+    const el=$(ids[k]); const src=el.value;
+    try{
+      const f=compile(src);
+      S[keys[k]] = src; S[fns[k]] = f;
+      el.classList.remove('bad');
+    }catch(e){
+      el.classList.add('bad');
+      if(!msg) msg = ids[k][1]+'(u,v): '+e.message;
+    }
+  }
+  // ranges
+  const rd=(id,def)=>{ const t=parseFloat($(id).value); return isFinite(t)? t : def; };
+  let a=rd('umin',S.umin), b=rd('umax',S.umax), c=rd('vmin',S.vmin), d=rd('vmax',S.vmax);
+  if(b-a===0) b=a+1; if(d-c===0) d=c+1;
+  if(b<a){ const t=a;a=b;b=t; } if(d<c){ const t=c;c=d;d=t; }
+  S.umin=a; S.umax=b; S.vmin=c; S.vmax=d;
+  S.u0=Math.min(Math.max(S.u0,a),b); S.v0=Math.min(Math.max(S.v0,c),d);
+  $('err').textContent = msg;
+  setSliders(); redraw();
+}
+
+function applyPreset(name){
+  const p=PRESETS[name];
+  $('fx').value=p.x; $('fy').value=p.y; $('fz').value=p.z;
+  $('umin').value=String(p.umin); $('umax').value=String(p.umax);
+  $('vmin').value=String(p.vmin); $('vmax').value=String(p.vmax);
+  S.umin=p.umin; S.umax=p.umax; S.vmin=p.vmin; S.vmax=p.vmax;
+  S.u0=p.u0; S.v0=p.v0; S.az=p.az*Math.PI/180; S.el=p.el*Math.PI/180;
+  recompile();
+}
+
+['fx','fy','fz','umin','umax','vmin','vmax'].forEach(id=>{
+  $(id).addEventListener('input', recompile);
+});
+$('preset').addEventListener('change', e=>applyPreset(e.target.value));
+$('uslider').addEventListener('input', e=>{
+  S.u0 = S.umin + (S.umax-S.umin)*e.target.value/1000; $('ulab').textContent=fmt(S.u0); redraw();
+});
+$('vslider').addEventListener('input', e=>{
+  S.v0 = S.vmin + (S.vmax-S.vmin)*e.target.value/1000; $('vlab').textContent=fmt(S.v0); redraw();
+});
+$('showgrid').addEventListener('change', e=>{ S.showGrid=e.target.checked; redraw(); });
+$('showtan').addEventListener('change', e=>{ S.showTan=e.target.checked; redraw(); });
+$('showpt').addEventListener('change', e=>{ S.showPt=e.target.checked; redraw(); });
+$('reset').addEventListener('click', ()=>{ const p=PRESETS[$('preset').value];
+  S.az=p.az*Math.PI/180; S.el=p.el*Math.PI/180; redraw(); });
+
+// sweep animation
+let sweepT=0, sweepRAF=null;
+$('sweep').addEventListener('click', ()=>{
+  S.sweeping=!S.sweeping;
+  $('sweep').classList.toggle('on', S.sweeping);
+  $('sweep').textContent = S.sweeping? '❚❚ Pause' : '▶ Sweep';
+  if(S.sweeping){
+    const step=()=>{
+      if(!S.sweeping) return;
+      sweepT+=0.010;
+      const fu=(1-Math.cos(sweepT*2*Math.PI*0.5))/2;
+      const fv=(1-Math.cos(sweepT*2*Math.PI*0.31+1.2))/2;
+      S.u0 = S.umin + (S.umax-S.umin)*fu;
+      S.v0 = S.vmin + (S.vmax-S.vmin)*fv;
+      setSliders(); redraw();
+      sweepRAF=requestAnimationFrame(step);
+    };
+    step();
+  } else if(sweepRAF) cancelAnimationFrame(sweepRAF);
+});
+
+/* drag on the uv panel */
+function uvPick(ev){
+  const rect=uvC.getBoundingClientRect();
+  const px=(ev.touches?ev.touches[0].clientX:ev.clientX)-rect.left;
+  const py=(ev.touches?ev.touches[0].clientY:ev.clientY)-rect.top;
+  if(!uvMap) return;
+  const u = uvMap.x0 + (px-uvMap.ox)/uvMap.sc;
+  const v = uvMap.y0 + (uvMap.oy-py)/uvMap.sc;
+  if(uvDrag==='u'||uvDrag==='both') S.u0=Math.min(Math.max(u,S.umin),S.umax);
+  if(uvDrag==='v'||uvDrag==='both') S.v0=Math.min(Math.max(v,S.vmin),S.vmax);
+  setSliders(); redraw();
+}
+let uvDrag=null;
+function uvDown(ev){
+  if(!uvMap) return;
+  ev.preventDefault();
+  const rect=uvC.getBoundingClientRect();
+  const px=(ev.touches?ev.touches[0].clientX:ev.clientX)-rect.left;
+  const py=(ev.touches?ev.touches[0].clientY:ev.clientY)-rect.top;
+  const du=Math.abs(px-uvMap.X(S.u0)), dv=Math.abs(py-uvMap.Y(S.v0));
+  if(du<14 && dv<14) uvDrag='both';
+  else if(du<14) uvDrag='u';
+  else if(dv<14) uvDrag='v';
+  else uvDrag='both';
+  if(S.sweeping) $('sweep').click();
+  uvPick(ev);
+  window.addEventListener('mousemove',uvPick);
+  window.addEventListener('mouseup',uvUp);
+  window.addEventListener('touchmove',uvPick,{passive:false});
+  window.addEventListener('touchend',uvUp);
+}
+function uvUp(){ uvDrag=null;
+  window.removeEventListener('mousemove',uvPick); window.removeEventListener('mouseup',uvUp);
+  window.removeEventListener('touchmove',uvPick); window.removeEventListener('touchend',uvUp);
+}
+uvC.addEventListener('mousedown',uvDown);
+uvC.addEventListener('touchstart',uvDown,{passive:false});
+
+/* drag on the xyz panel = rotate */
+let rot=null;
+function rotDown(ev){
+  ev.preventDefault();
+  const cx=(ev.touches?ev.touches[0].clientX:ev.clientX), cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
+  rot={x:cx,y:cy,az:S.az,el:S.el};
+  xyzC.classList.add('drag');
+  window.addEventListener('mousemove',rotMove);
+  window.addEventListener('mouseup',rotUp);
+  window.addEventListener('touchmove',rotMove,{passive:false});
+  window.addEventListener('touchend',rotUp);
+}
+function rotMove(ev){
+  if(!rot) return;
+  if(ev.cancelable) ev.preventDefault();
+  const cx=(ev.touches?ev.touches[0].clientX:ev.clientX), cy=(ev.touches?ev.touches[0].clientY:ev.clientY);
+  S.az = rot.az + (cx-rot.x)*0.009;
+  S.el = Math.max(-1.35, Math.min(1.45, rot.el + (cy-rot.y)*0.007));
+  redraw();
+}
+function rotUp(){ rot=null; xyzC.classList.remove('drag');
+  window.removeEventListener('mousemove',rotMove); window.removeEventListener('mouseup',rotUp);
+  window.removeEventListener('touchmove',rotMove); window.removeEventListener('touchend',rotUp);
+}
+xyzC.addEventListener('mousedown',rotDown);
+xyzC.addEventListener('touchstart',rotDown,{passive:false});
+
+window.addEventListener('resize', redraw);
+
+applyPreset('patch');
+loop();
+</script>
+</body>
+</html>

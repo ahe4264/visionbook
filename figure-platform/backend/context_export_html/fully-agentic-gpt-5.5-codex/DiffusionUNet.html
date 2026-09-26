@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diffusion U-Net Noise Prediction Backbone</title>
+  <style>
+    :root {
+      --paper: #fbfaf7;
+      --ink: #24323a;
+      --muted: #587082;
+      --brown: #833d23;
+      --brown-dark: #5f2a19;
+      --brown-light: #d68461;
+      --skip: #cf7a58;
+      --time: #456b7f;
+      --attention: #6ca2bd;
+      --plain: #34424a;
+      --glow: #ffe6a6;
+      --panel: #ffffff;
+      --border: #d9e0e3;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 22% 16%, #fff7e9 0, #fbfaf7 28%, #eef5f6 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .figure-shell {
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 18px 45px rgba(32, 48, 56, 0.12);
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,250,248,0.96));
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1rem, 2.1vw, 1.35rem);
+      line-height: 1.2;
+      letter-spacing: 0;
+      font-weight: 750;
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.35;
+    }
+
+    .status-pill {
+      min-width: 184px;
+      border: 1px solid #d7c1ae;
+      color: #74391f;
+      background: #fff5eb;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-align: center;
+      font-size: 0.82rem;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+
+    .stage {
+      position: relative;
+      padding: 8px;
+      background: var(--paper);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 430px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.05fr) minmax(280px, 1fr) minmax(220px, 0.75fr);
+      gap: 12px;
+      padding: 14px 16px 16px;
+      border-top: 1px solid var(--border);
+      background: #ffffff;
+    }
+
+    .control-group {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfc;
+    }
+
+    .control-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 10px;
+      color: #2d3d45;
+      font-size: 0.82rem;
+      font-weight: 780;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid #bdcbd2;
+      border-radius: 8px;
+      background: #fff;
+      color: #26363e;
+      min-height: 38px;
+      padding: 8px 12px;
+      font: inherit;
+      font-weight: 690;
+      cursor: pointer;
+      transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+    }
+
+    button:hover {
+      border-color: #8fa4af;
+      background: #f7fbfc;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    button.primary {
+      background: #24323a;
+      border-color: #24323a;
+      color: #fff;
+    }
+
+    .toggle {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      min-height: 38px;
+      padding: 7px 10px;
+      border: 1px solid #bdcbd2;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+      font-weight: 690;
+      user-select: none;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--attention);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--time);
+    }
+
+    .range-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .readout {
+      min-width: 74px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      border: 1px solid #c8d6dd;
+      background: #fff;
+      color: var(--time);
+      text-align: center;
+      font-weight: 780;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .note {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+
+    .label {
+      fill: var(--ink);
+      font-size: 18px;
+      font-weight: 720;
+    }
+
+    .small-label {
+      fill: #31434b;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .res-label {
+      fill: #141b1f;
+      font-size: 18px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-style: italic;
+    }
+
+    .concat-label {
+      fill: #7e3a20;
+      font-size: 27px;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .concat-label.small {
+      font-size: 21px;
+    }
+
+    .time-label {
+      fill: var(--time);
+      font-size: 24px;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .panel-text {
+      fill: #4c5b62;
+      font-size: 21px;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .panel-text.attn {
+      fill: var(--attention);
+    }
+
+    .volume .front {
+      fill: var(--brown);
+      stroke: #111;
+      stroke-width: 2;
+    }
+
+    .volume .side {
+      fill: var(--brown-light);
+      stroke: #111;
+      stroke-width: 2;
+    }
+
+    .volume .top {
+      fill: #b7633f;
+      stroke: #111;
+      stroke-width: 2;
+    }
+
+    .volume.attention .front {
+      fill: #7a3b23;
+    }
+
+    .volume.attention .side {
+      fill: #d18a69;
+    }
+
+    .attention-badge {
+      opacity: 0;
+      transition: opacity 180ms ease;
+    }
+
+    body.show-attention .attention-badge {
+      opacity: 1;
+    }
+
+    body.show-attention .volume.attention .front,
+    body.show-attention .volume.attention .side,
+    body.show-attention .volume.attention .top {
+      stroke: var(--attention);
+      stroke-width: 4;
+      filter: url(#attnGlow);
+    }
+
+    .noise-plate {
+      fill: url(#noisePattern);
+      stroke: #111;
+      stroke-width: 3;
+    }
+
+    .out-plate {
+      fill: url(#noisePatternSoft);
+      stroke: #111;
+      stroke-width: 3;
+    }
+
+    .flow-arrow {
+      stroke: var(--plain);
+      stroke-width: 4;
+      fill: none;
+      marker-end: url(#arrowDark);
+    }
+
+    .plain-sample {
+      stroke: var(--plain);
+      stroke-width: 3;
+      marker-end: url(#arrowDarkSmall);
+    }
+
+    .attn-sample {
+      stroke: var(--attention);
+      stroke-width: 3;
+      marker-end: url(#arrowBlueSmall);
+    }
+
+    .skip {
+      fill: none;
+      stroke: var(--skip);
+      stroke-width: 3;
+      marker-end: url(#arrowSkip);
+      opacity: 0.86;
+      transition: stroke-width 180ms ease, opacity 180ms ease, filter 180ms ease;
+    }
+
+    .skip.active {
+      stroke-width: 7;
+      opacity: 1;
+      filter: url(#skipGlow);
+      animation: skipPulse 900ms ease-in-out infinite;
+    }
+
+    .time-rail {
+      fill: none;
+      stroke: var(--time);
+      stroke-width: 4;
+      marker-end: url(#arrowTime);
+      opacity: 0.95;
+    }
+
+    .time-inject {
+      fill: none;
+      stroke: var(--time);
+      stroke-width: 4;
+      marker-end: url(#arrowTime);
+      opacity: 0.75;
+      stroke-dasharray: 240;
+      stroke-dashoffset: 240;
+    }
+
+    .time-inject.live {
+      animation: trace 1.5s ease-in-out infinite;
+      opacity: 1;
+    }
+
+    .node {
+      transition: filter 180ms ease, opacity 180ms ease;
+    }
+
+    .node.active .front,
+    .node.active .side,
+    .node.active .top,
+    .node.active .noise-plate,
+    .node.active .out-plate {
+      filter: url(#activeGlow);
+      stroke: #f5ad34;
+      stroke-width: 4;
+    }
+
+    .step-dot {
+      fill: #fff;
+      stroke: #8da1aa;
+      stroke-width: 2;
+      transition: fill 180ms ease, stroke 180ms ease;
+    }
+
+    .step-dot.active {
+      fill: #f5ad34;
+      stroke: #7d3c1f;
+    }
+
+    .step-caption {
+      fill: #546a76;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .t-node {
+      fill: #fff;
+      stroke: var(--time);
+      stroke-width: 4;
+    }
+
+    .t-node.hot {
+      filter: url(#timeGlow);
+      animation: tPulse 1.4s ease-in-out infinite;
+    }
+
+    .ghost-text {
+      fill: #476a7d;
+      opacity: 0.18;
+      font-size: 74px;
+      font-weight: 800;
+    }
+
+    @keyframes trace {
+      0% { stroke-dashoffset: 240; }
+      55%, 100% { stroke-dashoffset: 0; }
+    }
+
+    @keyframes skipPulse {
+      0%, 100% { stroke-width: 5; }
+      50% { stroke-width: 8; }
+    }
+
+    @keyframes tPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+
+    @media (max-width: 920px) {
+      main {
+        padding: 10px;
+      }
+
+      .topbar,
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .status-pill {
+        min-width: 0;
+        width: fit-content;
+      }
+
+      svg {
+        min-height: 360px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .stage {
+        overflow-x: auto;
+      }
+
+      svg {
+        width: 980px;
+        max-width: none;
+      }
+
+      .controls {
+        padding: 10px;
+      }
+    }
+  </style>
+</head>
+<body class="show-attention">
+  <main>
+    <section class="figure-shell" aria-label="Interactive diffusion U-Net architecture">
+      <div class="topbar">
+        <div>
+          <h1>Diffusion U-Net Noise-Prediction Backbone</h1>
+          <p class="subtitle">Encoder-decoder feature volumes with skip concatenations, timestep conditioning, residual blocks, and selected self-attention blocks.</p>
+        </div>
+        <div id="stepStatus" class="status-pill" aria-live="polite">Input: noisy 256x256x3</div>
+      </div>
+
+      <div class="stage">
+        <svg id="unetSvg" viewBox="0 0 1660 620" role="img" aria-labelledby="title desc">
+          <title id="title">Interactive U-Net used in a diffusion model</title>
+          <desc id="desc">A U-shaped encoder decoder network maps a noisy 256 by 256 RGB image down to an 8 by 8 bottleneck and back to an output image. Orange skip arrows concatenate matching encoder and decoder feature maps. A timestep node sends a time embedding to residual blocks.</desc>
+          <defs>
+            <marker id="arrowDark" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#34424a"></path>
+            </marker>
+            <marker id="arrowDarkSmall" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#34424a"></path>
+            </marker>
+            <marker id="arrowBlueSmall" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#6ca2bd"></path>
+            </marker>
+            <marker id="arrowSkip" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#cf7a58"></path>
+            </marker>
+            <marker id="arrowTime" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#456b7f"></path>
+            </marker>
+
+            <filter id="activeGlow" x="-30%" y="-30%" width="160%" height="160%">
+              <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#f5ad34" flood-opacity="0.95"></feDropShadow>
+            </filter>
+            <filter id="skipGlow" x="-15%" y="-80%" width="130%" height="260%">
+              <feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="#cf7a58" flood-opacity="0.9"></feDropShadow>
+            </filter>
+            <filter id="timeGlow" x="-45%" y="-45%" width="190%" height="190%">
+              <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#6ca2bd" flood-opacity="0.85"></feDropShadow>
+            </filter>
+            <filter id="attnGlow" x="-22%" y="-22%" width="144%" height="144%">
+              <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#6ca2bd" flood-opacity="0.75"></feDropShadow>
+            </filter>
+
+            <pattern id="noisePattern" width="72" height="72" patternUnits="userSpaceOnUse">
+              <rect width="72" height="72" fill="#dad7c8"></rect>
+              <circle cx="8" cy="13" r="4" fill="#b16d73" opacity="0.62"></circle>
+              <circle cx="26" cy="8" r="3" fill="#6e9dad" opacity="0.58"></circle>
+              <circle cx="52" cy="20" r="5" fill="#73895f" opacity="0.5"></circle>
+              <circle cx="64" cy="48" r="4" fill="#b38a5b" opacity="0.6"></circle>
+              <path d="M0,45 C18,24 29,66 47,40 S76,35 72,19" stroke="#8e938e" stroke-width="6" opacity="0.48" fill="none"></path>
+              <path d="M13,71 C20,42 39,51 52,31" stroke="#f4f1df" stroke-width="5" opacity="0.55" fill="none"></path>
+            </pattern>
+            <pattern id="noisePatternSoft" width="72" height="72" patternUnits="userSpaceOnUse">
+              <rect width="72" height="72" fill="#d8d7cd"></rect>
+              <circle cx="10" cy="16" r="3" fill="#ae6970" opacity="0.48"></circle>
+              <circle cx="28" cy="9" r="3" fill="#6e9dad" opacity="0.46"></circle>
+              <circle cx="52" cy="22" r="4" fill="#758d66" opacity="0.44"></circle>
+              <path d="M0,45 C18,24 29,66 47,40 S76,35 72,19" stroke="#8a918a" stroke-width="6" opacity="0.38" fill="none"></path>
+              <path d="M13,71 C20,42 39,51 52,31" stroke="#f7f4e5" stroke-width="5" opacity="0.58" fill="none"></path>
+            </pattern>
+          </defs>
+
+          <text x="1120" y="95" class="ghost-text">U-Net</text>
+
+          <g id="legend" transform="translate(18,8)">
+            <rect x="0" y="0" width="205" height="146" rx="18" fill="#fff" stroke="#111" stroke-width="2.2"></rect>
+            <line x1="84" y1="28" x2="124" y2="28" class="plain-sample"></line>
+            <text x="16" y="60" class="panel-text">Res. block</text>
+            <line x1="84" y1="76" x2="124" y2="76" class="attn-sample"></line>
+            <text x="16" y="108" class="panel-text attn">Res. block +</text>
+            <text x="16" y="140" class="panel-text attn">self-attention</text>
+          </g>
+
+          <g id="skipLayer">
+            <path id="skip0" class="skip" data-source="enc256" data-target="dec256" d="M382 174 L500 55 L1565 55 L1484 118"></path>
+            <text x="915" y="44" class="concat-label">Concatenate</text>
+
+            <path id="skip1" class="skip" data-source="enc128" data-target="dec128" d="M382 255 L520 210 L1390 210 L1335 262"></path>
+            <text x="870" y="199" class="concat-label">Concatenate</text>
+
+            <path id="skip2" class="skip" data-source="enc64" data-target="dec64" d="M440 326 L525 320 L1324 320 L1262 372"></path>
+            <text x="842" y="310" class="concat-label">Concatenate</text>
+
+            <path id="skip3" class="skip" data-source="enc32" data-target="dec32" d="M505 380 L598 372 L1246 372 L1180 421"></path>
+            <text x="826" y="362" class="concat-label">Concatenate</text>
+
+            <path id="skip4" class="skip" data-source="enc16" data-target="dec16" d="M620 430 L705 405 L1138 405 L1033 474"></path>
+            <path id="skip5" class="skip" data-source="enc8" data-target="dec8" d="M757 461 L820 432 L978 432 L903 481"></path>
+            <text x="745" y="399" class="concat-label small">Concatenate</text>
+            <text x="824" y="426" class="concat-label small">Concatenate</text>
+          </g>
+
+          <g id="nodes">
+            <g id="input" class="node" data-caption="Input: noisy 256x256x3" transform="translate(158,194)">
+              <polygon class="noise-plate" points="0,0 116,-72 116,230 0,302"></polygon>
+              <text class="res-label" transform="translate(116,-104) rotate(-34)">256x256x3</text>
+            </g>
+
+            <g id="enc256" class="node volume" data-caption="Encoder: 256x256x128 feature maps" transform="translate(212,198)">
+              <polygon class="side" points="0,0 50,-30 50,278 0,308"></polygon>
+              <polygon class="front" points="50,-30 164,-92 164,216 50,278"></polygon>
+              <polygon class="top" points="0,0 50,-30 164,-92 114,-62"></polygon>
+              <text class="res-label" transform="translate(112,-88) rotate(-34)">256x256x128</text>
+            </g>
+            <g id="enc256b" class="volume" transform="translate(260,198)">
+              <polygon class="side" points="0,0 50,-30 50,278 0,308"></polygon>
+              <polygon class="front" points="50,-30 164,-92 164,216 50,278"></polygon>
+              <polygon class="top" points="0,0 50,-30 164,-92 114,-62"></polygon>
+            </g>
+
+            <g id="enc128" class="node volume" data-caption="Downsample: 128x128x128 feature maps" transform="translate(310,320)">
+              <polygon class="side" points="0,0 42,-25 42,156 0,181"></polygon>
+              <polygon class="front" points="42,-25 126,-71 126,110 42,156"></polygon>
+              <polygon class="top" points="0,0 42,-25 126,-71 84,-46"></polygon>
+              <text class="res-label" transform="translate(108,-56) rotate(-34)">128x128x128</text>
+            </g>
+
+            <g id="enc64" class="node volume" data-caption="Downsample: 64x64x256 feature maps" transform="translate(360,405)">
+              <polygon class="side" points="0,0 30,-17 30,90 0,107"></polygon>
+              <polygon class="front" points="30,-17 96,-28 96,79 30,90"></polygon>
+              <polygon class="top" points="0,0 30,-17 96,-28 66,-11"></polygon>
+              <text class="res-label" transform="translate(86,-55) rotate(-34)">64x64x256</text>
+            </g>
+
+            <g id="enc32" class="node volume attention" data-caption="Self-attention scale: 32x32x256 feature maps" transform="translate(430,450)">
+              <polygon class="side" points="0,0 25,-12 25,47 0,59"></polygon>
+              <polygon class="front" points="25,-12 94,-12 94,47 25,47"></polygon>
+              <polygon class="top" points="0,0 25,-12 94,-12 69,0"></polygon>
+              <text class="res-label" transform="translate(72,-46) rotate(-34)">32x32x256</text>
+              <g class="attention-badge">
+                <circle cx="82" cy="-29" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="82" y="-24" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="enc16" class="node volume attention" data-caption="Self-attention scale: 16x16x512 feature maps" transform="translate(520,475)">
+              <polygon class="side" points="0,0 19,-9 19,28 0,37"></polygon>
+              <polygon class="front" points="19,-9 130,-9 130,28 19,28"></polygon>
+              <polygon class="top" points="0,0 19,-9 130,-9 111,0"></polygon>
+              <text class="res-label" transform="translate(76,-49) rotate(-34)">16x16x512</text>
+              <g class="attention-badge">
+                <circle cx="116" cy="-28" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="116" y="-23" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="enc8" class="node volume attention" data-caption="Bottleneck: 8x8x512 feature maps" transform="translate(656,489)">
+              <polygon class="side" points="0,0 16,-7 16,16 0,23"></polygon>
+              <polygon class="front" points="16,-7 124,-7 124,16 16,16"></polygon>
+              <polygon class="top" points="0,0 16,-7 124,-7 108,0"></polygon>
+              <text class="res-label" transform="translate(58,-40) rotate(-34)">8x8x512</text>
+              <g class="attention-badge">
+                <circle cx="113" cy="-25" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="113" y="-20" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="dec8" class="node volume attention" data-caption="Decoder: reuse 8x8 skip and upsample" transform="translate(792,489)">
+              <polygon class="side" points="0,0 16,-7 16,16 0,23"></polygon>
+              <polygon class="front" points="16,-7 124,-7 124,16 16,16"></polygon>
+              <polygon class="top" points="0,0 16,-7 124,-7 108,0"></polygon>
+              <g class="attention-badge">
+                <circle cx="112" cy="-25" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="112" y="-20" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="dec16" class="node volume attention" data-caption="Decoder: concatenate 16x16 encoder features" transform="translate(930,475)">
+              <polygon class="side" points="0,0 19,-9 19,28 0,37"></polygon>
+              <polygon class="front" points="19,-9 130,-9 130,28 19,28"></polygon>
+              <polygon class="top" points="0,0 19,-9 130,-9 111,0"></polygon>
+              <g class="attention-badge">
+                <circle cx="116" cy="-28" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="116" y="-23" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="dec32" class="node volume attention" data-caption="Decoder: concatenate 32x32 encoder features" transform="translate(1080,450)">
+              <polygon class="side" points="0,0 25,-12 25,47 0,59"></polygon>
+              <polygon class="front" points="25,-12 94,-12 94,47 25,47"></polygon>
+              <polygon class="top" points="0,0 25,-12 94,-12 69,0"></polygon>
+              <g class="attention-badge">
+                <circle cx="82" cy="-29" r="13" fill="#fff" stroke="#6ca2bd" stroke-width="3"></circle>
+                <text x="82" y="-24" text-anchor="middle" fill="#6ca2bd" font-size="16" font-weight="800">A</text>
+              </g>
+            </g>
+
+            <g id="dec64" class="node volume" data-caption="Decoder: concatenate 64x64 encoder features" transform="translate(1210,405)">
+              <polygon class="side" points="0,0 30,-17 30,90 0,107"></polygon>
+              <polygon class="front" points="30,-17 96,-28 96,79 30,90"></polygon>
+              <polygon class="top" points="0,0 30,-17 96,-28 66,-11"></polygon>
+            </g>
+
+            <g id="dec128" class="node volume" data-caption="Decoder: concatenate 128x128 encoder features" transform="translate(1310,320)">
+              <polygon class="side" points="0,0 42,-25 42,156 0,181"></polygon>
+              <polygon class="front" points="42,-25 126,-71 126,110 42,156"></polygon>
+              <polygon class="top" points="0,0 42,-25 126,-71 84,-46"></polygon>
+            </g>
+
+            <g id="dec256" class="node volume" data-caption="Decoder: concatenate 256x256 encoder features" transform="translate(1408,198)">
+              <polygon class="side" points="0,0 50,-30 50,278 0,308"></polygon>
+              <polygon class="front" points="50,-30 164,-92 164,216 50,278"></polygon>
+              <polygon class="top" points="0,0 50,-30 164,-92 114,-62"></polygon>
+            </g>
+            <g id="dec256b" class="volume" transform="translate(1458,198)">
+              <polygon class="side" points="0,0 50,-30 50,278 0,308"></polygon>
+              <polygon class="front" points="50,-30 164,-92 164,216 50,278"></polygon>
+              <polygon class="top" points="0,0 50,-30 164,-92 114,-62"></polygon>
+            </g>
+
+            <g id="output" class="node" data-caption="Output: predicted denoising update" transform="translate(1524,194)">
+              <polygon class="out-plate" points="0,0 116,-72 116,230 0,302"></polygon>
+            </g>
+          </g>
+
+          <g id="flowLayer">
+            <path class="flow-arrow" d="M214 510 L260 510"></path>
+            <path class="flow-arrow" d="M330 510 L375 510"></path>
+            <path class="flow-arrow" d="M438 510 L486 510"></path>
+            <path class="flow-arrow" d="M548 510 L604 510"></path>
+            <path class="flow-arrow" d="M655 510 L716 510"></path>
+            <path class="flow-arrow" d="M786 510 L842 510"></path>
+            <path class="flow-arrow" d="M922 510 L982 510"></path>
+            <path class="flow-arrow" d="M1064 510 L1122 510"></path>
+            <path class="flow-arrow" d="M1198 510 L1252 510"></path>
+            <path class="flow-arrow" d="M1312 510 L1360 510"></path>
+            <path class="flow-arrow" d="M1430 510 L1484 510"></path>
+          </g>
+
+          <g id="timeLayer">
+            <circle id="tNode" class="t-node hot" cx="30" cy="578" r="28"></circle>
+            <text x="30" y="586" text-anchor="middle" class="time-label">t</text>
+            <path id="timeRail" class="time-rail" d="M58 578 H1296"></path>
+            <text x="92" y="604" class="time-label">time embedding</text>
+
+            <path class="time-inject" data-time="0" d="M90 578 L196 510"></path>
+            <path class="time-inject" data-time="1" d="M150 578 L254 510"></path>
+            <path class="time-inject" data-time="2" d="M210 578 L310 510"></path>
+            <path class="time-inject" data-time="3" d="M274 578 L380 510"></path>
+            <path class="time-inject" data-time="4" d="M382 578 L508 510"></path>
+            <path class="time-inject" data-time="5" d="M515 578 L640 510"></path>
+            <path class="time-inject" data-time="6" d="M655 578 L760 510"></path>
+            <path class="time-inject" data-time="7" d="M805 578 L905 510"></path>
+            <path class="time-inject" data-time="8" d="M945 578 L1044 510"></path>
+            <path class="time-inject" data-time="9" d="M1090 578 L1172 510"></path>
+            <path class="time-inject" data-time="10" d="M1172 578 L1242 510"></path>
+            <path class="time-inject" data-time="11" d="M1218 578 L1320 510"></path>
+            <path class="time-inject" data-time="12" d="M1266 578 L1408 510"></path>
+            <path class="time-inject" data-time="13" d="M1310 578 L1510 510"></path>
+          </g>
+
+          <g id="stepDots" transform="translate(250,548)">
+            <circle class="step-dot" data-step-dot="0" cx="0" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="1" cx="80" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="2" cx="160" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="3" cx="240" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="4" cx="320" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="5" cx="400" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="6" cx="480" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="7" cx="560" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="8" cx="640" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="9" cx="720" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="10" cx="800" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="11" cx="880" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="12" cx="960" cy="0" r="7"></circle>
+            <circle class="step-dot" data-step-dot="13" cx="1040" cy="0" r="7"></circle>
+            <text x="0" y="27" text-anchor="middle" class="step-caption">in</text>
+            <text x="240" y="27" text-anchor="middle" class="step-caption">down</text>
+            <text x="480" y="27" text-anchor="middle" class="step-caption">8x8</text>
+            <text x="800" y="27" text-anchor="middle" class="step-caption">up</text>
+            <text x="1040" y="27" text-anchor="middle" class="step-caption">out</text>
+          </g>
+        </svg>
+      </div>
+
+      <div class="controls" aria-label="Figure controls">
+        <div class="control-group">
+          <p class="control-title">Encoder-Decoder Pass</p>
+          <div class="button-row">
+            <button id="playPause" class="primary" type="button">Play</button>
+            <button id="prevStep" type="button" aria-label="Previous architecture step">Prev</button>
+            <button id="nextStep" type="button" aria-label="Next architecture step">Next</button>
+            <button id="resetStep" type="button">Reset</button>
+          </div>
+          <p class="note" id="stepNote">Step through the noisy input, encoder downsampling, 8x8 bottleneck, decoder upsampling, and final prediction.</p>
+        </div>
+
+        <div class="control-group">
+          <p class="control-title">Timestep Conditioning</p>
+          <div class="range-row">
+            <input id="timeSlider" type="range" min="0" max="999" value="420" aria-label="Diffusion timestep t" />
+            <output id="timeValue" class="readout">t=420</output>
+          </div>
+          <p class="note" id="timeNote">The circled t is embedded once, then injected into residual blocks across encoder and decoder stages.</p>
+        </div>
+
+        <div class="control-group">
+          <p class="control-title">Block Types</p>
+          <label class="toggle">
+            <input id="attentionToggle" type="checkbox" checked />
+            Highlight self-attention
+          </label>
+          <p class="note">Blue badges and outlines mark residual blocks with self-attention at lower spatial scales.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const steps = [
+        { node: "input", caption: "Input: noisy 256x256x3", skip: null, note: "The U-Net receives the current noisy RGB sample at this diffusion timestep." },
+        { node: "enc256", caption: "Encoder: 256x256x128", skip: null, note: "Residual blocks lift the noisy image into 128 feature channels while preserving full resolution." },
+        { node: "enc128", caption: "Downsample: 128x128x128", skip: null, note: "The encoder halves spatial resolution and keeps multiscale information for later reuse." },
+        { node: "enc64", caption: "Downsample: 64x64x256", skip: null, note: "Channel capacity grows as spatial size shrinks, building richer local features." },
+        { node: "enc32", caption: "Self-attention scale: 32x32x256", skip: null, note: "Selected low-resolution blocks add self-attention so distant regions can exchange information." },
+        { node: "enc16", caption: "Self-attention scale: 16x16x512", skip: null, note: "The representation becomes compact and wide, ready for global conditioning." },
+        { node: "enc8", caption: "Bottleneck: 8x8x512", skip: null, note: "At the bottleneck, the network has the broadest receptive field over the image." },
+        { node: "dec8", caption: "Decoder: reuse 8x8 skip", skip: "skip5", note: "The decoder begins expanding features and concatenates the matching encoder feature map." },
+        { node: "dec16", caption: "Decoder: concatenate 16x16 skip", skip: "skip4", note: "Skip concatenation restores fine encoder detail at the same spatial scale." },
+        { node: "dec32", caption: "Decoder: concatenate 32x32 skip", skip: "skip3", note: "Attention-enhanced features are reused while the decoder upsamples." },
+        { node: "dec64", caption: "Decoder: concatenate 64x64 skip", skip: "skip2", note: "The right side mirrors the encoder and fuses high-resolution spatial evidence." },
+        { node: "dec128", caption: "Decoder: concatenate 128x128 skip", skip: "skip1", note: "Concatenation keeps the denoising prediction sharp as resolution increases." },
+        { node: "dec256", caption: "Decoder: concatenate 256x256 skip", skip: "skip0", note: "The final full-resolution decoder blocks combine coarse context with early image detail." },
+        { node: "output", caption: "Output: predicted denoising update", skip: null, note: "The U-Net predicts the noise or denoising update used by the diffusion sampler." }
+      ];
+
+      const nodes = Array.from(document.querySelectorAll(".node"));
+      const skips = Array.from(document.querySelectorAll(".skip"));
+      const status = document.getElementById("stepStatus");
+      const note = document.getElementById("stepNote");
+      const playPause = document.getElementById("playPause");
+      const prevStep = document.getElementById("prevStep");
+      const nextStep = document.getElementById("nextStep");
+      const resetStep = document.getElementById("resetStep");
+      const timeSlider = document.getElementById("timeSlider");
+      const timeValue = document.getElementById("timeValue");
+      const attentionToggle = document.getElementById("attentionToggle");
+      const timeInjects = Array.from(document.querySelectorAll(".time-inject"));
+      const dots = Array.from(document.querySelectorAll(".step-dot"));
+
+      let stepIndex = 0;
+      let timer = null;
+
+      function setStep(index) {
+        stepIndex = (index + steps.length) % steps.length;
+        const step = steps[stepIndex];
+
+        nodes.forEach(node => node.classList.toggle("active", node.id === step.node));
+        skips.forEach(skip => skip.classList.toggle("active", skip.id === step.skip));
+        dots.forEach(dot => dot.classList.toggle("active", Number(dot.dataset.stepDot) === stepIndex));
+        status.textContent = step.caption;
+        note.textContent = step.note;
+      }
+
+      function start() {
+        if (timer) return;
+        playPause.textContent = "Pause";
+        timer = window.setInterval(() => setStep(stepIndex + 1), 1350);
+      }
+
+      function stop() {
+        if (!timer) return;
+        window.clearInterval(timer);
+        timer = null;
+        playPause.textContent = "Play";
+      }
+
+      function updateTime() {
+        const t = Number(timeSlider.value);
+        timeValue.textContent = "t=" + t;
+        const phase = Math.round((t / 999) * 13);
+        timeInjects.forEach((path, index) => {
+          const distance = Math.abs(index - phase);
+          path.classList.toggle("live", distance <= 3);
+          path.style.animationDelay = (distance * 90) + "ms";
+          path.style.opacity = String(Math.max(0.18, 1 - distance * 0.16));
+        });
+      }
+
+      playPause.addEventListener("click", () => {
+        if (timer) stop();
+        else start();
+      });
+
+      prevStep.addEventListener("click", () => {
+        stop();
+        setStep(stepIndex - 1);
+      });
+
+      nextStep.addEventListener("click", () => {
+        stop();
+        setStep(stepIndex + 1);
+      });
+
+      resetStep.addEventListener("click", () => {
+        stop();
+        setStep(0);
+      });
+
+      timeSlider.addEventListener("input", updateTime);
+
+      attentionToggle.addEventListener("change", () => {
+        document.body.classList.toggle("show-attention", attentionToggle.checked);
+      });
+
+      setStep(0);
+      updateTime();
+    })();
+  </script>
+</body>
+</html>
