@@ -1,0 +1,1907 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+  <style>
+    /* ── Reset & canvas fill ─────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The canvas ResizeObserver then re-fits the camera
+       automatically, so docking never crops the figure — it re-frames it.       */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    #stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      grid-area: stage;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    #c {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ── Floating HTML labels ────────────────────────────────────────────── */
+    /* Positioned by _syncLabels in CANVAS pixel space, so they are appended to
+       #stage (not <body>) — that keeps the math correct once #ui is docked and
+       the stage no longer starts at the page origin. */
+    .lbl {
+      position: absolute;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+      font-family: sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    /* ── Control panel ───────────────────────────────────────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    /* Docked labels get no text-shadow halo — they sit on a flat panel, not
+       over the figure. */
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    /* A docked panel has real width, so let wide controls use it. */
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Lightweight hover tooltip for generated 3D explainers ───────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="stage">
+    <canvas id="c"></canvas>
+  </div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <button id="btnReset" style="display:none">Reset View</button>
+    <button id="btnProjToggle" style="display:none">3D view</button>
+    <!-- @FIGURE_UI_BEGIN -->
+<div style="font-weight:700;font-size:12px;margin-bottom:2px">Cyclohexane — axial vs. equatorial H</div>
+<div style="font-size:10px;color:#555;line-height:1.35;margin-bottom:2px">
+  Two matched models of the same chair ring, seen straight down the ring axis: space-filling (left) and ball-and-stick (right).
+</div>
+
+<label>Model</label>
+<div id="modelBtns" style="display:flex;flex-wrap:wrap;gap:4px">
+  <button data-m="sf">Space-filling</button>
+  <button data-m="bs">Ball-and-stick</button>
+  <button data-m="both" class="active">Side-by-side</button>
+</div>
+
+<label>Show hydrogens</label>
+<div id="hBtns" style="display:flex;flex-wrap:wrap;gap:4px">
+  <button data-h="ax">Axial only</button>
+  <button data-h="eq">Equatorial only</button>
+  <button data-h="both" class="active">Both</button>
+</div>
+
+<label>Selected carbon</label>
+<div id="selInfo" style="font-size:11px;line-height:1.35;color:#333">None — click any atom in the figure to light up one carbon together with its own axial (red) and equatorial (blue) hydrogen.</div>
+<button id="clearSel">Clear selection</button>
+
+<label>Guided tour</label>
+<div style="display:flex;gap:4px">
+  <button id="btnPrev">‹ Prev</button>
+  <button id="btnPlay">▶ Play</button>
+  <button id="btnNext">Next ›</button>
+</div>
+<div id="stepTitle" style="font-weight:700;font-size:12px;margin-top:2px"></div>
+<div id="stepText" style="font-size:11px;line-height:1.4;color:#222"></div>
+
+<div style="font-size:10px;color:#666;line-height:1.35;margin-top:4px">
+  Drag to orbit: the flat-looking hexagon is really a chair. Red axial bonds stay parallel to the ring axis (3 up, 3 down); blue equatorial bonds splay out around the belt.
+</div>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    // Show error overlay if module scripts fail or take too long
+    let _rendered = false;
+    const _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = () => { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', (e) => {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    // Timeout fallback: if nothing renders in 12s, show overlay
+    setTimeout(() => {
+      if (!_rendered) { _errOverlay.style.display = 'flex'; }
+    }, 12000);
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    /* ── Renderer ────────────────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const _stage = document.getElementById('stage');
+    const _ui = document.getElementById('ui');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+
+    /* ── UI layout: keep controls in a right-side column ────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     */
+    function setUiLayout() {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      const next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', `${sizePx}px`);
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    function _autoUiLayout() {
+      const hasEditor = Boolean(_ui.querySelector('textarea'));
+      const mode = 'right';
+      const start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      const cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      let size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', `${size}px`);
+      let guard = 0;
+      const step = () => {
+        if (guard++ > 6) return;
+        if (_ui.scrollHeight <= _ui.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', `${size}px`);
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+
+    // Re-evaluate when the generated code adds controls after first paint.
+    new MutationObserver(() => {
+      clearTimeout(_autoUiLayout._t);
+      _autoUiLayout._t = setTimeout(_autoUiLayout, 0);
+    }).observe(_ui, { childList: true, subtree: true });
+    window.addEventListener('resize', () => { _autoUiLayout(); });
+
+    /* ── Scene ───────────────────────────────────────────────────────────── */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    /* ── Orthographic camera ─────────────────────────────────────────────── */
+    const d = 3;                              // half-height in world units
+    let aspect = canvas.clientWidth / canvas.clientHeight;
+    let camera = new THREE.OrthographicCamera(
+      -d * aspect, d * aspect, d, -d, 0.1, 100
+    );
+    camera.position.set(4, 4, 4);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    let controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // Has the student orbited / panned / zoomed? OrbitControls fires 'start' on
+    // pointer-down and on wheel — i.e. only on real user input — while the
+    // 'change' event also fires from our own controls.update() in animate(),
+    // so 'start' is the signal that does not produce false positives.
+    // Consumed by the ResizeObserver: a camera the student has moved must NOT
+    // be repositioned by a resize (chapter-preview iframes resize routinely).
+    let _userMovedCamera = false;
+    function _trackCameraInteraction(ctrl) {
+      ctrl.addEventListener('start', () => { _userMovedCamera = true; });
+    }
+    _trackCameraInteraction(controls);
+
+    // HOME view will be computed from the scene bounds so different scenes
+    // (especially tall ones) get a consistent starting zoom/angle while
+    // still allowing interactive OrbitControls.
+    const HOME_POS = new THREE.Vector3();
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+    let HOME_ZOOM = 0.75;
+    let _labelZoomRef = 1;      // zoom at which label scale is exactly 1
+    let _lastViewArgs = null;   // last resolved setCameraView args, re-applied on resize
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+      if (_lastViewArgs) { setCameraView(_lastViewArgs); return; }
+      camera.position.copy(HOME_POS);
+      controls.target.copy(HOME_TARGET);
+      camera.zoom = HOME_ZOOM;
+      camera.updateProjectionMatrix();
+      controls.update();
+    });
+
+    // Framing parameters
+    const FRAME_HALF_HEIGHT = d; // base frustum half-height used when computing zoom
+    const FRAME_MARGIN = 0.08;   // fraction of extra space around content
+    const MIN_ZOOM = 0.2;
+    const MAX_ZOOM = 5;
+
+    function computeSceneBounds() {
+      const box = new THREE.Box3().setFromObject(scene);
+      if (box.isEmpty()) {
+        // fallback box so empty scenes get a sensible frame
+        box.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(2 * d, 2 * d, 2 * d));
+      }
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return { box, center, size };
+    }
+
+    /**
+     * setCameraView(options)
+     * - azimuthDeg: horizontal angle around Y axis, in degrees.
+     * - elevationDeg: angle above the ground/XZ plane, in degrees.
+     * - zoom: optional orthographic zoom. If omitted, derived from content bounds.
+     * - target: optional [x,y,z] camera target. If omitted, uses scene bounds center.
+     * - heightFraction: fraction of the view the content's height should occupy.
+     * This is the preferred per-figure camera API for matching the source image.
+     */
+    /* ── Oblique projection ──────────────────────────────────────────────── */
+    // An oblique projection is a shear of EYE-SPACE coordinates, applied before
+    // the orthographic projection: P' = P_ortho · S. It is deliberately NOT a
+    // shear of the geometry — keeping it in the camera means addLabel/_syncLabels
+    // (which call pos.project(camera)) track it with no extra work.
+    //
+    // Known limitation: Raycaster.setFromCamera derives its ray direction from
+    // the camera's view axis, not the sheared projection direction, so
+    // registerInteractive hit-testing is approximate at large depth under
+    // oblique. Acceptable for the shallow diagrams oblique is used for.
+    let _obliqueState = null;        // { angleDeg, depthScale, shearAmt, shearTarget } or null
+
+    function _applyObliqueShear() {
+      if (!_obliqueState || !camera.isOrthographicCamera) return;
+      const th = THREE.MathUtils.degToRad(_obliqueState.angleDeg);
+      // shearAmt eases 1 -> 0 to reveal the true 3D shape. Both the shear terms
+      // and the zt pinning terms below carry the same k, so the target plane
+      // stays pinned and the figure does not drift while un-shearing.
+      const k = _obliqueState.depthScale * _obliqueState.shearAmt;
+      // Shear about the PROJECTION PLANE (the controls target's eye-space
+      // depth zt), not about the camera origin. The camera looks down -Z with
+      // the target at distance ~R, so every scene point has eye z ~= -R, not
+      // ~= 0. Shearing raw z would add a large rigid translation
+      // (cos(th)*k*R, sin(th)*k*R) to the ENTIRE scene, shoving it off-screen.
+      // Shearing (z - zt) instead pins the target plane in place and only
+      // tilts depth around it -- the textbook definition of an oblique
+      // projection about the picture plane.
+      camera.updateMatrixWorld();
+      const zt = controls.target.clone().applyMatrix4(camera.matrixWorldInverse).z;
+      const S = new THREE.Matrix4().set(
+        1, 0, -Math.cos(th) * k, Math.cos(th) * k * zt,
+        0, 1, -Math.sin(th) * k, Math.sin(th) * k * zt,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      );
+      // Post-multiply: S acts on eye space, then P_ortho projects.
+      camera.projectionMatrix.multiply(S);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+    }
+
+    // Re-apply the shear after ANY updateProjectionMatrix() — OrbitControls calls
+    // it on every zoom, which would otherwise silently wipe the shear.
+    function _installObliqueHook(cam) {
+      if (cam.__obliqueHooked) return;
+      const base = cam.updateProjectionMatrix.bind(cam);
+      cam.updateProjectionMatrix = function () {
+        base();
+        _applyObliqueShear();
+      };
+      cam.__obliqueHooked = true;
+    }
+
+    function _setObliqueEnabled(on) {
+      const btn = document.getElementById('btnProjToggle');
+      if (on) {
+        _obliqueState = _obliqueState || { angleDeg: 45, depthScale: 0.5, shearAmt: 1, shearTarget: 1 };
+        _obliqueState.shearTarget = 1;
+        if (btn) { btn.style.display = ''; btn.textContent = '3D view'; }
+        // Oblique is only meaningful from its authored front-on pose. Setting
+        // shearTarget BEFORE this call matters: setCameraView preserves the
+        // current shearTarget rather than forcing it to 1, so the 1 set above is
+        // what survives and drives the ease back to the printed view.
+        if (_lastViewArgs) { setCameraView(_lastViewArgs); return; }
+      } else if (_obliqueState) {
+        // Keep the state object alive so animate() can ease shearAmt down to 0.
+        // It is cleared only when setCameraView leaves the oblique projection.
+        _obliqueState.shearTarget = 0;
+        if (btn) btn.textContent = 'Figure view';
+      }
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+
+    document.getElementById('btnProjToggle').addEventListener('click', () => {
+      if (!_obliqueState) return;
+      if (_obliqueState.shearTarget > 0.5) {
+        _setObliqueEnabled(false);
+      } else {
+        _setObliqueEnabled(true);
+      }
+    });
+
+    // Drag to reveal: past a small threshold, ease the shear out so the student
+    // sees the true 3D object they are turning. The threshold separates a drag
+    // from a click, so clicking an interactive element does not collapse the
+    // figure.
+    const _REVEAL_DRAG_PX = 6;
+    let _revealPointerDown = false;
+    let _revealDragPx = 0;
+    let _revealLastX = 0;
+    let _revealLastY = 0;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      _revealPointerDown = true;
+      _revealDragPx = 0;
+      _revealLastX = e.clientX;
+      _revealLastY = e.clientY;
+    });
+    window.addEventListener('pointerup', () => { _revealPointerDown = false; });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!_revealPointerDown || !_obliqueState || _obliqueState.shearTarget === 0) return;
+      // movementX/Y are unavailable in some environments; fall back to a
+      // clientX/Y delta against the previous move so the accumulator never
+      // goes NaN and silently disables drag-to-reveal.
+      const _dx = typeof e.movementX === 'number' ? e.movementX : (e.clientX - _revealLastX);
+      const _dy = typeof e.movementY === 'number' ? e.movementY : (e.clientY - _revealLastY);
+      _revealLastX = e.clientX;
+      _revealLastY = e.clientY;
+      _revealDragPx += Math.abs(_dx) + Math.abs(_dy);
+      if (_revealDragPx > _REVEAL_DRAG_PX) {
+        _obliqueState.shearTarget = 0;
+        const btn = document.getElementById('btnProjToggle');
+        if (btn) btn.textContent = 'Figure view';
+      }
+    });
+
+    /**
+     * _ensureCamera(kind) → boolean
+     * Rebuilds `camera` and `controls` when the required camera class changes.
+     * OrbitControls caches its object, so it is disposed and reconstructed
+     * rather than re-pointed. Returns true when a swap happened.
+     */
+    function _ensureCamera(kind) {
+      const want = kind === 'perspective' ? 'perspective' : 'orthographic';
+      const have = camera.isPerspectiveCamera ? 'perspective' : 'orthographic';
+      if (want === have) return false;
+
+      const prevTarget = controls.target.clone();
+      controls.dispose();
+
+      camera = want === 'perspective'
+        ? new THREE.PerspectiveCamera(35, aspect, 0.1, 1000)
+        : new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 0.1, 100);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.target.copy(prevTarget);
+      _trackCameraInteraction(controls);   // the old listener died with the old controls
+
+      if (window.__figverify) {
+        window.__figverify.camera = camera;
+        window.__figverify.controls = controls;
+      }
+      return true;
+    }
+
+    // Solve an orthographic camera pose from the on-screen angles of the two
+    // horizontal-plane axes, as measured off the source figure.
+    //
+    // For a camera at azimuth a, elevation e with up = (0,1,0):
+    //     right = (  sin a,           0,      -cos a          )
+    //     up'   = ( -cos a * sin e,   cos e,  -sin a * sin e   )
+    // Projecting X=(1,0,0) and Z=(0,0,1) onto that basis and taking the angle
+    // below screen horizontal gives:
+    //     tan(phiX) = sin e * cot a
+    //     tan(phiZ) = sin e * tan a
+    // whose product and ratio invert cleanly:
+    //     sin e = sqrt(tan phiX * tan phiZ)
+    //     tan a = sqrt(tan phiZ / tan phiX)
+    // Sanity: phiX = phiZ = 30 gives e = 35.264, a = 45 — canonical isometric.
+    const ISO_FALLBACK = { azimuthDeg: 45, elevationDeg: 35.264389682754654 };
+
+    function _solvePoseFromAxisAngles(angles) {
+      // Explicit null means the source is drawn head-on: no depth to recover.
+      if (angles === null) return { azimuthDeg: 90, elevationDeg: 0 };
+      if (!angles || !Number.isFinite(angles.x) || !Number.isFinite(angles.z)) {
+        return { ...ISO_FALLBACK };
+      }
+      // An axis at or past horizontal/vertical is drawn edge-on; the inversion
+      // has no finite solution there.
+      if (angles.x <= 0 || angles.x >= 90 || angles.z <= 0 || angles.z >= 90) {
+        return { ...ISO_FALLBACK };
+      }
+      const tX = Math.tan(THREE.MathUtils.degToRad(angles.x));
+      const tZ = Math.tan(THREE.MathUtils.degToRad(angles.z));
+      const sinSq = tX * tZ;
+      // sin^2(e) >= 1 admits no real elevation.
+      if (!(sinSq > 0) || sinSq >= 1) return { ...ISO_FALLBACK };
+      return {
+        azimuthDeg: THREE.MathUtils.radToDeg(Math.atan(Math.sqrt(tZ / tX))),
+        elevationDeg: THREE.MathUtils.radToDeg(Math.asin(Math.sqrt(sinSq))),
+      };
+    }
+
+    function setCameraView({
+      projection = 'orthographic',
+      azimuthDeg: azimuthDegArg = 45,
+      elevationDeg: elevationDegArg = 35,
+      rollDeg = 0,
+      obliqueAngleDeg = 45,
+      depthScale = 0.5,
+      zoom = null,
+      target = null,
+      heightFraction = 0.5,
+      distanceScale = 1.2,
+      axisScreenAngles = undefined
+    } = {}) {
+      let azimuthDeg = azimuthDegArg;
+      let elevationDeg = elevationDegArg;
+      // Measured axis angles win over any guessed azimuth/elevation. Oblique
+      // overrides both below — its pose is fixed front-on by definition.
+      if (axisScreenAngles !== undefined) {
+        const solved = _solvePoseFromAxisAngles(axisScreenAngles);
+        azimuthDeg = solved.azimuthDeg;
+        elevationDeg = solved.elevationDeg;
+      }
+      const mode = projection === 'perspective' ? 'perspective'
+        : projection === 'oblique' ? 'oblique'
+          : 'orthographic';
+      _ensureCamera(mode === 'perspective' ? 'perspective' : 'orthographic');
+      _installObliqueHook(camera);
+      if (mode === 'oblique') {
+        // Preserve BOTH the in-flight shearAmt and the current shearTarget.
+        // The ResizeObserver re-applies _lastViewArgs on every resize, and a
+        // button click does not set _userMovedCamera — so hardcoding
+        // shearTarget: 1 here would silently re-shear a figure the student had
+        // already revealed. Task 3's "Figure view" button still works because it
+        // sets shearTarget = 1 *before* calling setCameraView, and that value is
+        // what gets preserved here.
+        const _prevShearAmt = _obliqueState ? _obliqueState.shearAmt : 1;
+        const _prevShearTarget = _obliqueState ? _obliqueState.shearTarget : 1;
+        _obliqueState = {
+          angleDeg: Number.isFinite(obliqueAngleDeg) ? obliqueAngleDeg : 45,
+          depthScale: Number.isFinite(depthScale) ? depthScale : 0.5,
+          shearAmt: _prevShearAmt,
+          shearTarget: _prevShearTarget,
+        };
+        // Rotation stays enabled: dragging is how the student reveals the true
+        // shape. The drag listener eases the shear out as they turn the figure.
+        controls.enableRotate = true;
+        const btn = document.getElementById('btnProjToggle');
+        // Label reflects the PRESERVED shearTarget, not an assumed "just enabled"
+        // state -- otherwise a resize while revealed (shearTarget 0) would flip
+        // the label back to '3D view' even though the shear itself stayed put.
+        if (btn) { btn.style.display = ''; btn.textContent = _prevShearTarget > 0.5 ? '3D view' : 'Figure view'; }
+      } else {
+        _obliqueState = null;
+        controls.enableRotate = true;
+        const btn = document.getElementById('btnProjToggle');
+        if (btn) btn.style.display = 'none';
+      }
+
+      const { box, center, size } = computeSceneBounds();
+      const viewTarget = Array.isArray(target)
+        ? new THREE.Vector3(target[0] || 0, target[1] || 0, target[2] || 0)
+        : center;
+
+      // Oblique is defined by a front-on viewpoint; depth comes from the shear.
+      if (mode === 'oblique') { azimuthDeg = 90; elevationDeg = 0; }
+
+      const radius = Math.max(size.length() * distanceScale, FRAME_HALF_HEIGHT * 2);
+      const azimuth = THREE.MathUtils.degToRad(azimuthDeg);
+      const elevation = THREE.MathUtils.degToRad(elevationDeg);
+      const cosElev = Math.cos(elevation);
+      const dir = new THREE.Vector3(
+        Math.cos(azimuth) * cosElev,
+        Math.sin(elevation),
+        Math.sin(azimuth) * cosElev
+      ).normalize();
+
+      camera.position.copy(dir).multiplyScalar(radius).add(viewTarget);
+      camera.up.set(0, 1, 0);
+      if (Number.isFinite(rollDeg) && rollDeg !== 0) {
+        camera.up.applyAxisAngle(dir.clone().negate(), THREE.MathUtils.degToRad(rollDeg));
+      }
+      camera.lookAt(viewTarget);
+      camera.updateMatrixWorld();
+
+      // Project all 8 bounding-box corners into view space. View-space X and Y
+      // are independent of how far the camera sits along its own view axis, so
+      // this extent is valid for both projections.
+      const toView = camera.matrixWorldInverse;
+      const pt = new THREE.Vector3();
+      // Under oblique, camera.projectionMatrix will get a depth shear baked in
+      // (about the target's eye-space depth, see _applyObliqueShear) AFTER
+      // this fit runs. If the fit measured the UNsheared extent, the shear
+      // would inflate the actually-drawn projection beyond what was fit,
+      // breaking heightFraction (and, at large heightFraction, clipping the
+      // figure off-screen). So replicate the same shear here before measuring.
+      const obliqueTh = mode === 'oblique' ? THREE.MathUtils.degToRad(_obliqueState.angleDeg) : 0;
+      const obliqueK = mode === 'oblique' ? _obliqueState.depthScale * _obliqueState.shearAmt : 0;
+      const ztFit = mode === 'oblique' ? viewTarget.clone().applyMatrix4(toView).z : 0;
+      let minVY = Infinity, maxVY = -Infinity, minVX = Infinity, maxVX = -Infinity;
+      for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
+        pt.set(xi ? box.max.x : box.min.x,
+          yi ? box.max.y : box.min.y,
+          zi ? box.max.z : box.min.z).applyMatrix4(toView);
+        let vx = pt.x, vy = pt.y;
+        if (mode === 'oblique') {
+          const dz = pt.z - ztFit;
+          vx -= Math.cos(obliqueTh) * obliqueK * dz;
+          vy -= Math.sin(obliqueTh) * obliqueK * dz;
+        }
+        minVY = Math.min(minVY, vy); maxVY = Math.max(maxVY, vy);
+        minVX = Math.min(minVX, vx); maxVX = Math.max(maxVX, vx);
+      }
+      const projH = Math.max(maxVY - minVY, 1e-6);
+      const projW = Math.max(maxVX - minVX, 1e-6);
+      const frac = Math.min(Math.max(heightFraction, 0.05), 1);
+
+      if (camera.isPerspectiveCamera) {
+        // Frame by DISTANCE and fov. Assigning an orthographic-derived number to
+        // camera.zoom (the old behaviour) is dimensionally meaningless here.
+        camera.zoom = 1;
+        camera.aspect = aspect;
+        const vFov = THREE.MathUtils.degToRad(camera.fov);
+        const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+        const distH = (projH / 2) / Math.tan(vFov / 2) / frac;
+        const distW = (projW / 2) / Math.tan(hFov / 2) / frac;
+        const dist = Math.max(distH, distW, 0.01);
+        camera.position.copy(dir).multiplyScalar(dist).add(viewTarget);
+        camera.lookAt(viewTarget);
+        camera.near = Math.max(0.01, dist - radius * 2);
+        camera.far = dist + radius * 4;
+      } else {
+        camera.near = 0.01;
+        camera.far = radius * 4 + 100;
+        let resolvedZoom;
+        if (Number.isFinite(zoom)) {
+          resolvedZoom = zoom;
+        } else {
+          const zH = (2 * FRAME_HALF_HEIGHT * frac) / projH;
+          const zW = (2 * FRAME_HALF_HEIGHT * aspect * frac) / projW;
+          resolvedZoom = Math.min(Math.max(Math.min(zH, zW), MIN_ZOOM), MAX_ZOOM);
+        }
+        camera.zoom = resolvedZoom;
+      }
+
+      controls.target.copy(viewTarget);
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      HOME_POS.copy(camera.position);
+      HOME_TARGET.copy(controls.target);
+      HOME_ZOOM = camera.zoom;
+
+      _labelZoomRef = camera.zoom || 1;
+      // An explicit setCameraView (including the Reset View button) is the
+      // author/student asking for this exact pose, so any earlier manual
+      // orbiting is superseded — resize may re-fit freely again.
+      _userMovedCamera = false;
+      _lastViewArgs = {
+        projection: mode, azimuthDeg, elevationDeg, rollDeg,
+        obliqueAngleDeg, depthScale, zoom, target, heightFraction, distanceScale,
+        axisScreenAngles,
+      };
+
+      window.__figureCameraView = {
+        projection: mode,
+        azimuthDeg, elevationDeg, rollDeg,
+        zoom: camera.zoom,
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
+    }
+
+    /**
+     * setStandardView(options)
+     * Backwards-compatible wrapper. Prefer setCameraView({ azimuthDeg, elevationDeg, ... }).
+     */
+    function setStandardView({ azimuth = Math.PI / 4, polar = Math.PI / 4, heightFraction = 0.5 } = {}) {
+      const azimuthDeg = THREE.MathUtils.radToDeg(azimuth);
+      const elevationDeg = 90 - THREE.MathUtils.radToDeg(polar);
+      setCameraView({ azimuthDeg, elevationDeg, heightFraction });
+    }
+
+    // Apply a standard view once at startup so tall/narrow scenes get a similar framing.
+    // Call this again after adding or loading scene content that changes bounds.
+    setStandardView();
+
+    /* ── Label system ────────────────────────────────────────────────────── */
+    const _labels = [];
+    const _v = new THREE.Vector3();
+
+    /**
+     * addLabel(text, position3D, options?) → entry
+     *   text     : HTML string  ('x<sub>1</sub>', '&lambda;', '<b>bold</b>', …)
+     *   position : THREE.Vector3 (world space)
+     *   options  : {
+     *       color     : css color string  (default '#111')
+     *       fontSize  : css string        (default '13px')
+     *       bold      : boolean           (default false)
+     *       offset    : [dx, dy] pixels   (default [0, 0])
+     *       background: css string        (default 'none')
+     *     }
+     *   Returns an entry object; update entry.pos.set(x,y,z) to reposition.
+     */
+    function addLabel(text, position, options = {}) {
+      const div = document.createElement('div');
+      div.className = 'lbl';
+      div.innerHTML = text;
+      if (options.color) div.style.color = options.color;
+      if (options.fontSize) div.style.fontSize = options.fontSize;
+      if (options.bold) div.style.fontWeight = 'bold';
+      if (options.background) {
+        div.style.background = options.background;
+        div.style.padding = '1px 4px';
+        div.style.borderRadius = '3px';
+      }
+      // #stage, not <body>: _syncLabels below computes left/top in canvas pixel
+      // space, which is only the same as page space while the stage starts at the
+      // page origin. Once #ui is docked it does not, so labels must be positioned
+      // inside the stage.
+      _stage.appendChild(div);
+      const entry = { div, pos: position.clone(), offset: options.offset || [0, 0] };
+      _labels.push(entry);
+      return entry;
+    }
+
+    const _referenceDistance = 8;
+
+    function _syncLabels() {
+      for (const { div, pos, offset } of _labels) {
+        _v.copy(pos).project(camera);
+
+        // Hide labels that are behind the camera or outside the normalized device
+        // coordinate cube to avoid showing offscreen labels.
+        if (_v.z > 1 || _v.z < -1 || _v.x < -1 || _v.x > 1 || _v.y < -1 || _v.y > 1) {
+          div.style.display = 'none';
+          continue;
+        }
+        div.style.display = '';
+
+        const ox = offset && offset[0] ? offset[0] : 0;
+        const oy = offset && offset[1] ? offset[1] : 0;
+        const x = canvas.offsetLeft + (_v.x * 0.5 + 0.5) * canvas.clientWidth + ox;
+        const y = canvas.offsetTop + (-_v.y * 0.5 + 0.5) * canvas.clientHeight + oy;
+
+        // Under a parallel projection (orthographic and oblique) camera distance
+        // has NO effect on apparent size — only zoom does. Folding distance in
+        // made label sizes vary with scene size across figures.
+        let scale;
+        if (camera.isOrthographicCamera) {
+          scale = (camera.zoom || 1) / (_labelZoomRef || 1);
+        } else {
+          const distance = Math.max(camera.position.distanceTo(pos), 1e-4);
+          scale = _referenceDistance / distance;
+        }
+
+        // Clamp scale to a reasonable range to avoid extremely small/large labels.
+        scale = Math.max(0.15, Math.min(scale, 6));
+
+        div.style.left = x + 'px';
+        div.style.top = y + 'px';
+        div.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      }
+    }
+
+    /* ── Interaction explainer helpers ───────────────────────────────────── */
+    const _tooltip = document.getElementById('figTooltip');
+    const _raycaster = new THREE.Raycaster();
+    const _pointer = new THREE.Vector2();
+    const _interactiveObjects = [];
+    let _hoveredInteractive = null;
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title, body }, '*');
+    }
+
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      const pad = 12;
+      const x = Math.min(event.clientX + pad, window.innerWidth - _tooltip.offsetWidth - pad);
+      const y = Math.max(pad, event.clientY - _tooltip.offsetHeight - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+
+    function _setPointerFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      _pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      _pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    function _firstInteractiveHit(event) {
+      if (!_interactiveObjects.length) return null;
+      _setPointerFromEvent(event);
+      _raycaster.setFromCamera(_pointer, camera);
+      const hits = _raycaster.intersectObjects(_interactiveObjects.map(entry => entry.object), true);
+      for (const hit of hits) {
+        let obj = hit.object;
+        while (obj) {
+          const entry = _interactiveObjects.find(item => item.object === obj);
+          if (entry) return { ...entry, hit };
+          obj = obj.parent;
+        }
+      }
+      return null;
+    }
+
+    function registerInteractive(object, info = {}) {
+      if (!object) return object;
+      object.userData = object.userData || {};
+      object.userData.interactive = true;
+      _interactiveObjects.push({ object, info });
+      return object;
+    }
+
+    canvas.addEventListener('pointermove', (event) => {
+      moveTooltip(event);
+      const entry = _firstInteractiveHit(event);
+      if (entry) {
+        _hoveredInteractive = entry;
+        canvas.style.cursor = 'pointer';
+        showTooltip(entry.info.tooltip || entry.info.title || 'Click to explain', event);
+      } else {
+        _hoveredInteractive = null;
+        canvas.style.cursor = controls.enabled ? 'grab' : 'default';
+        hideTooltip();
+      }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      _hoveredInteractive = null;
+      canvas.style.cursor = 'default';
+      hideTooltip();
+    });
+
+    canvas.addEventListener('click', (event) => {
+      const entry = _firstInteractiveHit(event) || _hoveredInteractive;
+      if (!entry) {
+        hidePopup();
+        return;
+      }
+      const title = entry.info.title || entry.info.tooltip || 'Figure element';
+      const body = entry.info.body || entry.info.description || 'This part is interactive.';
+      showPopup(title, body);
+      if (typeof entry.info.onClick === 'function') entry.info.onClick(entry.hit, entry.object);
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hidePopup();
+        hideTooltip();
+      }
+    });
+
+    /* ── Render loop ─────────────────────────────────────────────────────── */
+    let _firstFrame = true;
+    let _lastFrameTime = performance.now();
+    function animate() {
+      requestAnimationFrame(animate);
+      // Ease the oblique shear toward its target. Frame-rate normalised against
+      // 60fps and clamped, so the reveal takes the same wall-clock time on a
+      // slow headless renderer as on a fast display.
+      const _now = performance.now();
+      const _frameScale = Math.min(2.5, Math.max(0.5, (_now - _lastFrameTime) / 16));
+      _lastFrameTime = _now;
+      if (_obliqueState) {
+        const _tgt = _obliqueState.shearTarget;
+        if (Math.abs(_obliqueState.shearAmt - _tgt) > 0.001) {
+          _obliqueState.shearAmt += (_tgt - _obliqueState.shearAmt) * Math.min(1, 0.14 * _frameScale);
+          camera.updateProjectionMatrix();
+        } else if (_obliqueState.shearAmt !== _tgt) {
+          _obliqueState.shearAmt = _tgt;
+          camera.updateProjectionMatrix();
+        }
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      _syncLabels();
+      // Frame counter used by the headless verifier to prove the render loop is
+      // actually alive (not frozen by an exception thrown after the first frame).
+      window.__figFrames = (window.__figFrames || 0) + 1;
+      if (_firstFrame) { _firstFrame = false; window.__markRendered?.(); }
+    }
+    animate();
+
+    /* ── Verification hook (invisible; read by the headless verifier) ──────── */
+    // Exposes the live objects so automated checks can confirm the GPU drew
+    // something, the scene has content, and no geometry has NaN coordinates.
+    window.__figverify = {
+      renderer, scene, camera, controls, setCameraView,
+      obliqueState: () => _obliqueState,
+    };
+
+    /* ── Resize (ResizeObserver on canvas) ───────────────────────────────── */
+    new ResizeObserver(() => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!w || !h) return;
+      aspect = w / h;
+      renderer.setSize(w, h, false);
+      if (camera.isPerspectiveCamera) {
+        camera.aspect = aspect;
+      } else {
+        camera.left = -d * aspect;
+        camera.right = d * aspect;
+      }
+      // updateProjectionMatrix() is hooked (see _installObliqueHook), so the
+      // oblique shear is re-applied here on BOTH branches below.
+      camera.updateProjectionMatrix();
+      // Re-apply the last view so heightFraction still holds at the new aspect —
+      // but ONLY while the camera is still the one the figure authored. Once the
+      // student has orbited/panned/zoomed, setCameraView would recompute
+      // camera.position from azimuth/elevation and overwrite controls.target,
+      // silently throwing away their interaction on every canvas resize (and
+      // chapter-preview iframes resize routinely). In that case we keep the live
+      // pose and only widen/narrow the frustum, which is all a resize means.
+      if (_lastViewArgs && !_userMovedCamera) setCameraView(_lastViewArgs);
+      else controls.update();
+    }).observe(canvas);
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → (…args) => number
+     * Throws on a syntax error or a variable outside `vars`. Never falls back.
+     *
+     * DUPLICATED (deliberately): base_scene_2d.html has a byte-for-byte
+     * equivalent ES5 copy. Each scaffold is a standalone served HTML file and
+     * neither can import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_2d.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      const names = (vars && vars.length) ? vars : ['x'];
+      let parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error(`Cannot parse "${src}": ${e?.message || e}`);
+      }
+      for (const used of parsed.variables()) {
+        if (!names.includes(used)) {
+          throw new Error(`Unknown variable "${used}" (expected: ${names.join(', ')})`);
+        }
+      }
+      return (...args) => {
+        const scope = {};
+        names.forEach((n, i) => { scope[n] = args[i]; });
+        let v;
+        try { v = parsed.evaluate(scope); } catch { return NaN; }
+        return typeof v === 'number' ? v : NaN;
+      };
+    }
+
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs directly in #ui, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_2d.html.
+     */
+    function _equationErrorSlot(input) {
+      const parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        const slotId = `eq-err-${input.id}`;
+        const byId = document.getElementById(slotId);
+        if (byId) return byId;
+        const namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      const existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      const span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → (fn, src) => void
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify.js catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_2d.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') return (fn, src) => t(fn, src);
+      if (t && t.handle) {
+        const method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            `bindEquationInput("${inputId}"): target handle has no method "${method}". ` +
+            `Use { handle, method: '...' } with a method the handle really has ` +
+            `(plotCurve3D/plotSurface: setExpr, setFn; plotParametric3D: setX, setY, setZ).`
+          );
+        }
+        return (fn) => t.handle[method](fn);
+      }
+      if (t && typeof t.setFn === 'function') return (fn) => t.setFn(fn);
+      throw new Error(
+        `bindEquationInput("${inputId}"): this target cannot be driven — it is not a ` +
+        `function and has no .setFn. Handles without .setFn (e.g. plotParametric3D) must ` +
+        `be passed as { handle, method: 'setX' } naming the setter to call.`
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     * targets: a plot handle, { handle, method }, a function(fn, src), or an array.
+     * opts   : { variables=['x'], onChange(fn, src) }
+     * On a parse error the last good geometry is kept and the message is shown
+     * inline. This NEVER substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_2d.html.
+     */
+    function bindEquationInput(inputId, targets, opts = {}) {
+      const input = document.getElementById(inputId);
+      if (!input) throw new Error(`bindEquationInput: no element with id "${inputId}"`);
+      const vars = opts.variables || ['x'];
+      const list = Array.isArray(targets) ? targets : [targets];
+      const slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      const appliers = list.map((t) => _resolveEqTarget(inputId, t));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          const fn = compileExpr(src, vars);
+          for (const run of appliers) run(fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', () => apply(input.value));
+      apply(input.value);
+      return { apply, input, errorSlot: slot };
+    }
+
+    /* ── 3D plotting ─────────────────────────────────────────────────────── */
+    const _plot3d = new Map();
+
+    function _disposeObject(obj) {
+      obj.traverse?.(o => {
+        o.geometry?.dispose?.();
+        if (Array.isArray(o.material)) o.material.forEach(m => m.dispose?.());
+        else o.material?.dispose?.();
+      });
+    }
+
+    function _register3d(id, handle) {
+      const prev = _plot3d.get(id);
+      if (prev && prev !== handle) { scene.remove(prev.object); _disposeObject(prev.object); }
+      _plot3d.set(id, handle);
+      return handle;
+    }
+
+    function _resolveFn3d(value, vars) {
+      return typeof value === 'function' ? value : compileExpr(value, vars);
+    }
+
+    /**
+     * plotCurve3D(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain=[-2,2], plane='xy'|'xz',
+     *           samples=200, color=0x1f77b4 }
+     * 'xy' maps t → (t, f(t), 0); 'xz' maps t → (t, 0, f(t)).
+     */
+    function plotCurve3D(id, opts = {}) {
+      const vars = opts.variables || ['x'];
+      const material = new THREE.LineBasicMaterial({ color: opts.color ?? 0x1f77b4 });
+      const line = new THREE.Line(new THREE.BufferGeometry(), material);
+      scene.add(line);
+      const handle = {
+        id,
+        object: line,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || [-2, 2],
+        samples: opts.samples || 200,
+        plane: opts.plane === 'xz' ? 'xz' : 'xy',
+        setExpr(src) { this.fn = _resolveFn3d(src, vars); return this.sample(); },
+        setFn(f) { this.fn = f; return this.sample(); },
+        setDomain(dm) { this.domain = dm; return this.sample(); },
+        remove() { scene.remove(line); _disposeObject(line); _plot3d.delete(id); },
+        sample() {
+          if (!this.fn) return this;
+          const [a, b] = this.domain;
+          const n = Math.max(2, this.samples | 0);
+          const pts = [];
+          for (let i = 0; i < n; i++) {
+            const t = a + (b - a) * (i / (n - 1));
+            let v;
+            try { v = this.fn(t); } catch { v = NaN; }
+            if (!Number.isFinite(v)) v = 0;
+            pts.push(this.plane === 'xz' ? new THREE.Vector3(t, 0, v)
+              : new THREE.Vector3(t, v, 0));
+          }
+          const old = line.geometry;
+          line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    /**
+     * plotParametric3D(id, opts) → handle
+     *   opts: { x, y, z, variables=['t'], tDomain=[0,1], samples=200, color }
+     */
+    function plotParametric3D(id, opts = {}) {
+      const vars = opts.variables || ['t'];
+      const material = new THREE.LineBasicMaterial({ color: opts.color ?? 0x1f77b4 });
+      const line = new THREE.Line(new THREE.BufferGeometry(), material);
+      scene.add(line);
+      const handle = {
+        id,
+        object: line,
+        fx: _resolveFn3d(opts.x ?? '0', vars),
+        fy: _resolveFn3d(opts.y ?? '0', vars),
+        fz: _resolveFn3d(opts.z ?? '0', vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX(src) { this.fx = _resolveFn3d(src, vars); return this.sample(); },
+        setY(src) { this.fy = _resolveFn3d(src, vars); return this.sample(); },
+        setZ(src) { this.fz = _resolveFn3d(src, vars); return this.sample(); },
+        remove() { scene.remove(line); _disposeObject(line); _plot3d.delete(id); },
+        sample() {
+          const [a, b] = this.tDomain;
+          const n = Math.max(2, this.samples | 0);
+          const pts = [];
+          for (let i = 0; i < n; i++) {
+            const t = a + (b - a) * (i / (n - 1));
+            let x, y, z;
+            try { x = this.fx(t); y = this.fy(t); z = this.fz(t); } catch { x = y = z = NaN; }
+            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+              pts.push(new THREE.Vector3(x, y, z));
+            }
+          }
+          const old = line.geometry;
+          line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    /**
+     * plotSurface(id, opts) → handle
+     *   opts: { expr | fn, variables=['x','y'], xDomain=[-2,2], yDomain=[-2,2],
+     *           segments=48, color=0x6699cc, wireframe=false }
+     * Height is mapped to the world Y axis (the scaffold is y-up); the domain
+     * spans world X and Z.
+     */
+    function plotSurface(id, opts = {}) {
+      const vars = opts.variables || ['x', 'y'];
+      const material = new THREE.MeshBasicMaterial({
+        color: opts.color ?? 0x6699cc,
+        wireframe: !!opts.wireframe,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: opts.opacity ?? 0.85,
+      });
+      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+      scene.add(mesh);
+      const handle = {
+        id,
+        object: mesh,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        xDomain: opts.xDomain || [-2, 2],
+        yDomain: opts.yDomain || [-2, 2],
+        segments: opts.segments || 48,
+        setExpr(src) { this.fn = _resolveFn3d(src, vars); return this.sample(); },
+        setFn(f) { this.fn = f; return this.sample(); },
+        remove() { scene.remove(mesh); _disposeObject(mesh); _plot3d.delete(id); },
+        sample() {
+          if (!this.fn) return this;
+          const [x0, x1] = this.xDomain;
+          const [y0, y1] = this.yDomain;
+          const seg = Math.max(1, this.segments | 0);
+          const geom = new THREE.PlaneGeometry(x1 - x0, y1 - y0, seg, seg);
+          const pos = geom.attributes.position;
+          const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+          for (let i = 0; i < pos.count; i++) {
+            const px = pos.getX(i) + cx;
+            const py = pos.getY(i) + cy;
+            let h;
+            try { h = this.fn(px, py); } catch { h = NaN; }
+            if (!Number.isFinite(h)) h = 0;
+            pos.setXYZ(i, px, h, py);
+          }
+          pos.needsUpdate = true;
+          geom.computeVertexNormals();
+          geom.computeBoundingBox();
+          geom.computeBoundingSphere();
+          const old = mesh.geometry;
+          mesh.geometry = geom;
+          old?.dispose?.();
+          return this;
+        }
+      };
+      return _register3d(id, handle).sample();
+    }
+
+    // @FIGURE_CODE_BEGIN
+// ─── ELEMENT SPEC ────────────────────────────────────────────────────────────
+// ring carbon (space-filling) → SphereGeometry(1.70*0.88)  MeshPhysicalMaterial #4B5053 (matte core)
+// axial H     (space-filling) → SphereGeometry(1.20*0.88)  #B8352A  glossy  (vdW H = same as eq)
+// equatorial H(space-filling) → SphereGeometry(1.20*0.88)  #46A8DC  glossy  (vdW H = same as ax)
+// ring carbon (ball&stick)    → SphereGeometry(0.36)       #4B5053
+// axial H     (ball&stick)    → SphereGeometry(0.24)       #C0392B
+// equatorial H(ball&stick)    → SphereGeometry(0.24)       #46A8DC
+// C–C + C–H rods (ball&stick) → CylinderGeometry(0.085/0.075) #C6D4DC
+// axial arrow      → Tube(QuadraticBezierCurve3)+Cone tip on UPPER-LEFT red sphere, #E0218A
+// equatorial arrow → Tube(QuadraticBezierCurve3)+Cone tip on TOP blue rim sphere, #1C9AD6
+// labels           → 'Equatorial' (#1C9AD6, top-left), 'Axial' (#E0218A, below it, left)
+// layout           → side-by-side default: SF at x=-4.6, BS at x=+4.6 (source two-panel figure)
+// lighting         → AmbientLight + key DirectionalLight upper-left + fill + rim
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEG = Math.PI / 180;
+const RING_R = 1.46, PUCK = 0.25, CH = 1.09, EQ_TILT = 19.5 * DEG;
+const COL_C = 0x4B5053, COL_EQ = 0x46A8DC, COL_ROD = 0xC6D4DC;
+const MAGENTA = 0xE0218A, BLUEARR = 0x1C9AD6;
+const FRONT = 2.75;                 // world-Y plane the callouts live on (toward camera)
+const PANEL_X = 4.6;                // side-by-side panel offset
+const SF_EXT = 3.30, BS_EXT = 2.85; // on-screen half-extent of each model
+
+/* ── lighting ─────────────────────────────────────────────────────────────── */
+scene.add(new THREE.AmbientLight(0xffffff, 0.58));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.72);
+keyLight.position.set(-6, 9, -6);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0xdbeaf5, 0.62);
+fillLight.position.set(5, -3, 6);
+scene.add(fillLight);
+const rimLight = new THREE.DirectionalLight(0xffffff, 0.30);
+rimLight.position.set(4, 3, 7);
+scene.add(rimLight);
+
+/* ── helpers ──────────────────────────────────────────────────────────────── */
+function atomMat(hex, matte) {
+  return new THREE.MeshPhysicalMaterial({
+    color: hex,
+    roughness: matte ? 0.42 : 0.20,
+    metalness: 0.03,
+    clearcoat: matte ? 0.32 : 0.95,
+    clearcoatRoughness: matte ? 0.38 : 0.08,
+    transparent: false, opacity: 1
+  });
+}
+function makeRod(a, b, r, hex) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = Math.max(dir.length(), 1e-4);
+  const m = new THREE.Mesh(
+    new THREE.CylinderGeometry(r, r, len, 18, 1),
+    new THREE.MeshPhysicalMaterial({ color: hex, roughness: 0.42, metalness: 0.02, clearcoat: 0.4, transparent: false, opacity: 1 })
+  );
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
+}
+function makeArrow(start, ctrl, tip, hex) {
+  const g = new THREE.Group();
+  const dir = tip.clone().sub(ctrl).normalize();
+  const shaftEnd = tip.clone().addScaledVector(dir, -0.40);
+  const curve = new THREE.QuadraticBezierCurve3(start, ctrl, shaftEnd);
+  const mat = new THREE.MeshBasicMaterial({ color: hex });
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 40, 0.070, 12, false), mat);
+  g.add(tube);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.19, 0.46, 24), mat);
+  cone.position.copy(tip).addScaledVector(dir, -0.23);   // apex sits exactly on `tip`
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  g.add(cone);
+  g.userData.parts = [tube, cone];
+  return g;
+}
+// screen-plane point: screen-right = +X, screen-up = -Z (see camera below)
+function sp(sx, sy) { return new THREE.Vector3(sx, FRONT, -sy); }
+// push a world point out to the FRONT plane along the camera ray (keeps screen position)
+function toFrontPlane(p) {
+  const c = camera.position;
+  const denom = (p.y - c.y);
+  const t = Math.abs(denom) < 1e-6 ? 1 : (FRONT - c.y) / denom;
+  return new THREE.Vector3(c.x + (p.x - c.x) * t, FRONT, c.z + (p.z - c.z) * t);
+}
+
+/* ── molecule builder ─────────────────────────────────────────────────────── */
+function buildModel(kind) {
+  const isSF = (kind === 'sf');
+  const S = isSF ? 0.88 : 1.0;
+  const rC = isSF ? 1.70 * S : 0.36;
+  const rH = isSF ? 1.20 * S : 0.24;            // axial and equatorial H: SAME van der Waals radius
+  const colA = isSF ? 0xB8352A : 0xC0392B;
+  const geoC = new THREE.SphereGeometry(rC, 48, 32);
+  const geoH = new THREE.SphereGeometry(rH, 40, 28);
+
+  const root = new THREE.Group();
+  scene.add(root);
+  const entries = [], carbons = [], hGroups = [];
+
+  for (let i = 0; i < 6; i++) {
+    const th = (-30 + 60 * i) * DEG;
+    const s = (i % 2 === 0) ? 1 : -1;                      // pucker: even up, odd down
+    const cp = new THREE.Vector3(RING_R * Math.cos(th), s * PUCK, RING_R * Math.sin(th)).multiplyScalar(S);
+
+    const cm = new THREE.Mesh(geoC, atomMat(COL_C, true));
+    cm.position.copy(cp);
+    root.add(cm);
+    const cEntry = { mesh: cm, mat: cm.material, kind: 'C', ci: i, base: COL_C };
+    cm.userData.entry = cEntry; entries.push(cEntry);
+    carbons.push({ i, pos: cp, s, th, mesh: cm });
+
+    const aDir = new THREE.Vector3(0, s, 0);
+    const eDir = new THREE.Vector3(
+      Math.cos(th) * Math.cos(EQ_TILT), -s * Math.sin(EQ_TILT), Math.sin(th) * Math.cos(EQ_TILT)
+    ).normalize();
+
+    [['axial', aDir, colA], ['eq', eDir, COL_EQ]].forEach(([hk, dir, col]) => {
+      const g = new THREE.Group();
+      g.position.copy(cp);
+      root.add(g);
+      const hp = dir.clone().multiplyScalar(CH * S);
+      const hm = new THREE.Mesh(geoH, atomMat(col, false));
+      hm.position.copy(hp);
+      g.add(hm);
+      const hEntry = { mesh: hm, mat: hm.material, kind: hk, ci: i, base: col };
+      hm.userData.entry = hEntry; entries.push(hEntry);
+      if (!isSF) {
+        const rod = makeRod(new THREE.Vector3(0, 0, 0), hp.clone(), 0.075, COL_ROD);
+        g.add(rod);
+        entries.push({ mesh: rod, mat: rod.material, kind: hk, ci: i, isRod: true, base: COL_ROD });
+      }
+      hGroups.push({ group: g, kind: hk, ci: i });
+    });
+  }
+
+  if (!isSF) {
+    for (let i = 0; i < 6; i++) {
+      const a = carbons[i].pos, b = carbons[(i + 1) % 6].pos;
+      const rod = makeRod(a.clone(), b.clone(), 0.085, COL_ROD);
+      root.add(rod);
+      entries.push({ mesh: rod, mat: rod.material, kind: 'bond', ci: [i, (i + 1) % 6], isRod: true, base: COL_ROD });
+    }
+  }
+
+  const annot = new THREE.Group();
+  root.add(annot);
+
+  const aS = isSF ? 1.0 : 0.86;                 // callouts shrink with the smaller model
+  return {
+    kind, S, rC, rH, root, entries, carbons, hGroups, annot,
+    annScale: aS,
+    annLeft: -5.15 * aS, annTop: 4.85 * aS,
+    arrowA: null, arrowE: null, annEntries: [],
+    anchorA: sp(0, 0), anchorE: sp(0, 0),
+    presence: 0, presenceT: 0, scale: 1, x: 0, xT: 0
+  };
+}
+
+const sf = buildModel('sf');
+const bs = buildModel('bs');
+const models = [sf, bs];
+
+/* ── state ────────────────────────────────────────────────────────────────── */
+let modelMode = 'both';        // 'sf' | 'bs' | 'both'   (source figure = both panels)
+let hFilter = 'both';          // 'ax' | 'eq' | 'both'
+let axT = 1, eqT = 1, axFade = 1, eqFade = 1;
+let selected = null;
+
+/* initial pose so scene bounds are right when the camera is first fitted */
+sf.presence = sf.presenceT = 1; sf.x = sf.xT = -PANEL_X;
+bs.presence = bs.presenceT = 1; bs.x = bs.xT = PANEL_X;
+sf.root.position.x = sf.x;
+bs.root.position.x = bs.x;
+
+/* ── camera (after geometry, before callouts) ─────────────────────────────── */
+setCameraView({
+  projection: 'perspective',
+  azimuthDeg: 90, elevationDeg: 88.5, rollDeg: 0,
+  heightFraction: 0.65,
+  target: [0, 0, 0]
+});
+camera.near = 0.5; camera.far = 500; camera.updateProjectionMatrix();
+document.getElementById('btnReset').style.display = '';
+
+/* ── framing that follows the current panel layout ────────────────────────── */
+const camTargetT = new THREE.Vector3(0, 0, 0);
+let camDistT = camera.position.distanceTo(controls.target);
+let camAnim = false;
+
+function layoutBox() {
+  const both = (modelMode === 'both');
+  const items = [];
+  if (modelMode === 'sf' || both) items.push({ m: sf, x: both ? -PANEL_X : 0, ext: SF_EXT });
+  if (modelMode === 'bs' || both) items.push({ m: bs, x: both ? PANEL_X : 0, ext: BS_EXT });
+  if (!items.length) items.push({ m: sf, x: 0, ext: SF_EXT });
+  const ann = items[0];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const it of items) {
+    minX = Math.min(minX, it.x - it.ext); maxX = Math.max(maxX, it.x + it.ext);
+    minY = Math.min(minY, -it.ext); maxY = Math.max(maxY, it.ext);
+  }
+  minX = Math.min(minX, ann.x + ann.m.annLeft);
+  maxY = Math.max(maxY, ann.m.annTop);
+  return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, hw: (maxX - minX) / 2, hh: (maxY - minY) / 2 };
+}
+
+function applyFit(instant) {
+  const b = layoutBox();
+  const el = renderer.domElement;
+  const asp = Math.max(0.25, (el.clientWidth || 1) / (el.clientHeight || 1));
+  const tv = Math.tan(THREE.MathUtils.degToRad((camera.fov || 35) / 2));
+  const fill = 0.95;
+  const dH = b.hh / tv / fill;
+  const dW = b.hw / (tv * asp) / fill;
+  camDistT = Math.max(6, Math.max(dH, dW));
+  camTargetT.set(b.cx, 0, -b.cy);
+  camAnim = true;
+  if (instant) {
+    controls.target.copy(camTargetT);
+    const dir = camera.position.clone().sub(controls.target);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 1, 0.03);
+    dir.normalize();
+    camera.position.copy(controls.target).addScaledVector(dir, camDistT);
+    controls.update();
+    camAnim = false;
+  }
+}
+
+function setModel(m) {
+  modelMode = m;
+  const side = (m === 'both');
+  sf.presenceT = (m === 'sf' || side) ? 1 : 0;
+  bs.presenceT = (m === 'bs' || side) ? 1 : 0;
+  sf.xT = side ? -PANEL_X : 0;
+  bs.xT = side ? PANEL_X : 0;
+  applyFit(false);
+  syncButtons();
+}
+function setFilter(f) {
+  hFilter = f;
+  axT = (f === 'eq') ? 0 : 1;
+  eqT = (f === 'ax') ? 0 : 1;
+  syncButtons();
+}
+
+applyFit(true);
+
+/* ── callout arrows (need the camera, so built after framing) ─────────────── */
+function arrowFromScreenTail(tailSx, tailSy, tip3d, bulge, color) {
+  const tail = sp(tailSx, tailSy);
+  const tipSx = tip3d.x, tipSy = -tip3d.z;
+  const dx = tipSx - tailSx, dy = tipSy - tailSy;
+  const L = Math.hypot(dx, dy) || 1;
+  const px = -dy / L, py = dx / L;
+  const ctrl = sp((tailSx + tipSx) / 2 + px * bulge, (tailSy + tipSy) / 2 + py * bulge);
+  return makeArrow(tail, ctrl, tip3d, color);
+}
+
+function buildAnnotations(m) {
+  // dispose any previous arrows so a re-fit can re-aim them exactly
+  for (let i = m.annot.children.length - 1; i >= 0; i--) {
+    const g = m.annot.children[i];
+    g.traverse(o => { o.geometry?.dispose?.(); });
+    m.annot.remove(g);
+  }
+  const S = m.S, a = m.annScale;
+
+  // AXIAL target: carbon 4 (upper-left on screen), axial H pointing toward the viewer.
+  const c4 = m.carbons[4];
+  const aC = c4.pos.clone().add(new THREE.Vector3(0, c4.s * CH * S, 0));
+  const nA = new THREE.Vector3(-0.60, 0.50, -0.60).normalize();
+  const tipA = toFrontPlane(aC.clone().addScaledVector(nA, m.rH * 0.99));
+  const arrowA = arrowFromScreenTail(-3.60 * a, 2.30 * a, tipA, 0.45, MAGENTA);
+
+  // EQUATORIAL target: carbon 5 — its equatorial H is the TOP blue sphere on the rim.
+  const c5 = m.carbons[5];
+  const eD5 = new THREE.Vector3(
+    Math.cos(c5.th) * Math.cos(EQ_TILT), -c5.s * Math.sin(EQ_TILT), Math.sin(c5.th) * Math.cos(EQ_TILT)
+  ).normalize();
+  const eC = c5.pos.clone().addScaledVector(eD5, CH * S);
+  const nE = new THREE.Vector3(-0.50, 0.45, -0.74).normalize();
+  const tipE = toFrontPlane(eC.clone().addScaledVector(nE, m.rH * 0.99));
+  const arrowE = arrowFromScreenTail(-2.85 * a, 4.15 * a, tipE, 0.50, BLUEARR);
+
+  m.annot.add(arrowA); m.annot.add(arrowE);
+  m.arrowA = arrowA; m.arrowE = arrowE;
+  m.anchorA = sp(-4.45 * a, 2.55 * a);
+  m.anchorE = sp(-3.95 * a, 4.45 * a);
+
+  m.annEntries = [];
+  arrowA.userData.parts.forEach(p => { const e = { mesh: p, kind: 'annA' }; p.userData.entry = e; m.annEntries.push(e); });
+  arrowE.userData.parts.forEach(p => { const e = { mesh: p, kind: 'annE' }; p.userData.entry = e; m.annEntries.push(e); });
+}
+buildAnnotations(sf);
+buildAnnotations(bs);
+
+let annDist = camera.position.distanceTo(controls.target);
+const annDir = camera.position.clone().sub(controls.target).normalize();
+function maybeRebuildAnnotations() {
+  const dist = camera.position.distanceTo(controls.target);
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  if (Math.abs(dist - annDist) > 0.3 || dir.dot(annDir) < 0.9992) {
+    buildAnnotations(sf); buildAnnotations(bs);
+    annDist = dist; annDir.copy(dir);
+  }
+}
+
+/* ── labels ───────────────────────────────────────────────────────────────── */
+const labEq = addLabel('Equatorial', new THREE.Vector3(0, 0, 0), { color: '#1C9AD6', fontSize: '16px' });
+const labAx = addLabel('Axial', new THREE.Vector3(0, 0, 0), { color: '#E0218A', fontSize: '16px' });
+
+function placeLabel(entry, model, anchor, visible, px) {
+  entry.pos.set(anchor.x + model.x, anchor.y, anchor.z);
+  entry.div.style.visibility = visible ? 'visible' : 'hidden';
+  const dist = Math.max(camera.position.distanceTo(entry.pos), 1e-3);
+  const s = Math.max(0.15, Math.min(6, 8 / dist));
+  const fs = Math.round(px / s);
+  if (entry.div.__fs !== fs) { entry.div.style.fontSize = fs + 'px'; entry.div.__fs = fs; }
+}
+
+/* ── picking (hover + click select) ───────────────────────────────────────── */
+const pickRay = new THREE.Raycaster();
+const pickPt = new THREE.Vector2();
+const _tmp = new THREE.Vector3();
+function pickEntry(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pickPt.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+  pickPt.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+  pickRay.setFromCamera(pickPt, camera);
+  const targets = [];
+  for (const m of models) {
+    if (m.presence < 0.5) continue;
+    if (m.annot.visible) for (const e of m.annEntries) targets.push(e.mesh);
+    for (const e of m.entries) {
+      if (e.isRod) continue;
+      if (e.kind === 'axial' && axFade < 0.35) continue;
+      if (e.kind === 'eq' && eqFade < 0.35) continue;
+      targets.push(e.mesh);
+    }
+  }
+  if (!targets.length) return null;
+  const hits = pickRay.intersectObjects(targets, false);
+  return hits.length ? hits[0].object.userData.entry : null;
+}
+function entryText(e) {
+  if (e.kind === 'annA') return 'Axial position — parallel to the ring axis';
+  if (e.kind === 'annE') return 'Equatorial position — out around the ring belt';
+  const n = e.ci + 1;
+  if (e.kind === 'C') return 'Ring carbon C' + n + ' — click to highlight its H pair';
+  if (e.kind === 'axial') return 'Axial H on C' + n + ' — parallel to the ring axis';
+  return 'Equatorial H on C' + n + ' — splayed out around the belt';
+}
+const selInfo = document.getElementById('selInfo');
+function applySelection(ci) {
+  selected = ci;
+  if (ci === null) {
+    selInfo.textContent = 'None — click any atom in the figure to light up one carbon together with its own axial (red) and equatorial (blue) hydrogen.';
+  } else {
+    const up = (ci % 2 === 0);
+    selInfo.innerHTML = '<b>C' + (ci + 1) + '</b> (' + (up ? 'up-puckered' : 'down-puckered') +
+      '): its axial H points ' + (up ? 'up, toward you' : 'down, away from you') +
+      ', its equatorial H splays outward and tilts slightly ' + (up ? 'down' : 'up') +
+      '. The same carbon is highlighted in <i>both</i> models.';
+  }
+}
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  const e = pickEntry(ev);
+  if (e) { renderer.domElement.style.cursor = 'pointer'; showTooltip(entryText(e), ev); }
+  else { renderer.domElement.style.cursor = 'grab'; hideTooltip(); }
+});
+renderer.domElement.addEventListener('click', (ev) => {
+  const e = pickEntry(ev);
+  if (!e) { applySelection(null); hidePopup(); return; }
+  if (e.kind === 'annA') {
+    showPopup('Axial hydrogens',
+      'The six axial C–H bonds run exactly parallel to the ring\'s three-fold axis — the direction you are looking down. Three point up out of the page and three point down behind it, alternating carbon by carbon. In the space-filling model they read as the red spheres crowded toward the centre of the disc.');
+    return;
+  }
+  if (e.kind === 'annE') {
+    showPopup('Equatorial hydrogens',
+      'The six equatorial C–H bonds point outward around the belt of the ring, tilted only about 19.5° away from the mean plane — up on the down-puckered carbons and down on the up-puckered ones. They form the big blue rim of the space-filling disc.');
+    return;
+  }
+  applySelection(e.ci);
+  const up = (e.ci % 2 === 0);
+  showPopup('Carbon C' + (e.ci + 1) + ': one axial + one equatorial H',
+    'This ring carbon is ' + (up ? 'puckered up' : 'puckered down') + '. Its red axial hydrogen runs exactly parallel to the ring axis (' +
+    (up ? 'upward' : 'downward') + '), while its blue equatorial hydrogen points outward around the ring belt, tilted about 19.5° ' +
+    (up ? 'downward' : 'upward') + '. Every one of the six carbons carries exactly one of each — so each face of the chair bears three axial and three equatorial hydrogens, alternating.');
+});
+document.getElementById('clearSel').addEventListener('click', () => { applySelection(null); hidePopup(); });
+document.getElementById('btnReset').addEventListener('click', () => { applyFit(false); });
+window.addEventListener('resize', () => { setTimeout(() => applyFit(false), 0); });
+
+/* ── per-frame state update ───────────────────────────────────────────────── */
+function related(e, sel) {
+  if (sel === null) return true;
+  return Array.isArray(e.ci) ? e.ci.indexOf(sel) >= 0 : e.ci === sel;
+}
+function updateState(instant) {
+  const k = instant ? 1 : 0.13;
+  axFade += (axT - axFade) * k;
+  eqFade += (eqT - eqFade) * k;
+
+  for (const m of models) {
+    m.presence += (m.presenceT - m.presence) * k;
+    m.x += (m.xT - m.x) * k;
+    m.root.position.x = m.x;
+    m.root.visible = m.presence > 0.012;
+
+    for (const hg of m.hGroups) {
+      const f = (hg.kind === 'axial') ? axFade : eqFade;
+      hg.group.scale.setScalar(Math.max(0.0001, f));
+    }
+    for (const e of m.entries) {
+      const f = (e.kind === 'axial') ? axFade : (e.kind === 'eq') ? eqFade : 1;
+      const dim = related(e, selected) ? 1 : 0.35;
+      const o = m.presence * f * dim;
+      const mat = e.mat;
+      mat.opacity = o;
+      const tr = o < 0.995;
+      if (mat.transparent !== tr) { mat.transparent = tr; mat.needsUpdate = true; }
+      mat.depthWrite = o > 0.55;
+      if (mat.emissive) {
+        const hot = (selected !== null) && related(e, selected) && !e.isRod;
+        if (hot) { mat.emissive.setHex(e.base); mat.emissiveIntensity = 0.42; }
+        else { mat.emissive.setHex(0x000000); mat.emissiveIntensity = 1; }
+      }
+    }
+  }
+
+  // camera framing tween (panel layout changes / reset / resize)
+  if (camAnim) {
+    controls.target.lerp(camTargetT, k);
+    const dir = camera.position.clone().sub(controls.target);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 1, 0.03);
+    dir.normalize();
+    const curD = camera.position.distanceTo(controls.target);
+    const nd = curD + (camDistT - curD) * k;
+    camera.position.copy(controls.target).addScaledVector(dir, nd);
+    if (Math.abs(nd - camDistT) < 0.02 && controls.target.distanceTo(camTargetT) < 0.02) {
+      controls.target.copy(camTargetT);
+      camera.position.copy(controls.target).addScaledVector(dir, camDistT);
+      camAnim = false;
+    }
+  }
+  maybeRebuildAnnotations();
+
+  // callouts follow the leftmost visible model and fade out when tilted away
+  const annModel = (sf.presence > 0.5) ? sf : bs;
+  _tmp.copy(camera.position).sub(controls.target).normalize();
+  const tilt = Math.acos(Math.min(1, Math.abs(_tmp.y))) / DEG;
+  const show = tilt < 35;
+  for (const m of models) {
+    const on = (m === annModel) && show && m.presence > 0.5;
+    m.annot.visible = on;
+    if (m.arrowA) m.arrowA.visible = on && axT > 0.5;
+    if (m.arrowE) m.arrowE.visible = on && eqT > 0.5;
+  }
+  placeLabel(labAx, annModel, annModel.anchorA, show && annModel.presence > 0.5 && axT > 0.5, 16);
+  placeLabel(labEq, annModel, annModel.anchorE, show && annModel.presence > 0.5 && eqT > 0.5, 16);
+}
+
+/* ── UI wiring ────────────────────────────────────────────────────────────── */
+const modelBtns = Array.from(document.querySelectorAll('#modelBtns button'));
+const hBtns = Array.from(document.querySelectorAll('#hBtns button'));
+function syncButtons() {
+  modelBtns.forEach(b => b.classList.toggle('active', b.dataset.m === modelMode));
+  hBtns.forEach(b => b.classList.toggle('active', b.dataset.h === hFilter));
+}
+modelBtns.forEach(b => b.addEventListener('click', () => { stopPlay(); setModel(b.dataset.m); }));
+hBtns.forEach(b => b.addEventListener('click', () => { stopPlay(); setFilter(b.dataset.h); }));
+
+/* ── demo steps ───────────────────────────────────────────────────────────── */
+const STEPS = [
+  {
+    title: 'Two models, one molecule', model: 'both', filter: 'both',
+    text: 'Exactly as printed: a space-filling model on the left and a matching ball-and-stick model on the right, both looking straight down the axis of the same chair cyclohexane. Red = axial hydrogens, blue = equatorial hydrogens, alternating one-for-one around the six carbons.'
+  },
+  {
+    title: 'Looking down the ring axis', model: 'sf', filter: 'both',
+    text: 'The space-filling model alone: a dark gray carbon core, red axial hydrogens packed toward the centre of the disc and big blue equatorial hydrogens fanning around the rim. Both hydrogen kinds have the same van der Waals radius — only their direction differs.'
+  },
+  {
+    title: 'Axial hydrogens only', model: 'sf', filter: 'ax',
+    text: 'Hiding the blue hydrogens leaves six red axial hydrogens — three pointing up toward you and three pointing down away from you, strictly alternating around the six carbons.'
+  },
+  {
+    title: 'Equatorial hydrogens only', model: 'sf', filter: 'eq',
+    text: 'Now only the blue equatorial hydrogens remain, six of them fanning outward around the rim — again three tilted slightly up and three slightly down, alternating.'
+  },
+  {
+    title: 'Open up the model', model: 'bs', filter: 'both',
+    text: 'The ball-and-stick view shows the same arrangement with the bonds visible. Click any carbon: its red axial and blue equatorial hydrogen light up together — both belong to that one carbon.'
+  },
+  {
+    title: 'Compare the two models', model: 'both', filter: 'both',
+    text: 'Side by side again: the packed and open representations match position for position. Orbit to a side-on view to watch the axial bonds line up parallel to the ring axis while the equatorial bonds point out around the belt.'
+  }
+];
+let step = 0, playTimer = null;
+const stepTitle = document.getElementById('stepTitle');
+const stepText = document.getElementById('stepText');
+function goToStep(i) {
+  step = (i % STEPS.length + STEPS.length) % STEPS.length;
+  const s = STEPS[step];
+  setModel(s.model);
+  setFilter(s.filter);
+  stepTitle.textContent = (step + 1) + '/' + STEPS.length + '. ' + s.title;
+  stepText.textContent = s.text;
+}
+function stopPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; document.getElementById('btnPlay').textContent = '▶ Play'; }
+}
+document.getElementById('btnPrev').addEventListener('click', () => { stopPlay(); goToStep(step - 1); });
+document.getElementById('btnNext').addEventListener('click', () => { stopPlay(); goToStep(step + 1); });
+document.getElementById('btnPlay').addEventListener('click', (e) => {
+  if (playTimer) { stopPlay(); return; }
+  e.target.textContent = '❚❚ Pause';
+  playTimer = setInterval(() => goToStep(step + 1), 5200);
+  goToStep(step + 1);
+});
+
+goToStep(0);
+applyFit(true);
+applySelection(null);
+updateState(true);
+
+/* ── state loop (separate from the scaffold render loop) ──────────────────── */
+(function stateTick() {
+  requestAnimationFrame(stateTick);
+  updateState(false);
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+
+  </script>
+</body>
+
+</html>

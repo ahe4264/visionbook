@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="display:block;font-weight:700;font-size:12px">Graham's scan — push or pop?</span>
+<span id="demoTitle" style="display:block;font-size:11px;font-weight:700;color:#b35309"></span>
+<span id="demoNarration" style="display:block;font-size:11px;line-height:1.45;color:#222"></span>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;min-width:64px;text-align:center"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<label>Case
+  <select id="caseToggleInput" onchange="toggle_caseToggle(this.value)" style="font-size:11px;padding:2px">
+    <option>(a) left turn — push</option>
+    <option>(b) nonleft turn — pop</option>
+    <option>both panels</option>
+  </select>
+</label>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="trigger_scanStep()">Step the scan ▸</button>
+  <button onclick="trigger_resetScan()">Reset</button>
+</span>
+<span style="font-size:11px">scan state: <b id="scanStateOut">start</b></span>
+<span id="stackOut" style="font-size:10px;color:#444;font-family:ui-monospace,Consolas,monospace;line-height:1.5"></span>
+<span style="display:block;font-size:11px;font-weight:700;margin-top:2px">Legend</span>
+<span style="font-size:11px"><span style="display:inline-block;width:16px;height:5px;background:#bdbdbd;vertical-align:middle"></span> hull boundary</span>
+<span style="font-size:11px"><span style="display:inline-block;width:14px;height:10px;background:#dcdcdc;vertical-align:middle"></span> hull so far (<i>Q</i><sub>j</sub>)</span>
+<span style="font-size:11px"><span style="display:inline-block;width:14px;height:10px;background:#b3b3b3;vertical-align:middle"></span> candidate region annexed</span>
+<span style="font-size:11px"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid #e8790c;vertical-align:middle"></span> point / turn under test</span>
+<span style="font-size:11px"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid #c0392b;vertical-align:middle"></span> popped (interior) point</span>
+<button onclick="showPopup('Key insight','A nonleft turn is not just a bookkeeping rule — it is geometric proof that the middle point lies strictly inside a triangle formed by three other hull points, so it can never be a vertex of the convex hull.')" style="margin-top:2px">Why does a nonleft turn pop?</button>
+<span style="font-size:10px;color:#666">Click p<sub>i</sub>, p<sub>j</sub>, p<sub>r</sub> or p<sub>t</sub> in the figure to see the triangle that certifies its status.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+(function () {
+  var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+  var W = 860, H = 390;
+  draw.viewbox(0, 0, W, H).attr('preserveAspectRatio', 'xMidYMid meet');
+
+  var COL = {
+    fillQ: '#dcdcdc', fillTri: '#b2b2b2', hull: '#bdbdbd', chord: '#9a9a9a',
+    accent: '#e8790c', accentFill: '#fbdcbb', pop: '#c0392b'
+  };
+  var SERIF = 'Georgia, "Times New Roman", Times, serif';
+
+  // ---- geometry (panel a / panel b) -------------------------------------
+  var A = {
+    p0: [95, 252], pi: [40, 82], pj: [150, 28], pk: [240, 37],
+    u1: [305, 63], u2: [352, 107], p2: [360, 160], p1: [330, 232]
+  };
+  var B = {
+    p0: [535, 255], pi: [468, 85], pr: [545, 92], pt: [512, 122], pj: [600, 32],
+    b1: [672, 42], b2: [742, 70], b3: [792, 112], b4: [802, 168], p1: [772, 228]
+  };
+
+  function pstr(list) {
+    return list.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+  }
+  function arcPts(c, from, to, r) {
+    var a1 = Math.atan2(from[1] - c[1], from[0] - c[0]);
+    var a2 = Math.atan2(to[1] - c[1], to[0] - c[0]);
+    var d = a2 - a1;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    var out = [];
+    for (var i = 0; i <= 26; i++) {
+      var a = a1 + d * i / 26;
+      out.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
+    }
+    return out;
+  }
+  function halo(t) {
+    t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3, 'stroke-linejoin': 'round' });
+    return t;
+  }
+
+  // ---- layers ------------------------------------------------------------
+  var gA = draw.group(), gB = draw.group(), hl = draw.group();
+  var gLabA = draw.group(), gLabB = draw.group(), gMeta = draw.group(), stackG = draw.group();
+
+  // ---- labels ------------------------------------------------------------
+  function mkLabel(parent, base, sub, cx, cy, color) {
+    var g = parent.group();
+    var t = halo(g.text(base).font({ family: SERIF, size: 17, style: 'italic' }).fill(color || '#000'));
+    t.move(0, 0);
+    var w = t.bbox().width;
+    if (sub) {
+      var s = halo(g.text(sub).font({ family: SERIF, size: 11, style: 'italic' }).fill(color || '#000'));
+      s.move(w + 1, 8);
+    }
+    g.center(cx, cy);
+    return g;
+  }
+  function plainText(parent, str, cx, cy, size, color, italic) {
+    var t = halo(parent.text(str).font({ family: SERIF, size: size, style: italic ? 'italic' : 'normal' }).fill(color));
+    t.center(cx, cy);
+    return t;
+  }
+
+  // ---- panel (a) base ----------------------------------------------------
+  var Qpoly = [A.p0, A.pj, A.pk, A.u1, A.u2, A.p2, A.p1];
+  var outerA = [A.p0, A.pi, A.pj, A.pk, A.u1, A.u2, A.p2, A.p1];
+
+  var qShape = gA.polygon(pstr(Qpoly)).fill(COL.fillQ).stroke('none');
+  var triShape = gA.polygon(pstr([A.p0, A.pj, A.pi])).fill(COL.fillTri).stroke('none');
+  gA.polygon(pstr(outerA)).fill('none').stroke({ color: COL.hull, width: 6, linejoin: 'round' });
+  gA.line(A.p0[0], A.p0[1], A.pj[0], A.pj[1]).stroke({ color: COL.chord, width: 1.2 });
+
+  qShape.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('Q\u2c7c — the convex hull of the points processed so far', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup('Q\u2c7c: the hull so far', 'Q\u2c7c is the convex hull of the points already accepted, read counterclockwise off the stack from p\u2080 up to p\u2c7c. Every accepted point is a corner of this polygon.'); });
+  triShape.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('triangle p\u2080 p\u2c7c p\u1d62 — annexed when p\u1d62 is pushed', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup('The annexed triangle', 'Because the turn p\u2080 \u2192 p\u2c7c \u2192 p\u1d62 is a left turn, p\u1d62 lies outside Q\u2c7c. Pushing p\u1d62 adds exactly the darker triangle p\u2080 p\u2c7c p\u1d62 to the hull.'); });
+
+  // ---- panel (b) base ----------------------------------------------------
+  var chainB = [B.p0, B.p1, B.b4, B.b3, B.b2, B.b1, B.pj];
+  gB.polyline(pstr(chainB)).fill('none')
+    .stroke({ color: COL.hull, width: 6, linecap: 'round', linejoin: 'round' });
+  var triB = gB.polygon(pstr([B.pi, B.pr, B.p0])).fill('#dcdcdc').stroke({ color: '#000', width: 1 });
+  gB.line(B.pi[0], B.pi[1], B.pt[0], B.pt[1]).stroke({ color: '#000', width: 1, dasharray: '3,3' });
+  gB.line(B.pr[0], B.pr[1], B.pt[0], B.pt[1]).stroke({ color: '#000', width: 1, dasharray: '3,3' });
+  gB.polyline(pstr(arcPts(B.pt, B.pi, B.pr, 17))).fill('none').stroke({ color: '#000', width: 1 });
+
+  triB.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('triangle p\u1d62 p\u1d63 p\u2080 — all three corners are hull points', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { setFocus('B.pt'); });
+
+  // ---- dots --------------------------------------------------------------
+  function addDot(g, p, tip, focusKey) {
+    var c = g.circle(9).center(p[0], p[1]).fill('#000');
+    c.css('cursor', 'pointer')
+      .on('mousemove', function (e) { showTooltip(tip, e); })
+      .on('mouseleave', hideTooltip);
+    if (focusKey) c.on('click', function () { setFocus(focusKey); });
+    else c.on('click', function () { showPopup('Hull vertex', 'This point is already on the stack and, so far, is a corner of the hull. It will be popped only if a later candidate makes the turn through it nonleft.'); });
+    return c;
+  }
+
+  addDot(gA, A.p0, 'p\u2080 — the anchor (lowest point); always on the hull', null);
+  addDot(gA, A.pj, 'p\u2c7c — current top of the stack', 'A.pj');
+  addDot(gA, A.pi, 'p\u1d62 — candidate: left turn \u21d2 push', 'A.pi');
+  addDot(gA, A.pk, 'p\u2096 — hull vertex on the stack', null);
+  addDot(gA, A.u1, 'hull vertex on the stack', null);
+  addDot(gA, A.u2, 'hull vertex on the stack', null);
+  addDot(gA, A.p2, 'p\u2082 — hull vertex on the stack', null);
+  addDot(gA, A.p1, 'p\u2081 — hull vertex on the stack', null);
+
+  addDot(gB, B.p0, 'p\u2080 — the anchor; a corner of the enclosing triangle', null);
+  addDot(gB, B.pj, 'p\u2c7c — hull vertex', null);
+  addDot(gB, B.b1, 'hull vertex', null);
+  addDot(gB, B.b2, 'hull vertex', null);
+  addDot(gB, B.b3, 'hull vertex', null);
+  addDot(gB, B.b4, 'hull vertex', null);
+  addDot(gB, B.p1, 'p\u2081 — hull vertex', null);
+  addDot(gB, B.pi, 'p\u1d62 — next-to-top of the stack', null);
+  addDot(gB, B.pr, 'p\u1d63 — candidate: turn at p\u209c is nonleft', 'B.pr');
+  addDot(gB, B.pt, 'p\u209c — top of stack, trapped inside triangle p\u1d62 p\u1d63 p\u2080', 'B.pt');
+
+  // ---- labels ------------------------------------------------------------
+  mkLabel(gLabA, 'p', 'i', 18, 72);
+  mkLabel(gLabA, 'p', 'j', 146, 10);
+  mkLabel(gLabA, 'p', 'k', 254, 18);
+  mkLabel(gLabA, 'p', '2', 382, 168);
+  mkLabel(gLabA, 'p', '1', 352, 248);
+  mkLabel(gLabA, 'p', '0', 86, 278);
+  mkLabel(gLabA, 'Q', 'j', 240, 132);
+
+  mkLabel(gLabB, 'p', 'i', 444, 80);
+  mkLabel(gLabB, 'p', 'r', 568, 88);
+  mkLabel(gLabB, 'p', 't', 512, 145);
+  mkLabel(gLabB, 'p', 'j', 592, 12);
+  mkLabel(gLabB, 'p', '1', 792, 244);
+  mkLabel(gLabB, 'p', '0', 528, 280);
+
+  plainText(gMeta, '(a)', 200, 336, 15, '#000', false);
+  plainText(gMeta, '(b)', 648, 336, 15, '#000', false);
+
+  // ---- state -------------------------------------------------------------
+  var scanStates = ['start', 'test p_j p_i', 'push p_i', 'test p_i p_r p_t', 'pop p_t', 'done'];
+  var scanIdx = 0;
+  var caseValue = '(a) left turn — push';
+  var caseTouched = false;
+  var focusKey = null;
+
+  function ring(p, color, r) {
+    hl.circle(r || 12).center(p[0], p[1]).fill('#fff').stroke({ color: color, width: 2.5 });
+  }
+
+  function hlTestA() {
+    hl.polyline(pstr([A.p0, A.pj, A.pi])).fill('none')
+      .stroke({ color: COL.accent, width: 3.2, linecap: 'round', linejoin: 'round' });
+    hl.polyline(pstr(arcPts(A.pj, A.p0, A.pi, 27))).fill('none').stroke({ color: COL.accent, width: 2 });
+    ring(A.p0, COL.accent); ring(A.pj, COL.accent); ring(A.pi, COL.accent);
+  }
+  function hlPushA() {
+    hl.polygon(pstr([A.p0, A.pj, A.pi])).fill(COL.accentFill).opacity(0.85)
+      .stroke({ color: COL.accent, width: 2, dasharray: '5,4', linejoin: 'round' });
+    hl.polyline(pstr([A.p0, A.pi, A.pj])).fill('none').opacity(0.9)
+      .stroke({ color: COL.accent, width: 5, linecap: 'round', linejoin: 'round' });
+    ring(A.pi, COL.accent);
+  }
+  function hlTestB() {
+    hl.line(B.pi[0], B.pi[1], B.pt[0], B.pt[1])
+      .stroke({ color: COL.accent, width: 2.4, dasharray: '5,4', linecap: 'round' });
+    hl.line(B.pr[0], B.pr[1], B.pt[0], B.pt[1])
+      .stroke({ color: COL.accent, width: 2.4, dasharray: '5,4', linecap: 'round' });
+    hl.polyline(pstr(arcPts(B.pt, B.pi, B.pr, 18))).fill('none').stroke({ color: COL.accent, width: 2.2 });
+    ring(B.pi, COL.accent); ring(B.pr, COL.accent); ring(B.pt, COL.accent);
+  }
+  function hlPopB() {
+    hl.polygon(pstr([B.pi, B.pr, B.p0])).fill(COL.accentFill).opacity(0.85)
+      .stroke({ color: COL.accent, width: 2, dasharray: '5,4', linejoin: 'round' });
+    [B.pi, B.pr, B.p0].forEach(function (p) {
+      hl.line(B.pt[0], B.pt[1], p[0], p[1])
+        .stroke({ color: COL.pop, width: 1.4, dasharray: '4,4' }).opacity(0.85);
+    });
+    ring(B.pt, COL.pop, 14);
+    hl.line(B.pt[0] - 4, B.pt[1] - 4, B.pt[0] + 4, B.pt[1] + 4).stroke({ color: COL.pop, width: 2 });
+    hl.line(B.pt[0] - 4, B.pt[1] + 4, B.pt[0] + 4, B.pt[1] - 4).stroke({ color: COL.pop, width: 2 });
+    ring(B.pi, COL.accent); ring(B.pr, COL.accent);
+  }
+  function hlFocus() {
+    if (focusKey === 'A.pi') {
+      hl.polygon(pstr([A.p0, A.pj, A.pi])).fill('none')
+        .stroke({ color: COL.accent, width: 2.6, dasharray: '6,4', linejoin: 'round' });
+      ring(A.pi, COL.accent);
+    } else if (focusKey === 'A.pj') {
+      hl.line(A.p0[0], A.p0[1], A.pj[0], A.pj[1]).stroke({ color: COL.accent, width: 3.2 });
+      ring(A.pj, COL.accent); ring(A.p0, COL.accent);
+    } else if (focusKey === 'B.pr') {
+      hl.polygon(pstr([B.pi, B.pr, B.p0])).fill('none')
+        .stroke({ color: COL.accent, width: 2.6, dasharray: '6,4', linejoin: 'round' });
+      ring(B.pr, COL.accent);
+    } else if (focusKey === 'B.pt') {
+      hl.polygon(pstr([B.pi, B.pr, B.p0])).fill('none')
+        .stroke({ color: COL.accent, width: 2.6, dasharray: '6,4', linejoin: 'round' });
+      [B.pi, B.pr, B.p0].forEach(function (p) {
+        hl.line(B.pt[0], B.pt[1], p[0], p[1]).stroke({ color: COL.pop, width: 1.3, dasharray: '4,4' });
+      });
+      ring(B.pt, COL.pop, 14);
+    }
+  }
+
+  var POPUPS = {
+    'A.pi': ['p\u1d62 is pushed', 'p\u1d62 is the next candidate. The turn p\u2080 \u2192 p\u2c7c \u2192 p\u1d62 is a LEFT turn, so p\u1d62 lies outside the current hull Q\u2c7c. It is pushed, and the hull grows by exactly the triangle p\u2080 p\u2c7c p\u1d62.'],
+    'A.pj': ['p\u2c7c stays on the stack', 'p\u2c7c is the current top of the stack. Because the turn through it bends left, p\u2c7c is still a corner of the enlarged boundary and is not popped.'],
+    'B.pr': ['p\u1d63 is the candidate', 'p\u1d63 is the point now being tested. Together with p\u1d62 (next-to-top of the stack) and the anchor p\u2080, it forms a triangle whose three corners are all hull points \u2014 and p\u209c lies inside it.'],
+    'B.pt': ['p\u209c is popped', 'The turn p\u1d62 \u2192 p\u209c \u2192 p\u1d63 is nonleft, which places p\u209c strictly inside triangle p\u1d62 p\u1d63 p\u2080. All three corners are hull points, so p\u209c can never be a vertex of the convex hull and is popped.']
+  };
+
+  window.setFocus = function (key) {
+    focusKey = (focusKey === key) ? null : key;
+    if (focusKey && POPUPS[key]) showPopup(POPUPS[key][0], POPUPS[key][1]);
+    render();
+  };
+
+  function stackLine() {
+    var aStack = (scanIdx >= 2) ? 'p0 p1 p2 · · pk pj pi' : 'p0 p1 p2 · · pk pj';
+    var aNote = (scanIdx === 1) ? '   testing pi' : (scanIdx === 2 || scanIdx === 5 ? '   pi pushed' : '');
+    var bStack = (scanIdx >= 4) ? 'p0 · · pi' : 'p0 · · pi pt';
+    var bNote = (scanIdx === 3) ? '   testing pr' : (scanIdx >= 4 ? '   pt popped' : '');
+    return [
+      '(a) stack ↑: ' + aStack + aNote,
+      '(b) stack ↑: ' + bStack + bNote
+    ];
+  }
+
+  function render() {
+    hl.clear(); stackG.clear();
+    var s = scanStates[scanIdx];
+    var emphasize = caseTouched || s !== 'start';
+
+    var dimA = emphasize && caseValue.charAt(1) === 'b';
+    var dimB = emphasize && caseValue.charAt(1) === 'a';
+    gA.opacity(dimA ? 0.3 : 1); gLabA.opacity(dimA ? 0.3 : 1);
+    gB.opacity(dimB ? 0.3 : 1); gLabB.opacity(dimB ? 0.3 : 1);
+
+    if (s === 'test p_j p_i') hlTestA();
+    if (s === 'push p_i') hlPushA();
+    if (s === 'test p_i p_r p_t') hlTestB();
+    if (s === 'pop p_t') hlPopB();
+    if (s === 'done') { hlPushA(); hlPopB(); }
+    hlFocus();
+
+    if (s !== 'start') {
+      var lines = stackLine();
+      var t1 = stackG.text(lines[0]).font({ family: 'ui-monospace, Consolas, monospace', size: 11 }).fill('#555');
+      t1.move(40, 352);
+      var t2 = stackG.text(lines[1]).font({ family: 'ui-monospace, Consolas, monospace', size: 11 }).fill('#555');
+      t2.move(470, 352);
+    }
+
+    var out = document.getElementById('scanStateOut');
+    if (out) out.textContent = s;
+    var so = document.getElementById('stackOut');
+    if (so) so.innerHTML = stackLine().join('<br>');
+  }
+
+  // ---- controls ----------------------------------------------------------
+  window.toggle_caseToggle = function (v) {
+    caseValue = v; caseTouched = true; render();
+  };
+  window.trigger_scanStep = function () {
+    scanIdx = (scanIdx + 1) % scanStates.length;
+    if (scanIdx >= 3 && scanIdx <= 4) caseValue = '(b) nonleft turn — pop';
+    else if (scanIdx >= 1 && scanIdx <= 2) caseValue = '(a) left turn — push';
+    else if (scanIdx === 5) caseValue = 'both panels';
+    caseTouched = true;
+    var sel = document.getElementById('caseToggleInput');
+    if (sel) sel.value = caseValue;
+    render();
+  };
+  window.trigger_resetScan = function () {
+    scanIdx = 0; focusKey = null; caseTouched = false;
+    caseValue = '(a) left turn — push';
+    var sel = document.getElementById('caseToggleInput');
+    if (sel) sel.value = caseValue;
+    render();
+  };
+
+  // ---- demo steps --------------------------------------------------------
+  var steps = [
+    { title: 'The hull so far', narration: 'The light gray polygon Q\u2c7c is the convex hull of the points processed so far, with p\u2080 at the bottom and the stack running counterclockwise to p\u2c7c. Everything already accepted is a vertex of this shape.', state: { caseToggle: '(a) left turn — push', scanStep: 'start' } },
+    { title: 'Testing a left turn', narration: 'The next candidate p\u1d62 is tested against the top two stack points. The turn from p\u2080\u2192p\u2c7c to p\u2c7c\u2192p\u1d62 is a left turn, so p\u1d62 lies outside the current hull.', state: { caseToggle: '(a) left turn — push', scanStep: 'test p_j p_i' } },
+    { title: 'Push: the hull grows', narration: 'p\u1d62 is pushed onto the stack and the dark triangle p\u2080\u2013p\u2c7c\u2013p\u1d62 is annexed to Q\u2c7c. The boundary now detours through p\u1d62, showing that a left turn strictly enlarges the hull.', state: { caseToggle: '(a) left turn — push', scanStep: 'push p_i' } },
+    { title: 'A nonleft turn', narration: 'Switch to panel (b). Here the angle at p\u209c formed by p\u1d62, p\u209c, p\u1d63 is not a left turn — the dashed segments and the arc show p\u209c bending the wrong way.', state: { caseToggle: '(b) nonleft turn — pop', scanStep: 'test p_i p_r p_t' } },
+    { title: 'Pop: the point was never a vertex', narration: 'Because the turn is nonleft, p\u209c lies inside triangle p\u1d62 p\u1d63 p\u2080, whose three corners are all hull points. A point interior to a triangle of hull points cannot be a hull vertex, so p\u209c is popped.', state: { caseToggle: '(b) nonleft turn — pop', scanStep: 'pop p_t' } },
+    { title: 'Two cases, one test', narration: 'Side by side, the panels show the invariant: every candidate either extends the boundary outward or reveals an earlier point as interior. Nothing else can happen.', state: { caseToggle: 'both panels', scanStep: 'done' } }
+  ];
+  var stepIdx = 0;
+
+  function applyStep(i) {
+    stepIdx = Math.max(0, Math.min(steps.length - 1, i));
+    var st = steps[stepIdx].state;
+    caseValue = st.caseToggle;
+    scanIdx = scanStates.indexOf(st.scanStep);
+    caseTouched = false;
+    focusKey = null;
+    var sel = document.getElementById('caseToggleInput');
+    if (sel) sel.value = caseValue;
+    var tt = document.getElementById('demoTitle');
+    if (tt) tt.textContent = steps[stepIdx].title;
+    var nn = document.getElementById('demoNarration');
+    if (nn) nn.textContent = steps[stepIdx].narration;
+    var sl = document.getElementById('stepLabel');
+    if (sl) sl.textContent = 'step ' + (stepIdx + 1) + ' / ' + steps.length;
+    render();
+  }
+  window.nextStep = function () { applyStep(stepIdx + 1); };
+  window.prevStep = function () { applyStep(stepIdx - 1); };
+
+  applyStep(0);
+  window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

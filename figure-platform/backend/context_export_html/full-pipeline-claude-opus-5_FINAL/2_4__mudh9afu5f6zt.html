@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:600;font-size:12px">Merge sort — guided tour</span>
+<p id="demoNarration" style="margin:0;font-size:11px;line-height:1.4;color:#222"></p>
+<label style="flex-direction:row;align-items:center;gap:6px">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px">overview</span>
+  <button onclick="nextStep()">▶</button>
+</label>
+<label>Merge-sort level
+  <select id="mergeLevelInput" onchange="setLevelByName(this.value)">
+    <option value="initial sequence">initial sequence</option>
+    <option value="merge to pairs">merge to pairs</option>
+    <option value="merge to runs of 4">merge to runs of 4</option>
+    <option value="final merge">final merge</option>
+    <option value="sorted">sorted</option>
+  </select>
+</label>
+<label style="flex-direction:row;align-items:center;gap:6px">
+  <input id="stabilityTraceInput" type="checkbox" onchange="toggle_stabilityTrace(this.checked)"> Track duplicate 2s (stability)
+</label>
+<span style="font-weight:600;font-size:12px;margin-top:2px">merge(left, right) workbench</span>
+<span style="font-size:10px;color:#555;line-height:1.35">remaining(run) · front(run) · frontLessEqual(a,b) · take(run) · note(text)</span>
+<label style="flex-direction:row;gap:4px;flex-wrap:wrap">
+  <button id="tabSample" onclick="loadSample('sample')">Sample</button>
+  <button id="tabBuggy" onclick="loadSample('buggy')">Buggy (&lt;)</button>
+  <button id="tabStarter" onclick="loadSample('starter')">Starter</button>
+</label>
+<label>Active pair of sorted runs
+  <input id="mergeCodeInput" value="left = 2, 4, 5, 7 | right = 1, 2, 3, 6">
+</label>
+<textarea id="mergeCodeCode" spellcheck="false" style="min-height:130px"></textarea>
+<label style="flex-direction:row;gap:6px;align-items:center">
+  <button id="runBtn" onclick="runCode()">▶ Run</button>
+  <span id="runStatus" style="font-size:10.5px;line-height:1.3">not run</span>
+</label>
+<label style="flex-direction:row;gap:3px;align-items:center;flex-wrap:wrap">
+  <button onclick="pbFirst()">⏮</button>
+  <button onclick="pbPrev()">◀</button>
+  <button id="playBtn" onclick="pbPlay()">▶</button>
+  <button onclick="pbNext()">▶▎</button>
+  <span id="frameCounter" style="font-size:11px">0 of 0</span>
+</label>
+<label style="flex-direction:row;align-items:center;gap:6px">Speed <output id="speedVal">1.00</output>×
+  <input id="speedInput" type="range" min="0.25" max="4" step="0.25" value="1" oninput="document.getElementById('speedVal').value=(+this.value).toFixed(2);update_speed(+this.value)">
+</label>
+<p id="frameCaption" style="margin:0;font-size:11px;min-height:28px;color:#123"></p>
+<textarea id="traceLog" readonly style="min-height:52px;font-size:10px"></textarea>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var SERIF = 'Georgia, "Times New Roman", Times, serif';
+var ACC = '#1668c4';
+var GRAY = '#808080';
+var BOXFILL = '#d9d9d9';
+var TINT_L = '#f2a65a';
+var TINT_R = '#57c4bb';
+var W = 720, H = 548;
+
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+draw.viewbox(0, 0, W, H).attr('preserveAspectRatio', 'xMidYMid meet');
+
+function c(v, tag) { return { v: v, tag: tag || null }; }
+
+var SING = [46, 132, 224, 310, 410, 496, 588, 674];
+var BOT = [c(5), c(2, 'L'), c(4), c(7), c(1), c(3), c(2, 'R'), c(6)];
+
+var RANKS = [
+  {
+    y: 38, h: 46, boxW: 452, fs: 22,
+    boxes: [{ cx: 360, cells: [c(1), c(2, 'L'), c(2, 'R'), c(3), c(4), c(5), c(6), c(7)] }]
+  },
+  {
+    y: 176, h: 46, boxW: 226, fs: 22,
+    boxes: [{ cx: 178, cells: [c(2, 'L'), c(4), c(5), c(7)] }, { cx: 542, cells: [c(1), c(2, 'R'), c(3), c(6)] }]
+  },
+  {
+    y: 310, h: 46, boxW: 113, fs: 22,
+    boxes: [{ cx: 89, cells: [c(2, 'L'), c(5)] }, { cx: 267, cells: [c(4), c(7)] },
+    { cx: 453, cells: [c(1), c(3)] }, { cx: 631, cells: [c(2, 'R'), c(6)] }]
+  },
+  {
+    y: 434, h: 44, boxW: 42, fs: 22,
+    boxes: SING.map(function (x, i) { return { cx: x, cells: [BOT[i]] }; })
+  }
+];
+
+var MERGE_FS = [20, 19, 16];   /* per parent rank index 0,1,2 */
+
+var LEVELS = ['initial sequence', 'merge to pairs', 'merge to runs of 4', 'final merge', 'sorted'];
+
+var S = { level: 4, stability: false, frames: [], fi: 0, bad: [], stepIdx: -1, running: false };
+
+/* ---------- drawing helpers ---------- */
+function halo(t) { t.attr({ 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4, 'stroke-linejoin': 'round' }); return t; }
+
+function arrow(x1, y1, x2, y2, color, wdt, op) {
+  var a = Math.atan2(y2 - y1, x2 - x1);
+  var hl = wdt * 3.0, hw = wdt * 1.9;
+  var bx = x2 - Math.cos(a) * hl, by = y2 - Math.sin(a) * hl;
+  draw.line(x1, y1, bx, by).stroke({ color: color, width: wdt, linecap: 'butt' }).opacity(op);
+  draw.polygon([[x2, y2],
+  [bx - Math.sin(a) * hw, by + Math.cos(a) * hw],
+  [bx + Math.sin(a) * hw, by - Math.cos(a) * hw]]).fill(color).opacity(op);
+}
+
+function drawBox(cx, y, w, h, cells, o) {
+  o = o || {};
+  var g = draw.group();
+  var x0 = cx - w / 2;
+  g.rect(w, h).move(x0, y).fill(o.fill || BOXFILL)
+    .stroke({ color: o.accent ? ACC : '#333', width: o.accent ? 3 : 1.4 });
+  var n = Math.max(1, cells.length);
+  var cw = w / n;
+  for (var k = 0; k < n; k++) {
+    var cell = cells[k];
+    var ccx = x0 + (k + 0.5) * cw;
+    var sw = Math.max(14, Math.min(cw - 6, 34));
+    if (!cell) {
+      g.rect(sw, h - 14).move(ccx - sw / 2, y + 7).fill('#ffffff').opacity(0.8)
+        .stroke({ color: '#b5b5b5', width: 1, dasharray: '3,3' });
+      continue;
+    }
+    if (S.stability && cell.tag) {
+      g.rect(sw, h - 12).radius(5).move(ccx - sw / 2, y + 6)
+        .fill(cell.tag === 'L' ? TINT_L : TINT_R).opacity(0.9);
+    }
+    if (cell.hl || cell.bad) {
+      g.rect(sw + 6, h - 5).radius(5).move(ccx - (sw + 6) / 2, y + 2.5).fill('none')
+        .stroke({ color: cell.bad ? '#c62828' : ACC, width: 2.8 });
+    }
+    var t = g.text(String(cell.v))
+      .font({ family: SERIF, size: o.fs || 22, anchor: 'middle' }).fill('#111').leading(1);
+    t.center(ccx, y + h / 2);
+    if (cell.faded) t.opacity(0.28);
+  }
+  g.opacity(o.opacity == null ? 1 : o.opacity);
+  if (o.tip) {
+    g.css('cursor', 'pointer');
+    g.on('mousemove', function (e) { showTooltip(o.tip, e); }).on('mouseleave', hideTooltip);
+    if (o.pop) g.on('click', function () { showPopup(o.pop[0], o.pop[1]); });
+  }
+  return g;
+}
+
+function cursorTri(x, y) {
+  draw.polygon([[x, y], [x - 7, y + 11], [x + 7, y + 11]]).fill(ACC);
+}
+
+function legend(showTints) {
+  var x = 14, y = 18, dy = 17, fs = 12;
+  function row(yy, swatch, label) {
+    if (swatch === 'gray') draw.rect(17, 12).move(x, yy - 6).fill(BOXFILL).stroke({ color: '#333', width: 1 });
+    else if (swatch === 'acc') draw.rect(17, 12).move(x, yy - 6).fill('#fff').stroke({ color: ACC, width: 2.4 });
+    else {
+      draw.rect(8, 12).move(x, yy - 6).fill(TINT_L);
+      draw.rect(8, 12).move(x + 9, yy - 6).fill(TINT_R);
+    }
+    halo(draw.text(label).font({ family: 'sans-serif', size: fs, anchor: 'start' }).fill('#444').leading(1))
+      .move(x + 23, yy - 7);
+  }
+  row(y, 'gray', 'sorted run');
+  row(y + dy, 'acc', 'active merge');
+  if (showTints) row(y + 2 * dy, 'tint', 'tracked duplicates');
+}
+
+/* ---------- main render ---------- */
+function replayActive() { return S.frames.length > 0 && S.level >= 3; }
+
+function render() {
+  draw.clear();
+  draw.rect(W, H).fill('#ffffff');
+
+  var Lv = S.level;
+  var act = (Lv >= 1 && Lv <= 3) ? Lv : 0;
+  var dim = act ? 0.32 : 1;
+  var fr = replayActive() ? S.frames[S.fi] : null;
+
+  /* arrows + merge labels */
+  for (var r = 2; r >= 0; r--) {
+    var lev = 3 - r;
+    if (Lv < lev) continue;
+    var isAct = (lev === act);
+    var parents = RANKS[r], children = RANKS[r + 1];
+    for (var p = 0; p < parents.boxes.length; p++) {
+      var P = parents.boxes[p];
+      for (var s = 0; s < 2; s++) {
+        var C = children.boxes[2 * p + s];
+        var side = (s === 0) ? -1 : 1;
+        var sx = C.cx + side * children.boxW * 0.15;
+        var sy = children.y - 10;
+        var ex = P.cx + side * parents.boxW * 0.19;
+        var ey = parents.y + parents.h + 12;
+        arrow(sx, sy, ex, ey, isAct ? ACC : GRAY, 5, isAct ? 1 : dim);
+      }
+      var my = (parents.y + parents.h + children.y) / 2;
+      var tx = draw.text('merge').font({ family: SERIF, size: MERGE_FS[r], anchor: 'middle' })
+        .fill(isAct ? ACC : '#111').leading(1);
+      halo(tx); tx.center(P.cx, my); tx.opacity(isAct ? 1 : dim);
+      tx.css('cursor', 'pointer');
+      (function (len) {
+        tx.on('mousemove', function (e) {
+          showTooltip('merge two sorted runs of ' + len + ' → one sorted run of ' + (2 * len) +
+            ' (one linear scan, at most ' + (2 * len - 1) + ' comparisons)', e);
+        }).on('mouseleave', hideTooltip)
+          .on('click', function () {
+            showPopup('Why merging is cheap',
+              'Both inputs are already sorted, so the next output value can only be the front of one run or the front of the other — a single comparison decides it. ' +
+              'Each level of the tree therefore costs about n comparisons, and there are only log₂ n levels: n log n in total.');
+          });
+      })(RANKS[r + 1].boxes[2 * p].cells.length);
+    }
+  }
+
+  /* boxes */
+  for (var rr = 3; rr >= 0; rr--) {
+    var rank = RANKS[rr];
+    var rlev = 3 - rr;
+    var visible = (rr === 3) || (Lv >= rlev);
+    var involved = act && (rr === 3 - act || rr === 4 - act);
+    var op = !act ? 1 : (involved ? 1 : dim);
+    for (var b = 0; b < rank.boxes.length; b++) {
+      var B = rank.boxes[b];
+      if (!visible) {
+        draw.rect(rank.boxW, rank.h).move(B.cx - rank.boxW / 2, rank.y).fill('none')
+          .stroke({ color: '#cfcfcf', width: 1, dasharray: '4,4' }).opacity(0.7);
+        continue;
+      }
+      var cells = B.cells.map(function (x) { return { v: x.v, tag: x.tag }; });
+      var fill = BOXFILL;
+
+      if (rr === 1 && fr) {
+        var st = fr.state;
+        var src = (b === 0) ? st.left : st.right;
+        var cur = (b === 0) ? st.i : st.j;
+        var hi = (b === 0) ? fr.indices.left : fr.indices.right;
+        cells = src.map(function (x, k) {
+          return { v: x.v, tag: x.tag, faded: k < cur, hl: (hi === k) };
+        });
+      }
+      if (rr === 0) {
+        if (fr) {
+          var tot = fr.state.left.length + fr.state.right.length;
+          cells = [];
+          for (var k0 = 0; k0 < tot; k0++) {
+            var oc = fr.state.out[k0];
+            var isBad = (S.fi === S.frames.length - 1) && S.bad.indexOf(k0) >= 0;
+            cells.push(oc ? { v: oc.v, tag: oc.tag, hl: (fr.indices.out === k0), bad: isBad } : null);
+          }
+          if (fr.state.out.length < tot) fill = '#ececec';
+        } else if (Lv >= 4) {
+          /* complete sorted sequence */
+        } else {
+          cells = [null, null, null, null, null, null, null, null];
+          fill = '#ececec';
+        }
+      }
+
+      var tip = (rr === 3) ? 'a single element is already a sorted run of length 1'
+        : 'sorted run of length ' + cells.length;
+      var pop = null;
+      if (rr === 0) pop = ['The sorted sequence',
+        'Eight elements, three merge passes: 1→2→4→8. Each pass sweeps every element exactly once, so the total work is n·log₂n = 8·3 = 24 element moves.'];
+      drawBox(B.cx, rank.y, rank.boxW, rank.h, cells,
+        {
+          opacity: op, accent: !!involved && (rr === 3 - act), fill: fill,
+          tip: tip, pop: pop, fs: rank.fs
+        });
+
+      /* cursors under the two source runs during replay */
+      if (rr === 1 && fr) {
+        var st2 = fr.state;
+        var run = (b === 0) ? st2.left : st2.right;
+        var cu = (b === 0) ? st2.i : st2.j;
+        if (cu < run.length) {
+          var x0 = B.cx - rank.boxW / 2;
+          cursorTri(x0 + (cu + 0.5) * rank.boxW / run.length, rank.y + rank.h + 4);
+        }
+      }
+    }
+  }
+
+  /* captions */
+  halo(draw.text('sorted sequence').font({ family: SERIF, size: 24, anchor: 'middle' }).fill('#111').leading(1))
+    .center(360, 19);
+  halo(draw.text('initial sequence').font({ family: SERIF, size: 24, anchor: 'middle' }).fill('#111').leading(1))
+    .center(360, 502);
+
+  /* comparison readout — own strip at the very bottom, clear of the 'merge' labels */
+  if (fr) {
+    var msg = fr.message.length > 66 ? fr.message.slice(0, 65) + '…' : fr.message;
+    halo(draw.text(msg).font({ family: SERIF, size: 15, anchor: 'middle' })
+      .fill(fr.kind === 'error' ? '#c62828' : '#123').leading(1)).center(360, 533);
+  }
+
+  if (S.stability || act || fr) legend(S.stability);
+}
+
+/* ---------- state controls ---------- */
+function setLevelIdx(i) {
+  S.level = i;
+  var sel = document.getElementById('mergeLevelInput');
+  if (sel) sel.selectedIndex = i;
+  render();
+}
+function setLevelByName(v) { setLevelIdx(Math.max(0, LEVELS.indexOf(v))); }
+function toggle_stabilityTrace(on) {
+  S.stability = !!on;
+  var cb = document.getElementById('stabilityTraceInput');
+  if (cb) cb.checked = !!on;
+  render();
+}
+
+/* ---------- demo steps ---------- */
+var DEMO = [
+  { t: 'Eight one-element runs', n: 'The bottom rank shows 5 2 4 7 1 3 2 6 as eight single-element boxes. A one-element sequence is already sorted, so each is a valid sorted run.', s: { l: 'initial sequence', st: false } },
+  { t: 'First pass: runs of 2', n: 'Adjacent singletons merge pairwise into 2 5, 4 7, 1 3 and 2 6. Four merges, one comparison each — boxes twice as wide, half as many.', s: { l: 'merge to pairs', st: false } },
+  { t: 'Second pass: runs of 4', n: 'Two merges combine the pairs into 2 4 5 7 and 1 2 3 6. Each merge is one left-to-right sweep, never a rescan.', s: { l: 'merge to runs of 4', st: false } },
+  { t: 'Write merge() yourself', n: 'Implement merge(left, right) on 2 4 5 7 and 1 2 3 6. Each take() fills one slot of the top box and the replay shows which comparison caused it.', s: { l: 'final merge', st: false } },
+  { t: 'Ties and stability', n: 'The duplicate 2s are tinted. With <= the left 2 goes first and order is preserved; run the Buggy tab (strict <) and the duplicates silently swap.', s: { l: 'final merge', st: true } },
+  { t: 'Sorted sequence', n: 'The top box reads 1 2 2 3 4 5 6 7. Three levels over eight elements — log n passes, each touching every element once: n log n work.', s: { l: 'sorted', st: true } }
+];
+
+function applyStep(k) {
+  S.stepIdx = k;
+  var nar = document.getElementById('demoNarration');
+  var lab = document.getElementById('stepLabel');
+  if (k < 0) {
+    toggle_stabilityTrace(false);
+    setLevelIdx(4);
+    nar.textContent = 'The complete merge-sort tree: eight singletons at the bottom, merged pairwise upward into one sorted sequence. Press ▶ to walk it level by level.';
+    lab.textContent = 'overview';
+  } else {
+    var d = DEMO[k];
+    toggle_stabilityTrace(d.s.st);
+    setLevelByName(d.s.l);
+    nar.textContent = d.t + ' — ' + d.n;
+    lab.textContent = (k + 1) + ' / ' + DEMO.length;
+  }
+}
+function nextStep() { applyStep(Math.min(DEMO.length - 1, S.stepIdx + 1)); }
+function prevStep() { applyStep(Math.max(-1, S.stepIdx - 1)); }
+
+/* ---------- code samples ---------- */
+var SAMPLES = {
+  sample: 'function merge(left, right) {\n  // walk both runs, always taking the smaller front\n  while (remaining(left) > 0 && remaining(right) > 0) {\n    if (frontLessEqual(left, right)) {\n      take(left);   // ties go LEFT -> stable\n    } else {\n      take(right);\n    }\n  }\n  // one run is exhausted; drain the other\n  while (remaining(left) > 0) take(left);\n  while (remaining(right) > 0) take(right);\n}',
+  buggy: 'function merge(left, right) {\n  while (remaining(left) > 0 && remaining(right) > 0) {\n    // BUG: strict \'<\' sends TIES to the right run,\n    // so the 2 from the right half jumps ahead of the left 2.\n    if (front(left) < front(right)) {\n      take(left);\n    } else {\n      take(right);\n    }\n  }\n  while (remaining(left) > 0) take(left);\n  while (remaining(right) > 0) take(right);\n}',
+  starter: 'function merge(left, right) {\n  // Your turn.\n  // remaining(run) front(run) frontLessEqual(a,b) take(run) note(text)\n  // Append every element of both runs, smallest first.\n\n}'
+};
+function loadSample(which) {
+  document.getElementById('mergeCodeCode').value = SAMPLES[which];
+  ['Sample', 'Buggy', 'Starter'].forEach(function (nm) {
+    var el = document.getElementById('tab' + nm);
+    if (el) el.classList.toggle('active', nm.toLowerCase() === which);
+  });
+}
+
+/* ---------- worker ---------- */
+var WORKER_SRC = `
+self.onmessage = function(ev){
+  var d = ev.data;
+  var L = d.left, R = d.right;
+  var i = 0, j = 0, out = [];
+  var frames = [], ops = 0, t0 = Date.now();
+  var CAP_OPS = 800, CAP_FRAMES = 1200, CAP_MS = 1500;
+  function copy(a){ var r=[],k; for(k=0;k<a.length;k++) r.push({v:a[k].v, tag:a[k].tag, side:a[k].side||null}); return r; }
+  function snap(){ return { left: copy(L), right: copy(R), i:i, j:j, out: copy(out) }; }
+  function push(kind, idx, msg){
+    frames.push({ kind:kind, state:snap(), indices:idx||{}, message:msg });
+    if (frames.length > CAP_FRAMES){ throw new Error('Frame cap reached (' + CAP_FRAMES + ') - is your loop terminating?'); }
+  }
+  function guard(){
+    ops++;
+    if (ops > CAP_OPS){ throw new Error('Operation cap reached (' + CAP_OPS + ') - your loop probably never ends.'); }
+    if (Date.now() - t0 > CAP_MS){ throw new Error('Timed out after ' + CAP_MS + 'ms - infinite loop?'); }
+  }
+  function nameOf(r){
+    if (r === 'left') return 'left';
+    if (r === 'right') return 'right';
+    throw new Error('Unknown run ' + JSON.stringify(r) + ' - pass the merge() parameters, e.g. remaining(left).');
+  }
+  function arrOf(n){ return n === 'left' ? L : R; }
+  function curOf(n){ return n === 'left' ? i : j; }
+  function remaining(r){
+    var n = nameOf(r); guard();
+    var v = arrOf(n).length - curOf(n);
+    push('remaining', {}, 'remaining(' + n + ') = ' + v);
+    return v;
+  }
+  function front(r){
+    var n = nameOf(r); guard();
+    var a = arrOf(n), cc = curOf(n);
+    if (cc >= a.length) throw new Error('front(' + n + ') but that run is exhausted - check remaining() first.');
+    push('front', n === 'left' ? {left:cc} : {right:cc}, 'front(' + n + ') = ' + a[cc].v);
+    return a[cc].v;
+  }
+  function frontLessEqual(x, y){
+    var a = nameOf(x), b = nameOf(y); guard();
+    var aa = arrOf(a), bb = arrOf(b), ca = curOf(a), cb = curOf(b);
+    if (ca >= aa.length || cb >= bb.length) throw new Error('frontLessEqual() on an exhausted run - check remaining() first.');
+    var res = aa[ca].v <= bb[cb].v;
+    push('compare', {left:i, right:j},
+      'front(' + a + ')=' + aa[ca].v + ' vs front(' + b + ')=' + bb[cb].v + ' -> ' + res + ' (take ' + (res ? a : b) + ')');
+    return res;
+  }
+  function take(r){
+    var n = nameOf(r); guard();
+    var a = arrOf(n), cc = curOf(n);
+    if (cc >= a.length) throw new Error('take(' + n + ') but that run is exhausted - check remaining() first.');
+    var cell = a[cc];
+    if (n === 'left') i++; else j++;
+    out.push({ v: cell.v, tag: cell.tag, side: n });
+    push('take', n === 'left' ? {left:cc, out:out.length-1} : {right:cc, out:out.length-1},
+      'take(' + n + ') -> append ' + cell.v + ' to output slot ' + out.length);
+    return cell.v;
+  }
+  function note(t){ guard(); push('note', {}, 'note: ' + String(t)); }
+
+  try {
+    push('start', {left:0, right:0},
+      'start: left = [' + L.map(function(x){return x.v;}).join(', ') + '], right = [' + R.map(function(x){return x.v;}).join(', ') + ']');
+    var factory;
+    try {
+      factory = new Function('remaining','front','frontLessEqual','take','note',
+        '"use strict";' + d.code + '\\nreturn typeof merge === "function" ? merge : null;');
+    } catch(se){ throw new Error('Syntax error: ' + se.message); }
+    var fn = factory(remaining, front, frontLessEqual, take, note);
+    if (!fn) throw new Error('No function named merge(left, right) was found - the entry point must be called merge.');
+    fn('left','right');
+    push('done', {}, 'merge() returned - output holds ' + out.length + ' of ' + (L.length + R.length) + ' elements.');
+    self.postMessage({ frames: frames });
+  } catch(err){
+    frames.push({ kind:'error', state: snap(), indices:{}, message: 'ERROR: ' + ((err && err.message) ? err.message : String(err)) });
+    self.postMessage({ frames: frames, error: ((err && err.message) ? err.message : String(err)) });
+  }
+};
+`;
+
+function parseRuns(s) {
+  var parts = String(s).split('|');
+  function nums(t) {
+    t = String(t || '').replace(/^[^=]*=/, '');
+    return t.split(/[,;\s]+/).filter(function (x) { return x.length; }).map(Number).filter(function (x) { return isFinite(x); });
+  }
+  var l = nums(parts[0]), r = nums(parts[1]);
+  if (!l.length || !r.length) throw new Error('Enter two runs, e.g. "left = 2, 4, 5, 7 | right = 1, 2, 3, 6"');
+  var shared = {};
+  l.forEach(function (v) { if (r.indexOf(v) >= 0) shared[v] = 1; });
+  return {
+    left: l.map(function (v) { return { v: v, tag: shared[v] ? 'L' : null }; }),
+    right: r.map(function (v) { return { v: v, tag: shared[v] ? 'R' : null }; })
+  };
+}
+
+function checkSuccess(frames, runs) {
+  var last = frames[frames.length - 1];
+  if (last.kind === 'error') return { ok: false, msg: '⚠ error — see caption', bad: [] };
+  var out = last.state.out, total = runs.left.length + runs.right.length;
+  if (out.length !== total)
+    return { ok: false, msg: '✗ output holds ' + out.length + ' of ' + total + ' — some values never taken', bad: [] };
+  var bad = [], k;
+  for (k = 1; k < out.length; k++) if (out[k].v < out[k - 1].v) { bad.push(k - 1, k); }
+  if (bad.length) return { ok: false, msg: '✗ output is not non-decreasing', bad: bad };
+  for (k = 1; k < out.length; k++)
+    if (out[k].v === out[k - 1].v && out[k - 1].side === 'right' && out[k].side === 'left') bad.push(k - 1, k);
+  if (bad.length) return { ok: false, msg: '✗ sorted but NOT stable — a right-run key jumped ahead of an equal left-run key (strict < instead of <=)', bad: bad };
+  return { ok: true, msg: '✓ correct — complete, non-decreasing, ties kept left-before-right (stable)', bad: [] };
+}
+
+function setStatus(txt, color) {
+  var el = document.getElementById('runStatus');
+  el.textContent = txt;
+  el.style.color = color || '#333';
+}
+
+function runCode() {
+  if (S.running) return;
+  pbStop();
+  var runs;
+  try { runs = parseRuns(document.getElementById('mergeCodeInput').value); }
+  catch (e) { setStatus(e.message, '#c62828'); return; }
+  var code = document.getElementById('mergeCodeCode').value;
+  S.running = true;
+  document.getElementById('runBtn').disabled = true;
+  setStatus('running…', '#555');
+  if (S.level < 3) setLevelIdx(3);
+
+  var url, w;
+  try {
+    url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }));
+    w = new Worker(url);
+  } catch (e) {
+    S.running = false;
+    document.getElementById('runBtn').disabled = false;
+    setStatus('⚠ cannot start sandbox worker', '#c62828');
+    return;
+  }
+  w.postMessage({ left: runs.left, right: runs.right, code: code });
+  var done = false;
+  var to = setTimeout(function () {
+    if (done) return;
+    done = true; w.terminate(); URL.revokeObjectURL(url);
+    finishRun([{ kind: 'error', state: { left: runs.left, right: runs.right, i: 0, j: 0, out: [] }, indices: {}, message: 'ERROR: timed out — worker killed after 2.5 s (infinite loop?)' }], runs);
+  }, 2500);
+  w.onmessage = function (ev) {
+    if (done) return;
+    done = true; clearTimeout(to); w.terminate(); URL.revokeObjectURL(url);
+    finishRun(ev.data.frames || [], runs);
+  };
+  w.onerror = function (ev) {
+    if (done) return;
+    done = true; clearTimeout(to); w.terminate(); URL.revokeObjectURL(url);
+    finishRun([{ kind: 'error', state: { left: runs.left, right: runs.right, i: 0, j: 0, out: [] }, indices: {}, message: 'ERROR: ' + (ev.message || 'worker failed') }], runs);
+  };
+}
+
+function finishRun(frames, runs) {
+  S.running = false;
+  document.getElementById('runBtn').disabled = false;
+  S.frames = frames.length ? frames : [{ kind: 'error', state: { left: runs.left, right: runs.right, i: 0, j: 0, out: [] }, indices: {}, message: 'ERROR: no frames produced' }];
+  var res = checkSuccess(S.frames, runs);
+  S.bad = res.bad;
+  setStatus(res.msg, res.ok ? '#1b7a2f' : '#c62828');
+  if (!res.ok && res.bad.length) toggle_stabilityTrace(true);
+  document.getElementById('traceLog').value = S.frames.map(function (f, k) { return (k + 1) + '. ' + f.message; }).join('\n');
+  S.fi = 0;
+  updatePlayback();
+  render();
+}
+
+/* ---------- playback ---------- */
+var playTimer = null, speed = 1;
+function update_speed(v) { speed = v; if (playTimer) { pbStop(); pbPlay(); } }
+function updatePlayback() {
+  var n = S.frames.length;
+  document.getElementById('frameCounter').textContent = n ? (S.fi + 1) + ' of ' + n : '0 of 0';
+  document.getElementById('frameCaption').textContent = n ? S.frames[S.fi].message : '';
+  var log = document.getElementById('traceLog');
+  if (n && log.scrollHeight) log.scrollTop = Math.max(0, (S.fi / n) * log.scrollHeight - log.clientHeight / 2);
+}
+function setFrame(i) {
+  if (!S.frames.length) return;
+  S.fi = Math.max(0, Math.min(S.frames.length - 1, i));
+  updatePlayback(); render();
+}
+function pbFirst() { pbStop(); setFrame(0); }
+function pbPrev() { pbStop(); setFrame(S.fi - 1); }
+function pbNext() { pbStop(); setFrame(S.fi + 1); }
+function pbStop() {
+  if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+  document.getElementById('playBtn').textContent = '▶';
+}
+function pbPlay() {
+  if (playTimer) { pbStop(); return; }
+  if (!S.frames.length) return;
+  if (S.fi >= S.frames.length - 1) S.fi = 0;
+  document.getElementById('playBtn').textContent = '❚❚';
+  var tick = function () {
+    if (S.fi >= S.frames.length - 1) { pbStop(); return; }
+    setFrame(S.fi + 1);
+    if (S.fi < S.frames.length - 1) playTimer = setTimeout(tick, 750 / speed);
+    else pbStop();
+  };
+  playTimer = setTimeout(tick, 750 / speed);
+}
+
+/* ---------- init ---------- */
+loadSample('sample');
+setStatus('not run', '#555');
+applyStep(-1);
+updatePlayback();
+render();
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

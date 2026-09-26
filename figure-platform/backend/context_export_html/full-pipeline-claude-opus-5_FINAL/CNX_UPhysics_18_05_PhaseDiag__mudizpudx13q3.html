@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:bold;font-size:12px">H₂O phase diagram — guided demo</span>
+<span id="demoNarration" style="display:block;font-size:11px;line-height:1.45;min-height:80px"></span>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;flex:1;text-align:center"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<label>Temperature <i>T</i> (°C): <output id="temperatureVal">25</output>
+  <input id="temperatureInput" type="range" min="0.022" max="0.9" step="0.0005" value="0.408" oninput="update_temperature(+this.value)">
+</label>
+<label>Pressure <i>p</i> (atm): <output id="pressureVal">1.00</output>
+  <input id="pressureInput" type="range" min="-3" max="2.477" step="0.002" value="0" oninput="update_pressure(+this.value)">
+</label>
+<label>Heating path
+  <select id="heatingPathInput" onchange="toggle_heatingPath(this.value)">
+    <option>Free explore</option>
+    <option>1 atm path</option>
+    <option>Low-pressure path (0.003 atm)</option>
+    <option>Supercritical path (250 atm)</option>
+  </select>
+</label>
+<button onclick="trigger_tracePath()">▶ Heat the sample along the path</button>
+<span style="font-size:11px;border-top:1px solid #dcdfe3;padding-top:5px"><b>State point</b></span>
+<span id="stateReadout" style="font-size:11px;font-family:ui-monospace,Consolas,monospace"></span>
+<span id="phaseReadout" style="font-size:12px;font-weight:bold"></span>
+<span style="font-size:10px;color:#666;line-height:1.35">Drag inside the plot to move the state point. Hover curves and dots for detail; click them for an explanation. Both axes are schematic and strongly compressed, so values close to 0 °C and 0.006 atm are stretched apart.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+/* ================= helpers ================= */
+var RED = '#e8423c';
+function cl(v, a, b) { return v < a ? a : (v > b ? b : v); }
+var L10 = function (x) { return Math.log(x) / Math.LN10; };
+
+/* monotone cubic (Fritsch–Carlson) — C1 smooth warp, no kinks */
+function mono(P) {
+  var n = P.length, xs = [], ys = [], i;
+  for (i = 0; i < n; i++) { xs.push(P[i][0]); ys.push(P[i][1]); }
+  var d = [], m = [];
+  for (i = 0; i < n - 1; i++) d.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+  m.push(d[0]);
+  for (i = 1; i < n - 1; i++) {
+    if (d[i - 1] * d[i] <= 0) { m.push(0); }
+    else {
+      var w1 = 2 * (xs[i + 1] - xs[i]) + (xs[i] - xs[i - 1]);
+      var w2 = (xs[i + 1] - xs[i]) + 2 * (xs[i] - xs[i - 1]);
+      var mm = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
+      var lim = 3 * Math.min(Math.abs(d[i - 1]), Math.abs(d[i]));
+      m.push(Math.abs(mm) > lim ? (mm > 0 ? lim : -lim) : mm);
+    }
+  }
+  m.push(d[n - 2]);
+  function at(x) {
+    x = cl(x, xs[0], xs[n - 1]);
+    var k = 0; while (k < n - 2 && x > xs[k + 1]) k++;
+    var h = xs[k + 1] - xs[k], t = (x - xs[k]) / h, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[k] + (t3 - 2 * t2 + t) * h * m[k] +
+      (-2 * t3 + 3 * t2) * ys[k + 1] + (t3 - t2) * h * m[k + 1];
+  }
+  function inv(y) {
+    y = cl(y, ys[0], ys[n - 1]);
+    var a = xs[0], b = xs[n - 1];
+    for (var k = 0; k < 60; k++) { var mid = (a + b) / 2; if (at(mid) < y) a = mid; else b = mid; }
+    return (a + b) / 2;
+  }
+  return { at: at, inv: inv };
+}
+
+/* nonlinear (schematic, log-like) axes — knots taken from the source figure */
+var TW = mono([[-25, 0], [-20, 0.022], [-10, 0.075], [-5, 0.106], [0, 0.148], [0.005, 0.2155],
+[0.01, 0.283], [1, 0.315], [10, 0.355], [40, 0.46], [100, 0.646], [180, 0.737],
+[260, 0.789], [374, 0.831], [470, 0.885], [600, 0.95], [760, 1]]);
+var PW = mono([[-4, 0], [-3.1, 0.18], [-2.2218, 0.348], [-1.2, 0.44], [0, 0.522],
+[1, 0.645], [1.8, 0.78], [2.1, 0.86], [2.3385, 0.94], [2.7, 1]]);
+function uT(T) { return TW.at(T); }
+function Tu(u) { return TW.inv(u); }
+function vP(p) { return PW.at(L10(cl(p, 1e-4, 450))); }
+function Pv(v) { return Math.pow(10, PW.inv(v)); }
+
+/* ============ coexistence curves (normalized plot coordinates) ============ */
+var PT = 0.006, TT = 0.01, PC = 218, TC = 374;
+var uTP = uT(TT), vTP = vP(PT), uCP = uT(TC), vCP = vP(PC);
+
+/* vaporization: smooth convex sweep TP → (100 °C, 1 atm) → critical point */
+var VAP = mono([[0.283, 0.348], [0.37, 0.375], [0.46, 0.411], [0.554, 0.459], [0.646, 0.522],
+[0.723, 0.600], [0.775, 0.685], [0.815, 0.820], [0.831, 0.940]]);
+function pVap(T) { return Pv(VAP.at(cl(uT(T), uTP, uCP))); }
+function tVap(p) { return Tu(VAP.inv(cl(vP(p), vTP, vCP))); }
+
+/* fusion: nearly vertical, small but clear LEFT lean (matches source) */
+var MELT_TOP = 0.209;
+function uMeltU(v) {
+  var s = cl((v - vTP) / (1 - vTP), 0, 1);
+  return uTP - (uTP - MELT_TOP) * Math.pow(s, 0.40);
+}
+/* sublimation: terminates exactly at the bottom-left axis corner */
+var uSUB0 = 0.0246;
+function uSubU(v) {
+  var s = cl(v / vTP, 0, 1);
+  return uSUB0 + (uTP - uSUB0) * Math.pow(s, 1.20);
+}
+
+var meltPts = [], vapPts = [], subPts = [];
+(function () {
+  var i, v, u;
+  for (i = 0; i <= 200; i++) { v = vTP + (1 - vTP) * i / 200; meltPts.push({ x: uMeltU(v), y: v }); }
+  for (i = 0; i <= 140; i++) { v = vTP * i / 140; subPts.push({ x: uSubU(v), y: v }); }
+  for (i = 0; i <= 320; i++) { u = uTP + (uCP - uTP) * i / 320; vapPts.push({ x: u, y: VAP.at(u) }); }
+})();
+
+function phaseOf(T, p) {
+  var u = uT(T), v = vP(p);
+  if (Math.abs(u - uTP) < 0.012 && Math.abs(v - vTP) < 0.012) return 'triple';
+  if (v < vTP) return (u <= uSubU(v)) ? 'solid' : 'vapor';
+  if (u <= uMeltU(v)) return 'solid';
+  if (u >= uCP) return (v >= vCP) ? 'super' : 'vapor';
+  if (v >= vCP) return 'liquid';
+  return (v > VAP.at(u)) ? 'liquid' : 'vapor';
+}
+var PHASE = {
+  solid: { name: 'Solid (ice)', fill: 'rgba(120,152,192,0.15)', c: '#41618f' },
+  liquid: { name: 'Liquid (water)', fill: 'rgba(72,140,216,0.13)', c: '#1a6bbd' },
+  vapor: { name: 'Vapor (steam)', fill: 'rgba(240,190,80,0.18)', c: '#a9760a' },
+  super: { name: 'Supercritical fluid', fill: 'rgba(152,112,206,0.15)', c: '#7038b0' },
+  triple: { name: 'Triple point: ice + water + vapor', fill: null, c: '#333' }
+};
+
+/* ================= state ================= */
+var state = { T: 25, p: 1, path: null };
+var anim = null, dragging = false, touched = false;
+var gArea = null, gFs = 12, gS = 400;
+var scrCurves = { melt: [], vap: [], sub: [] };
+var PATHS = {
+  'Free explore': null, '1 atm path': 1,
+  'Low-pressure path (0.003 atm)': 0.003, 'Supercritical path (250 atm)': 250
+};
+
+/* ================= canvas ================= */
+var _cv = document.createElement('canvas');
+_cv.style.cssText = 'width:100%;height:100%;display:block';
+document.getElementById('container').appendChild(_cv);
+function PXu(u) { return gArea.left + u * (gArea.right - gArea.left); }
+function PYv(v) { return gArea.bottom - v * (gArea.bottom - gArea.top); }
+
+function txt(ctx, s, x, y, o) {
+  o = o || {};
+  ctx.save();
+  ctx.font = o.font || (gFs + 'px sans-serif');
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = o.baseline || 'alphabetic';
+  if (o.halo !== false) {
+    ctx.lineWidth = o.haloW || 3.2; ctx.strokeStyle = '#fff';
+    ctx.lineJoin = 'round'; ctx.strokeText(s, x, y);
+  }
+  ctx.fillStyle = o.color || '#000';
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
+function seg(ctx, x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function head(ctx, x, y, ang, s) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-s, s * 0.42); ctx.lineTo(-s, -s * 0.42);
+  ctx.closePath(); ctx.fill(); ctx.restore();
+}
+function curveArrow(ctx, x0, y0, cx, cy, x1, y1, s) {
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cx, cy, x1, y1); ctx.stroke();
+  head(ctx, x1, y1, Math.atan2(y1 - cy, x1 - cx), s);
+}
+function fillPoly(ctx, pts, color) {
+  if (!pts.length || !color) return;
+  ctx.beginPath(); ctx.moveTo(PXu(pts[0][0]), PYv(pts[0][1]));
+  for (var i = 1; i < pts.length; i++) ctx.lineTo(PXu(pts[i][0]), PYv(pts[i][1]));
+  ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+}
+function asArr(a) { return a.map(function (p) { return [p.x, p.y]; }); }
+function regionPoly(ph) {
+  if (ph === 'solid') return [[0, 0], [uSUB0, 0]].concat(asArr(subPts)).concat(asArr(meltPts)).concat([[0, 1]]);
+  if (ph === 'liquid') return asArr(meltPts).concat([[uCP, 1], [uCP, vCP]]).concat(asArr(vapPts).reverse());
+  if (ph === 'vapor') return [[uSUB0, 0]].concat(asArr(subPts)).concat(asArr(vapPts)).concat([[1, vCP], [1, 0]]);
+  if (ph === 'super') return [[uCP, vCP], [1, vCP], [1, 1], [uCP, 1]];
+  return [];
+}
+function crossings(p) {
+  var out = [], v = vP(p);
+  if (p >= PT) {
+    var um = uMeltU(v);
+    out.push({ u: um, label: 'melting', T: Tu(um) });
+    if (p <= PC) { var ub = VAP.inv(v); out.push({ u: ub, label: 'boiling', T: Tu(ub) }); }
+  } else {
+    var us = uSubU(v);
+    out.push({ u: us, label: 'sublimation', T: Tu(us) });
+  }
+  return out;
+}
+
+/* ---------- background: region tint, path line, dashed guides ---------- */
+var bgPlugin = {
+  id: 'bgw',
+  beforeDatasetsDraw: function (chart) {
+    var ctx = chart.ctx, a = chart.chartArea; gArea = a;
+    var S = Math.min(chart.width, chart.height); gS = S;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(a.left, a.top, a.right - a.left, a.bottom - a.top); ctx.clip();
+
+    if (touched) {                            /* tint only after interaction */
+      var ph = phaseOf(state.T, state.p);
+      if (PHASE[ph].fill) fillPoly(ctx, regionPoly(ph), PHASE[ph].fill);
+    }
+
+    if (state.path) {                         /* selected heating path */
+      var y = PYv(vP(state.path));
+      ctx.setLineDash([6, 4]); ctx.strokeStyle = '#555'; ctx.fillStyle = '#555';
+      ctx.lineWidth = cl(S * 0.0026, 1, 2);
+      seg(ctx, a.left + 2, y, a.right - 10, y);
+      ctx.setLineDash([]);
+      head(ctx, a.right - 2, y, 0, cl(S * 0.018, 5, 9));
+    }
+
+    ctx.setLineDash([4, 3]);                  /* thin dashed guides (source) */
+    ctx.strokeStyle = '#222'; ctx.lineWidth = cl(S * 0.002, 0.8, 1.2);
+    var xt = PXu(uTP), yt = PYv(vTP);
+    seg(ctx, a.left, yt, xt, yt); seg(ctx, xt, yt, xt, a.bottom);
+    var xc = PXu(uCP), yc = PYv(vCP);
+    seg(ctx, a.left, yc, xc, yc); seg(ctx, xc, yc, xc, a.bottom);
+    var x1 = PXu(uT(100)), y1 = PYv(vP(1));
+    seg(ctx, a.left, y1, x1, y1); seg(ctx, x1, y1, x1, a.bottom);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+};
+
+/* ---------- foreground: axes, labels, marker ---------- */
+var fgPlugin = {
+  id: 'fgw',
+  afterDatasetsDraw: function (chart) {
+    var ctx = chart.ctx, a = chart.chartArea; gArea = a;
+    var S = Math.min(chart.width, chart.height); gS = S;
+    gFs = cl(S * 0.030, 8, 14);
+    var fs = gFs;
+    var lw = cl(S * 0.0025, 1, 1.9);
+    var tk = cl(S * 0.012, 3, 6);
+    var ext = cl(S * 0.038, 10, 20);
+    var ah = cl(S * 0.020, 5, 10);
+    var i;
+
+    function toScr(arr) { return arr.map(function (p) { return [PXu(p.x), PYv(p.y)]; }); }
+    scrCurves.melt = toScr(meltPts); scrCurves.vap = toScr(vapPts); scrCurves.sub = toScr(subPts);
+
+    ctx.save();
+    ctx.font = fs + 'px sans-serif';
+    ctx.lineWidth = lw; ctx.strokeStyle = '#000'; ctx.fillStyle = '#000';
+
+    /* axes with arrowheads */
+    seg(ctx, a.left, a.bottom, a.left, a.top - ext + ah);
+    head(ctx, a.left, a.top - ext, -Math.PI / 2, ah);
+    seg(ctx, a.left, a.bottom, a.right + ext - ah, a.bottom);
+    head(ctx, a.right + ext, a.bottom, 0, ah);
+
+    /* ticks */
+    var yT = [[218, '218'], [1, '1'], [0.006, '0.006']], maxLW = 0;
+    for (i = 0; i < yT.length; i++) maxLW = Math.max(maxLW, ctx.measureText(yT[i][1]).width);
+    for (i = 0; i < yT.length; i++) {
+      var yy = PYv(vP(yT[i][0]));
+      ctx.strokeStyle = '#000'; seg(ctx, a.left - tk, yy, a.left, yy);
+      txt(ctx, yT[i][1], a.left - tk - 3, yy, { align: 'right', baseline: 'middle', font: fs + 'px sans-serif' });
+    }
+    var xT = [[0, '0'], [0.01, '0.01'], [100, '100'], [374, '374']];
+    for (i = 0; i < xT.length; i++) {
+      var xx = PXu(uT(xT[i][0]));
+      ctx.strokeStyle = '#000'; seg(ctx, xx, a.bottom, xx, a.bottom + tk);
+      txt(ctx, xT[i][1], xx, a.bottom + tk + 2, { align: 'center', baseline: 'top', font: fs + 'px sans-serif' });
+    }
+
+    /* axis titles + figure title */
+    var xTit = Math.max(fs * 0.9, a.left - maxLW - tk - fs * 1.35);
+    ctx.save();
+    ctx.translate(xTit, (a.top + a.bottom) / 2); ctx.rotate(-Math.PI / 2);
+    txt(ctx, 'Pressure, p (atm)', 0, 0, { align: 'center', baseline: 'middle', font: 'bold ' + fs + 'px sans-serif' });
+    ctx.restore();
+    txt(ctx, 'Temperature, T (°C)', (a.left + a.right) / 2, Math.min(chart.height - 3, a.bottom + tk + fs * 2.6),
+      { align: 'center', baseline: 'alphabetic', font: 'bold ' + fs + 'px sans-serif' });
+    txt(ctx, 'H₂O', (a.left + a.right) / 2, Math.max(fs * 1.3, a.top * 0.62),
+      { align: 'center', baseline: 'alphabetic', font: 'bold ' + (fs * 1.25) + 'px sans-serif' });
+
+    /* italic region letters */
+    var rf = 'italic ' + (fs * 1.3) + 'px Georgia, serif';
+    txt(ctx, 's', PXu(0.098), PYv(0.408), { align: 'center', baseline: 'middle', font: rf });
+    txt(ctx, 'l', PXu(0.400), PYv(0.700), { align: 'center', baseline: 'middle', font: rf });
+    txt(ctx, 'v', PXu(0.723), PYv(0.364), { align: 'center', baseline: 'middle', font: rf });
+
+    /* special points */
+    var rdot = cl(S * 0.0115, 3, 6);
+    var xt = PXu(uTP), yt = PYv(vTP), xc = PXu(uCP), yc = PYv(vCP);
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(xt, yt, rdot, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(xc, yc, rdot, 0, 6.2832); ctx.fill();
+    txt(ctx, 'Triple', xt + rdot + 4, yt + fs * 1.05, { font: fs + 'px sans-serif' });
+    txt(ctx, 'point', xt + rdot + 4, yt + fs * 2.15, { font: fs + 'px sans-serif' });
+    ctx.font = fs + 'px sans-serif';
+    var cpw = ctx.measureText('Critical point').width;
+    var cpx = cl(xc - cpw * 0.62, 3, chart.width - cpw - 3);
+    txt(ctx, 'Critical point', cpx, yc - rdot - fs * 0.75, { font: fs + 'px sans-serif' });
+
+    /* outside annotations with curved leader arrows */
+    var af = fs * 0.95;
+    ctx.font = af + 'px sans-serif';
+    while (af > 7 && ctx.measureText('Sublimation').width > a.left - 6) { af -= 0.5; ctx.font = af + 'px sans-serif'; }
+    var annF = af + 'px sans-serif';
+    ctx.lineWidth = cl(S * 0.0022, 0.9, 1.6); ctx.strokeStyle = '#000'; ctx.fillStyle = '#000';
+    var hs = cl(S * 0.016, 4, 8);
+
+    var mTx = PXu(uMeltU(0.755)), mTy = PYv(0.755);
+    var mtw = ctx.measureText('Melting').width;
+    var mx = Math.max(mtw + 3, a.left - maxLW - tk - 8);
+    txt(ctx, 'Melting', mx, PYv(0.845), { align: 'right', baseline: 'middle', font: annF });
+    curveArrow(ctx, mx + 5, PYv(0.845), (mx + mTx) / 2, PYv(0.818), mTx - 7, mTy, hs);
+
+    var stw = ctx.measureText('Sublimation').width;
+    var sx = Math.max(stw + 3, a.left - 6);
+    txt(ctx, 'Sublimation', sx, PYv(0.152), { align: 'right', baseline: 'middle', font: annF });
+    var sTx = PXu(uSubU(0.122)), sTy = PYv(0.122);
+    curveArrow(ctx, sx + 5, PYv(0.152), (sx + sTx) / 2 + 6, PYv(0.135), sTx - 5, sTy + 3, hs);
+
+    var btw = ctx.measureText('Boiling').width;
+    var bx = Math.min(a.right + 8, chart.width - btw - 3);
+    txt(ctx, 'Boiling', bx, PYv(0.545), { align: 'left', baseline: 'middle', font: annF });
+    var bTx = PXu(VAP.inv(0.620)), bTy = PYv(0.620);
+    curveArrow(ctx, bx - 4, PYv(0.545), (bx + bTx) / 2, PYv(0.548), bTx + 7, bTy, hs);
+
+    /* heating-path boundary crossings */
+    if (state.path) {
+      var yp = PYv(vP(state.path)), cs = crossings(state.path);
+      for (i = 0; i < cs.length; i++) {
+        var cxp = PXu(cs[i].u);
+        if (cxp < a.left || cxp > a.right) continue;
+        ctx.strokeStyle = '#333'; ctx.lineWidth = cl(S * 0.0026, 1, 2);
+        seg(ctx, cxp, yp - hs, cxp, yp + hs);
+        var done = uT(state.T) >= cs[i].u;
+        txt(ctx, cs[i].label, cxp, yp - hs - 3, {
+          align: 'center', baseline: 'alphabetic',
+          font: (done ? 'bold ' : '') + (fs * 0.82) + 'px sans-serif', color: done ? '#b0300a' : '#444'
+        });
+      }
+      if (state.path > PC) {
+        txt(ctx, 'no boundary crossed', PXu(0.62), yp + hs + fs * 1.05,
+          { align: 'center', baseline: 'alphabetic', font: (fs * 0.82) + 'px sans-serif', color: '#7038b0' });
+      }
+    }
+
+    /* movable state marker — ghosted until the student interacts */
+    var ph2 = phaseOf(state.T, state.p);
+    var mxp = PXu(cl(uT(state.T), 0, 1)), myp = PYv(cl(vP(state.p), 0, 1));
+    var rm = cl(S * 0.016, 4, 8.5);
+    ctx.save();
+    ctx.globalAlpha = touched ? 1 : 0.22;
+    ctx.lineWidth = cl(S * 0.0045, 1.5, 3);
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#111';
+    ctx.beginPath(); ctx.arc(mxp, myp, rm, 0, 6.2832); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = PHASE[ph2].c;
+    ctx.beginPath(); ctx.arc(mxp, myp, rm * 0.36, 0, 6.2832); ctx.fill();
+    ctx.restore();
+
+    ctx.restore();
+  }
+};
+
+var layoutPlugin = {
+  id: 'padw',
+  beforeLayout: function (chart) {
+    var w = chart.width, h = chart.height, S = Math.min(w, h);
+    chart.options.layout.padding = {
+      left: cl(w * 0.20, 54, 130), right: cl(w * 0.15, 46, 105),
+      top: cl(h * 0.14, 34, 74), bottom: cl(h * 0.15, 38, 76)
+    };
+    var bw = cl(S * 0.0048, 1.4, 2.6);
+    chart.data.datasets.forEach(function (d) { d.borderWidth = bw; });
+  }
+};
+
+var chart = new Chart(_cv.getContext('2d'), {
+  type: 'scatter',
+  data: {
+    datasets: [
+      { label: 'melting', data: meltPts, showLine: true, pointRadius: 0, borderColor: RED, borderWidth: 2, tension: 0 },
+      { label: 'vaporization', data: vapPts, showLine: true, pointRadius: 0, borderColor: RED, borderWidth: 2, tension: 0 },
+      { label: 'sublimation', data: subPts, showLine: true, pointRadius: 0, borderColor: RED, borderWidth: 2, tension: 0 }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false, events: [],
+    layout: { padding: 40 },
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: {
+      x: { type: 'linear', min: 0, max: 1, display: false },
+      y: { type: 'linear', min: 0, max: 1, display: false }
+    }
+  },
+  plugins: [layoutPlugin, bgPlugin, fgPlugin]
+});
+window.__markRendered();
+
+/* ================= formatting / setters ================= */
+function fmtT(T) {
+  if (Math.abs(T) < 0.1) return T.toFixed(3);
+  if (Math.abs(T) < 10) return T.toFixed(1);
+  return T.toFixed(0);
+}
+function fmtP(p) {
+  if (p < 0.01) return p.toFixed(4);
+  if (p < 1) return p.toFixed(3);
+  if (p < 10) return p.toFixed(2);
+  return p.toFixed(0);
+}
+function setT(T) {
+  T = cl(T, -20, 500);
+  state.T = T;
+  document.getElementById('temperatureInput').value = uT(T).toFixed(4);
+  document.getElementById('temperatureVal').value = fmtT(T);
+}
+function setP(p) {
+  p = cl(p, 0.001, 300);
+  state.p = p;
+  document.getElementById('pressureInput').value = String(cl(L10(p), -3, 2.477));
+  document.getElementById('pressureVal').value = fmtP(p);
+}
+function redraw() {
+  var ph = phaseOf(state.T, state.p);
+  document.getElementById('stateReadout').textContent =
+    'T = ' + fmtT(state.T) + ' °C   p = ' + fmtP(state.p) + ' atm';
+  var el = document.getElementById('phaseReadout');
+  el.textContent = PHASE[ph].name;
+  el.style.color = PHASE[ph].c;
+  chart.update('none');
+}
+function stopAnim() { if (anim) { cancelAnimationFrame(anim); anim = null; } }
+
+/* ================= controls ================= */
+function update_temperature(u) {
+  stopAnim(); touched = true;
+  var T = cl(Tu(u), -20, 500);
+  state.T = T;
+  document.getElementById('temperatureVal').value = fmtT(T);
+  redraw();
+}
+function update_pressure(lg) {
+  stopAnim(); touched = true;
+  var p = cl(Math.pow(10, lg), 0.001, 300);
+  state.p = p;
+  document.getElementById('pressureVal').value = fmtP(p);
+  redraw();
+}
+function applyPath(name) {
+  state.path = PATHS[name] || null;
+  var pi = document.getElementById('pressureInput');
+  if (state.path) { setP(state.path); pi.disabled = true; } else { pi.disabled = false; }
+}
+function toggle_heatingPath(v) { stopAnim(); touched = true; applyPath(v); redraw(); }
+function pathEndU() {
+  var p = state.p;
+  if (p > PC) return 0.90;
+  if (p < PT) return 0.64;
+  return Math.min(0.90, VAP.inv(vP(p)) + 0.105);
+}
+function animateU(uTarget, dur) {
+  stopAnim(); touched = true;
+  var u0 = uT(state.T), t0 = performance.now(); dur = dur || 3400;
+  function frame(now) {
+    var k = cl((now - t0) / dur, 0, 1);
+    setT(Tu(u0 + (uTarget - u0) * k));
+    redraw();
+    anim = (k < 1) ? requestAnimationFrame(frame) : null;
+  }
+  anim = requestAnimationFrame(frame);
+}
+function animateP(pTarget, dur) {
+  stopAnim(); touched = true;
+  var v0 = vP(state.p), v1 = vP(pTarget), t0 = performance.now(); dur = dur || 2800;
+  function frame(now) {
+    var k = cl((now - t0) / dur, 0, 1);
+    setP(Pv(v0 + (v1 - v0) * k));
+    redraw();
+    anim = (k < 1) ? requestAnimationFrame(frame) : null;
+  }
+  anim = requestAnimationFrame(frame);
+}
+function trigger_tracePath() {
+  stopAnim(); touched = true;
+  var end = pathEndU();
+  setT(Tu(0.05)); redraw();
+  animateU(end);
+}
+
+/* ================= demo steps ================= */
+var U_SQUEEZE = 0.221;   /* inside the solid sliver, left of the triple point */
+var STEPS = [
+  {
+    title: 'Read the map',
+    narration: 'Three red curves carve the plane into solid (s), liquid (l) and vapor (v). At room conditions, 25 °C and 1 atm, the state point (faint circle) sits inside the liquid wedge — water is liquid there for no other reason than its location on this map.',
+    state: { temperature: 25, pressure: 1, heatingPath: 'Free explore' }
+  },
+  {
+    title: 'Cross the boiling curve',
+    narration: 'Slide the temperature right at 1 atm. At 100 °C the point crosses the vaporization curve and the tinted region flips from liquid to vapor — that crossing is boiling.',
+    state: { temperature: 130, pressure: 1, heatingPath: 'Free explore' }
+  },
+  {
+    title: 'The triple point',
+    narration: 'Drop the pressure to 0.006 atm and the temperature to 0.01 °C. All three curves meet at this single dot, the one condition where ice, water and steam coexist.',
+    state: { temperature: 0.01, pressure: 0.006, heatingPath: 'Free explore' }
+  },
+  {
+    title: 'Squeeze ice into water',
+    narration: 'Park the point just inside the solid sliver at 1 atm (the T axis is stretched near 0 °C so the fusion curve\u2019s small LEFT lean is readable). Now watch the pressure climb: near 50 atm the point crosses the melting curve and ice becomes liquid — pressure alone melted it, possible only because that curve leans left.',
+    state: { temperature: null, pressure: 200, heatingPath: 'Free explore', squeeze: true }
+  },
+  {
+    title: 'Sublimation path',
+    narration: 'Choose the low-pressure path, below the triple-point pressure, and heat. The point crosses only the sublimation curve: ice turns straight into vapor with no liquid stage.',
+    state: { heatingPath: 'Low-pressure path (0.003 atm)', pressure: 0.003, temperature: 20 }
+  },
+  {
+    title: 'Past the critical point',
+    narration: 'Now take the supercritical path above 218 atm and heat past 374 °C. No boundary is crossed — liquid and vapor merge continuously into one indistinguishable supercritical fluid.',
+    state: { heatingPath: 'Supercritical path (250 atm)', pressure: 250, temperature: 450 }
+  }
+];
+var curStep = 0;
+function applyStep(i) {
+  stopAnim();
+  curStep = (i + STEPS.length) % STEPS.length;
+  var s = STEPS[curStep], st = s.state;
+  touched = (curStep !== 0);
+  if (st.heatingPath !== undefined) {
+    document.getElementById('heatingPathInput').value = st.heatingPath;
+    applyPath(st.heatingPath);
+  }
+  if (st.squeeze) {
+    setT(Tu(U_SQUEEZE)); setP(1);
+  } else {
+    if (st.pressure !== undefined) setP(st.pressure);
+    if (st.temperature !== null && st.temperature !== undefined) setT(st.temperature);
+  }
+  document.getElementById('demoNarration').textContent = s.narration;
+  document.getElementById('stepLabel').textContent = (curStep + 1) + '/' + STEPS.length + ' · ' + s.title;
+  redraw();
+  if (st.squeeze) {
+    setTimeout(function () { if (curStep === 3) animateP(st.pressure); }, 400);
+  } else if (st.heatingPath && st.heatingPath !== 'Free explore') {
+    setT(Tu(0.05)); redraw();
+    setTimeout(function () { if (curStep === i % STEPS.length || true) animateU(uT(st.temperature)); }, 350);
+  }
+}
+function nextStep() { applyStep(curStep + 1); }
+function prevStep() { applyStep(curStep - 1); }
+
+/* ================= hover / click / drag ================= */
+function dist2seg(px, py, x1, y1, x2, y2) {
+  var dx = x2 - x1, dy = y2 - y1, L = dx * dx + dy * dy;
+  var t = L ? cl(((px - x1) * dx + (py - y1) * dy) / L, 0, 1) : 0;
+  var ax = x1 + t * dx - px, ay = y1 + t * dy - py;
+  return Math.sqrt(ax * ax + ay * ay);
+}
+function nearCurve(pts, x, y) {
+  var m = 1e9;
+  for (var i = 1; i < pts.length; i++) m = Math.min(m, dist2seg(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]));
+  return m;
+}
+function inArea(x, y) { return gArea && x >= gArea.left && x <= gArea.right && y >= gArea.top && y <= gArea.bottom; }
+function hitTest(x, y) {
+  if (!gArea) return null;
+  var r = cl(gS * 0.03, 8, 14);
+  var xt = PXu(uTP), yt = PYv(vTP), xc = PXu(uCP), yc = PYv(vCP);
+  if (Math.hypot(x - xt, y - yt) < r) return {
+    tip: 'Triple point — 0.01 °C, 0.006 atm', title: 'Triple point',
+    popup: 'At 0.01 °C and 0.006 atm the melting, boiling and sublimation curves all meet. This is the only pressure–temperature combination where ice, liquid water and water vapor coexist in equilibrium.'
+  };
+  if (Math.hypot(x - xc, y - yc) < r) return {
+    tip: 'Critical point — 374 °C, 218 atm', title: 'Critical point',
+    popup: 'The vaporization curve ends here at 374 °C and 218 atm. Above the critical point the liquid and vapor densities become equal, so there is no boundary left to cross: the substance is a single supercritical fluid.'
+  };
+  var th = cl(gS * 0.018, 5, 9);
+  if (nearCurve(scrCurves.melt, x, y) < th) return {
+    tip: 'Fusion (melting) curve — solid ⇄ liquid', title: 'Melting (fusion) curve',
+    popup: 'This nearly vertical boundary separates ice from liquid water. For water it leans slightly to the LEFT (negative slope) because ice is less dense than the liquid, so compressing ice at fixed temperature can push the state point across the curve and melt it.'
+  };
+  if (nearCurve(scrCurves.vap, x, y) < th) return {
+    tip: 'Vaporization (boiling) curve — liquid ⇄ vapor', title: 'Vaporization curve',
+    popup: 'Along this curve liquid and vapor coexist; it gives the boiling temperature at each pressure (100 °C at 1 atm). It starts at the triple point and rises ever more steeply to the critical point, where the distinction between liquid and vapor disappears.'
+  };
+  if (nearCurve(scrCurves.sub, x, y) < th) return {
+    tip: 'Sublimation curve — solid ⇄ vapor', title: 'Sublimation curve',
+    popup: 'Below the triple-point pressure of 0.006 atm no liquid can exist. Heating ice at such low pressure carries the state point across this curve, and the solid passes directly into vapor — sublimation.'
+  };
+  return null;
+}
+function setFromPos(x, y) {
+  var u = cl((x - gArea.left) / (gArea.right - gArea.left), 0, 1);
+  var v = cl((gArea.bottom - y) / (gArea.bottom - gArea.top), 0, 1);
+  setT(cl(Tu(u), -20, 500));
+  if (!state.path) setP(cl(Pv(v), 0.001, 300));
+  redraw();
+}
+_cv.addEventListener('mousemove', function (ev) {
+  var x = ev.offsetX, y = ev.offsetY;
+  if (dragging) { setFromPos(x, y); return; }
+  var h = hitTest(x, y);
+  if (h) { _cv.style.cursor = 'pointer'; showTooltip(h.tip, ev); return; }
+  if (inArea(x, y)) {
+    _cv.style.cursor = 'crosshair';
+    var u = (x - gArea.left) / (gArea.right - gArea.left), v = (gArea.bottom - y) / (gArea.bottom - gArea.top);
+    var T = Tu(u), p = Pv(v);
+    showTooltip('T = ' + fmtT(T) + ' °C, p = ' + fmtP(p) + ' atm → ' + PHASE[phaseOf(T, p)].name, ev);
+  } else { _cv.style.cursor = 'default'; hideTooltip(); }
+});
+_cv.addEventListener('mouseleave', function () { hideTooltip(); dragging = false; });
+_cv.addEventListener('mousedown', function (ev) {
+  var x = ev.offsetX, y = ev.offsetY, h = hitTest(x, y);
+  if (h) { showPopup(h.title, h.popup); return; }
+  if (inArea(x, y)) { stopAnim(); touched = true; dragging = true; setFromPos(x, y); }
+});
+window.addEventListener('mouseup', function () { dragging = false; });
+document.addEventListener('fig-resize', function () { chart.resize(); redraw(); });
+
+/* ================= init ================= */
+(function () {
+  var ti = document.getElementById('temperatureInput');
+  ti.min = uT(-20).toFixed(4);
+  ti.max = uT(500).toFixed(4);
+})();
+applyStep(0);
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

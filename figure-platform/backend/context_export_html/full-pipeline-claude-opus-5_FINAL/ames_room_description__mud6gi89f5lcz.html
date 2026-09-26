@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<p id="demoNarration" style="margin:0;font-size:12px;line-height:1.45;color:#222"></p>
+<span style="display:flex;gap:6px;align-items:center;margin-bottom:2px">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;color:#555;min-width:54px;text-align:center"></span>
+  <button onclick="nextStep()">▶</button>
+  <button onclick="applyStep(0)" title="Back to the published figure">⟲</button>
+</span>
+<label>Room skew (far-wall slant): <output id="skewAngleVal">25</output>°
+  <input id="skewAngleInput" type="range" min="0" max="40" step="1" value="25"
+         oninput="document.getElementById('skewAngleVal').value=this.value;update_skewAngle(+this.value)">
+</label>
+<label>Pinhole position (or drag the dot): <output id="pinholeDragVal">424</output>
+  <input id="pinholeDragInput" type="range" min="160" max="610" step="1" value="424"
+         oninput="document.getElementById('pinholeDragVal').value=this.value;update_pinholeDrag(+this.value)">
+</label>
+<label>Floor plan shown
+  <select id="planOverlayInput" onchange="toggle_planOverlay(this.value)">
+    <option value="Actual">Actual</option>
+    <option value="Perceived">Perceived</option>
+    <option value="Both" selected>Both</option>
+  </select>
+</label>
+<label>Sight-line construction
+  <select id="rayRevealInput" onchange="toggle_rayReveal(this.value)">
+    <option value="none">no rays</option>
+    <option value="far">rays to far object</option>
+    <option value="both">rays to both objects</option>
+    <option value="back" selected>back-project to perceived object</option>
+  </select>
+</label>
+<label><input id="wedgeShadeInput" type="checkbox" onchange="toggle_wedgeShade(this.checked)"> Shade the visual-angle wedges (study aid, not in the original)</label>
+<span id="amesReadout" style="font-size:11px;color:#333;line-height:1.5;border-top:1px solid #e2e5e9;padding-top:6px"></span>
+<span style="font-size:11px;color:#444;line-height:1.6;border-top:1px solid #e2e5e9;padding-top:6px">
+  <b>Legend</b><br>
+  <span style="display:inline-block;width:18px;border-top:3px solid #000;vertical-align:middle"></span> solid black — actual geometry<br>
+  <span style="display:inline-block;width:18px;border-top:3px dashed #000;vertical-align:middle"></span> dashed black — perceived / assumed<br>
+  <span style="display:inline-block;width:18px;border-top:3px solid #ff0000;vertical-align:middle"></span> red — sight lines through pinhole<br>
+  <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#bebebe;border:1.5px solid #000;vertical-align:middle"></span> gray — objects (both the same real size)
+</span>
+<span style="font-size:10px;color:#777">Hover or click parts of the figure for details.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var amesDraw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+var VBW = 660, VBH = 888;
+amesDraw.viewbox(0, 0, VBW, VBH);
+var amesRoot = amesDraw.group();
+
+/* room box proportions taken from the source plate */
+var WL = 14, WR = 650, WT = 12, WB = 843, OBJR = 58;
+var SERIF = "'Times New Roman',Times,serif";
+var RED = '#ff0000', GRAY = '#bebebe';
+
+var st = { skew: 25, px: 424, overlay: 'Both', rays: 'back', wedge: false, hint: false };
+
+/* ---------- geometry ---------- */
+function geo() {
+  var m = Math.tan(st.skew * Math.PI / 180) * 1.217;   /* 25° -> slope 0.568, matching the plate */
+  var nn = Math.sqrt(1 + m * m);
+  var yR = WT + (WR - WL) * m;
+  var wy = function (x) { return WT + (x - WL) * m; };
+  /* far object: tucked into the far-left corner, visibly crossing BOTH the
+     slanted far wall and the left wall exactly as in the printed plate */
+  var cLx = WL + 0.72 * OBJR;
+  var cL = { x: cLx, y: wy(cLx) + 0.80 * OBJR * nn };
+  /* near object: just inside the far wall at the right, close to the pinhole */
+  var cR = { x: WR - 0.98 * OBJR, y: Math.min(WB - OBJR - 16, yR + 1.14 * OBJR) };
+  var P = { x: st.px, y: WB };
+  var poly = [{ x: WL, y: WT }, { x: WR, y: yR }, { x: WR, y: WB }, { x: WL, y: WB }];
+  return { m: m, nn: nn, yR: yR, wy: wy, cL: cL, cR: cR, P: P, poly: poly };
+}
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+/* back-project a point along its sight line onto the assumed (rectangular) floor depth */
+function backProj(Q, g) {
+  var P = g.P, dx = Q.x - P.x, dy = Q.y - P.y;
+  var den = dy - g.m * dx;
+  if (Math.abs(den) < 1e-9 || Math.abs(dy) < 1e-9) return { x: Q.x, y: Q.y, k: 1 };
+  var tA = (WT + (P.x - WL) * g.m - P.y) / den;   /* ray parameter at the actual far wall */
+  var tP = (g.yR - P.y) / dy;                     /* ray parameter at the assumed far wall */
+  var k = (Math.abs(tA) < 1e-9) ? 1 : tP / tA;
+  return { x: P.x + k * dx, y: P.y + k * dy, k: k };
+}
+function raySeg(P, d, A, Bp) {
+  var ex = Bp.x - A.x, ey = Bp.y - A.y;
+  var den = d.x * ey - d.y * ex;
+  if (Math.abs(den) < 1e-9) return null;
+  var t = ((A.x - P.x) * ey - (A.y - P.y) * ex) / den;
+  var u = ((A.x - P.x) * d.y - (A.y - P.y) * d.x) / den;
+  if (t > 1e-6 && u >= -1e-6 && u <= 1 + 1e-6) return t;
+  return null;
+}
+function exitPt(P, d, poly) {
+  var best = null;
+  for (var i = 0; i < poly.length; i++) {
+    var t = raySeg(P, d, poly[i], poly[(i + 1) % poly.length]);
+    if (t !== null && (best === null || t < best)) best = t;
+  }
+  if (best === null) best = 900;
+  return { x: P.x + best * d.x, y: P.y + best * d.y };
+}
+/* run a ray all the way to the edge of the plate, like the printed figure */
+function exitBox(P, d) {
+  var ts = [];
+  if (d.x > 1e-9) ts.push((VBW - P.x) / d.x); else if (d.x < -1e-9) ts.push((0 - P.x) / d.x);
+  if (d.y > 1e-9) ts.push((VBH - P.y) / d.y); else if (d.y < -1e-9) ts.push((0 - P.y) / d.y);
+  var t = 1e9;
+  for (var i = 0; i < ts.length; i++) if (ts[i] > 0 && ts[i] < t) t = ts[i];
+  if (t > 1e8) t = 900;
+  return { x: P.x + t * d.x, y: P.y + t * d.y };
+}
+function tangentAngles(P, C, r) {
+  var dx = C.x - P.x, dy = C.y - P.y, d = Math.hypot(dx, dy);
+  if (d <= r * 1.02) return null;
+  var base = Math.atan2(dy, dx), a = Math.asin(r / d);
+  return [base - a, base + a];
+}
+function visAngle(P, C, r) {
+  return 2 * Math.asin(Math.min(0.999, r / dist(P, C))) * 180 / Math.PI;
+}
+
+/* ---------- drawing helpers ---------- */
+function mkLabel(grp, str, size, italic, weight) {
+  var t = grp.text(str);
+  t.font({
+    family: SERIF, size: size, anchor: 'middle', leading: 1,
+    style: italic ? 'italic' : 'normal', weight: weight || 'normal'
+  });
+  t.fill('#000');
+  t.attr({ 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 8, 'stroke-linejoin': 'round' });
+  return t;
+}
+function hoverable(el, text, title, body) {
+  el.css('cursor', 'pointer');
+  el.on('mousemove', function (e) { showTooltip(text, e); });
+  el.on('mouseleave', function () { hideTooltip(); });
+  if (title) el.on('click', function () { showPopup(title, body); });
+  return el;
+}
+
+/* two tangent rays through the pinhole, running well past the far wall as in the plate */
+function drawTangentRays(rayG, wedgeG, P, C, r, label) {
+  var ang = tangentAngles(P, C, r);
+  if (!ang) return;
+  var ends = [];
+  for (var i = 0; i < 2; i++) {
+    var d = { x: Math.cos(ang[i]), y: Math.sin(ang[i]) };
+    var ex = exitBox(P, d);
+    ends.push(ex);
+    var ln = rayG.line(P.x, P.y, ex.x, ex.y)
+      .stroke({ color: RED, width: 6.2, linecap: 'butt' });
+    hoverable(ln, label, 'Sight line',
+      'A pinhole only passes rays that go through one point, so the image records the direction of each ray — the visual angle — and nothing at all about how far along that ray the object really sits.');
+  }
+  if (st.wedge) {
+    wedgeG.polygon([[P.x, P.y], [ends[0].x, ends[0].y], [ends[1].x, ends[1].y]])
+      .fill({ color: RED, opacity: 0.07 }).stroke('none');
+  }
+}
+
+/* ---------- main render ---------- */
+function amesRender() {
+  amesRoot.clear();
+  var g = geo();
+  var showA = st.overlay !== 'Perceived';
+  var showP = st.overlay !== 'Actual';
+
+  var gWedge = amesRoot.group(), gRoom = amesRoot.group(), gThin = amesRoot.group(),
+      gObj = amesRoot.group(), gRay = amesRoot.group(), gLab = amesRoot.group(),
+      gUI = amesRoot.group();
+
+  var pc = backProj(g.cL, g);
+  var pr = Math.max(4, OBJR * pc.k);
+  var pcorner = backProj({ x: WL, y: WT }, g);
+  var xPL = Math.max(WL + 8, Math.min(WR - 80, pcorner.x));
+
+  /* ---- actual room outline ---- */
+  if (showA) {
+    gRoom.polygon(g.poly.map(function (p) { return [p.x, p.y]; }))
+      .fill('none').stroke({ color: '#000', width: 5, linejoin: 'miter' });
+    var wall = gRoom.line(WL, WT, WR, g.yR).stroke({ color: '#000', width: 20, opacity: 0.001 });
+    hoverable(wall, 'Actual far wall — slant ' + st.skew + '°', 'Actual far wall',
+      'The real far wall recedes steeply on the left. Because a pinhole cannot measure depth, this slanted wall can project to exactly the same image as a wall square to the viewer.');
+  }
+
+  /* ---- perceived (assumed rectangular) plan ---- */
+  if (showP) {
+    gRoom.line(xPL, g.yR, WR, g.yR)
+      .stroke({ color: '#000', width: 4.5, dasharray: '24,17', linecap: 'butt' });
+    gRoom.line(xPL, g.yR, xPL, WB)
+      .stroke({ color: '#000', width: 4.5, dasharray: '24,17', linecap: 'butt' });
+    var hitH = gRoom.line(xPL, g.yR, WR, g.yR).stroke({ color: '#000', width: 20, opacity: 0.001 });
+    hoverable(hitH, 'Perceived (assumed rectangular) floor plan', 'Perceived room',
+      'This dashed rectangle is the room the brain assumes: right angles everywhere. It projects to the same image as the real trapezoid, so nothing in that image can rule it out.');
+    var hitV = gRoom.line(xPL, g.yR, xPL, WB).stroke({ color: '#000', width: 20, opacity: 0.001 });
+    hoverable(hitV, 'Perceived side wall — the back-projected far corner', 'Perceived side wall',
+      'The ray that grazes the true far-left corner meets the assumed far wall here, so the brain places the room\'s left edge at this dashed line — and places anything on that ray right beside it.');
+  }
+
+  /* ---- thin black centre ray (under the objects, as in the plate) ---- */
+  if (st.rays !== 'none') {
+    var dC = { x: g.cL.x - g.P.x, y: g.cL.y - g.P.y };
+    var n = Math.hypot(dC.x, dC.y); dC.x /= n; dC.y /= n;
+    var exC = exitPt(g.P, dC, g.poly);
+    gThin.line(g.P.x, g.P.y, exC.x, exC.y).stroke({ color: '#000', width: 1.8 });
+  }
+
+  /* ---- objects ---- */
+  if (showA) {
+    var c1 = gObj.circle(OBJR * 2).center(g.cL.x, g.cL.y)
+      .fill(GRAY).stroke({ color: '#000', width: 5 });
+    hoverable(c1, 'Far object — ' + visAngle(g.P, g.cL, OBJR).toFixed(1) + '° wide at the pinhole',
+      'Far object (actual)',
+      'This object sits in the deep far-left corner of the trapezoid. It is the same physical size as the other one, but it is much farther from the pinhole, so it fills only a narrow cone of directions.');
+    var c2 = gObj.circle(OBJR * 2).center(g.cR.x, g.cR.y)
+      .fill(GRAY).stroke({ color: '#000', width: 5 });
+    hoverable(c2, 'Near object — ' + visAngle(g.P, g.cR, OBJR).toFixed(1) + '° wide at the pinhole',
+      'Near object (actual)',
+      'Physically identical to the far object, but much closer to the pinhole, so it fills a much wider angle. If the brain believes both are at the same depth, that angle difference is read as a size difference.');
+  }
+  if (showP && st.rays === 'back') {
+    var c3 = gObj.circle(pr * 2).center(pc.x, pc.y)
+      .fill(GRAY).stroke({ color: '#000', width: 4, dasharray: '12,9' });
+    hoverable(c3, 'Perceived object — ' + (pc.k * 100).toFixed(0) + '% of the true size',
+      'Perceived object',
+      'Back-projecting the same sight lines onto the assumed rectangular floor lands the object right at the dashed side wall — much nearer than it really is. The same visual angle at a nearer assumed depth can only mean a smaller object.');
+  }
+
+  /* ---- red sight lines (over the objects, as in the plate) ---- */
+  if (st.rays !== 'none') {
+    drawTangentRays(gRay, gWedge, g.P, g.cL, OBJR, 'Sight line grazing the far object');
+    if (st.rays === 'both') {
+      drawTangentRays(gRay, gWedge, g.P, g.cR, OBJR, 'Sight line grazing the near object');
+    }
+  }
+
+  /* ---- labels (drawn last, with white halos) ---- */
+  if (showP && st.rays === 'back') {
+    var edge = Math.min(xPL, pc.x - pr) - 28;
+    var l1 = mkLabel(gLab, 'Perceived', 31, false);
+    var l2 = mkLabel(gLab, 'object', 31, false);
+    var b1 = l1.bbox(), b2 = l2.bbox();
+    if (edge - b1.width > WL - 6) {
+      l1.center(edge - b1.width / 2, pc.y - 19);
+      l2.center(edge - b2.width / 2, pc.y + 20);
+    } else {
+      var rx = Math.max(pc.x + pr, xPL) + 26;
+      l1.center(Math.min(rx + b1.width / 2, WR - b1.width / 2 - 8), pc.y - 19);
+      l2.center(Math.min(rx + b2.width / 2, WR - b2.width / 2 - 8), pc.y + 20);
+    }
+  }
+  if (showA) {
+    var mx = WL + 0.47 * (WR - WL), my = g.wy(mx);
+    var tA = mkLabel(gLab, 'Actual room floor plan', 36, true, '500');
+    tA.center(mx + 25 * g.m / g.nn, my - 25 / g.nn);
+    tA.rotate(Math.atan2(g.m, 1) * 180 / Math.PI);
+  }
+  if (showP) {
+    var belowLine = (showA && st.skew < 7);
+    var tP = mkLabel(gLab, 'Perceived room floor plan', 34, false, '500');
+    var bw = tP.bbox().width;
+    var cxMax = WR - bw / 2 - 10;
+    var cx = Math.min(cxMax, Math.max(xPL + bw / 2 + 4, 0.60 * VBW));
+    tP.center(cx, g.yR + (belowLine ? 30 : -22));
+  }
+
+  /* ---- pinhole ---- */
+  var ph = gUI.circle(16).center(g.P.x, g.P.y).fill('#000');
+  var hit = gUI.circle(52).center(g.P.x, g.P.y).fill('#ffffff').attr('fill-opacity', 0.001);
+  mkLabel(gLab, 'Pinhole', 30, false).center(Math.min(WR - 52, Math.max(WL + 52, g.P.x)), WB + 32);
+
+  if (st.hint) {
+    var ring = gUI.circle(46).center(g.P.x, g.P.y).fill('none').stroke({ color: RED, width: 3 });
+    try { ring.animate(900).attr({ 'stroke-opacity': 0.05 }).loop(true, true); } catch (e) { }
+  }
+  hoverable(hit, 'Drag me along the bottom wall', 'Pinhole',
+    'All the light reaching the eye passes through this single point, so only ray directions survive. Move it and the whole construction changes: an Ames room is built for exactly one viewpoint.');
+  hit.css('cursor', 'ew-resize');
+  ph.css('cursor', 'ew-resize');
+  hit.on('pointerdown', function (e) { amesDragging = true; e.preventDefault(); });
+  ph.on('pointerdown', function (e) { amesDragging = true; e.preventDefault(); });
+}
+
+/* ---------- drag ---------- */
+var amesDragging = false;
+document.addEventListener('pointermove', function (e) {
+  if (!amesDragging) return;
+  var p = amesDraw.point(e.clientX, e.clientY);
+  var x = Math.max(160, Math.min(610, p.x));
+  st.px = x;
+  var inp = document.getElementById('pinholeDragInput'); if (inp) inp.value = Math.round(x);
+  var out = document.getElementById('pinholeDragVal'); if (out) out.value = Math.round(x);
+  amesRender(); updReadout();
+});
+document.addEventListener('pointerup', function () { amesDragging = false; });
+
+/* ---------- readout ---------- */
+function updReadout() {
+  var el = document.getElementById('amesReadout');
+  if (!el) return;
+  var g = geo();
+  var aL = visAngle(g.P, g.cL, OBJR), aR = visAngle(g.P, g.cR, OBJR);
+  var kL = backProj(g.cL, g).k, kR = backProj(g.cR, g).k;
+  var ratio = kR / kL;
+  el.innerHTML =
+    'The two gray objects are <b>the same real size</b>.<br>' +
+    'Visual angle at the pinhole — far <b>' + aL.toFixed(1) + '°</b>, near <b>' + aR.toFixed(1) + '°</b><br>' +
+    'Assumed depth ÷ true depth — far <b>' + kL.toFixed(2) + '</b>, near <b>' + kR.toFixed(2) + '</b><br>' +
+    'Perceived size — far <b>' + (kL * 100).toFixed(0) + '%</b> of true, near <b>' + (kR * 100).toFixed(0) + '%</b><br>' +
+    (Math.abs(ratio - 1) < 0.01
+      ? '<b>No illusion:</b> both look their true size.'
+      : 'So the near object <b>looks ' + ratio.toFixed(2) + '×</b> bigger than the far one.');
+}
+
+/* ---------- interaction handlers ---------- */
+function update_skewAngle(v) { st.skew = v; amesRender(); updReadout(); }
+function update_pinholeDrag(v) { st.px = v; amesRender(); updReadout(); }
+function toggle_planOverlay(v) { st.overlay = v; amesRender(); updReadout(); }
+function toggle_rayReveal(v) { st.rays = v; amesRender(); updReadout(); }
+function toggle_wedgeShade(on) { st.wedge = !!on; amesRender(); }
+
+/* ---------- demo steps ---------- */
+var STEPS = [
+  {
+    title: 'The published figure',
+    narration: 'Top-down plan of an Ames room. Solid black = the true trapezoidal floor, dashed black = the rectangular room the viewer assumes, red = sight lines through the pinhole. Press ▶ to build it up step by step.',
+    state: { planOverlay: 'Both', rayReveal: 'back', skewAngle: 25, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: 'The actual room',
+    narration: 'Seen from above, the real room is a trapezoid: the far wall recedes sharply away on the left. Two identical gray objects sit in the far-left and near-right corners.',
+    state: { planOverlay: 'Actual', rayReveal: 'none', skewAngle: 25, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: 'Rays through the pinhole',
+    narration: 'Red tangent rays graze each object and run on past the far wall. The objects are identical, yet the near-right one fills a much wider angle than the far-left one — because the pinhole records only directions, never distances.',
+    state: { planOverlay: 'Actual', rayReveal: 'both', skewAngle: 25, px: 424, wedge: true, hint: false }
+  },
+  {
+    title: 'The room the brain assumes',
+    narration: 'The viewer assumes an ordinary rectangular room. The dashed rectangle is that assumed floor plan — it is consistent with the very same image, so nothing in the picture contradicts it.',
+    state: { planOverlay: 'Both', rayReveal: 'both', skewAngle: 25, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: "Where the object is 'placed'",
+    narration: 'Back-projecting the far object\'s rays onto the assumed floor lands it at the dashed circle, right on the perceived side wall — much nearer than it really is. Same visual angle at a nearer assumed depth means a smaller object.',
+    state: { planOverlay: 'Both', rayReveal: 'back', skewAngle: 25, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: 'Crank up the skew',
+    narration: 'Increase the far-wall slant: the true depth difference grows while the assumed depth stays put, so the perceived size of the far object collapses and two identical objects look dramatically different.',
+    state: { planOverlay: 'Both', rayReveal: 'back', skewAngle: 40, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: 'Flatten the room',
+    narration: 'Set the skew to zero and the room really is rectangular — perceived and actual floor plans coincide, perceived size equals true size, and the illusion vanishes entirely.',
+    state: { planOverlay: 'Both', rayReveal: 'back', skewAngle: 0, px: 424, wedge: false, hint: false }
+  },
+  {
+    title: 'One viewpoint only',
+    narration: 'Now drag the pinhole along the bottom wall. The rays swing, the perceived object slides to a new place, and the trapezoid stops masquerading as a rectangle — the illusion works from exactly one point of view.',
+    state: { planOverlay: 'Both', rayReveal: 'back', skewAngle: 25, px: 424, wedge: false, hint: true }
+  }
+];
+var stepIdx = 0;
+
+function applyStep(i) {
+  stepIdx = Math.max(0, Math.min(STEPS.length - 1, i));
+  var s = STEPS[stepIdx], v = s.state;
+
+  st.skew = v.skewAngle; st.px = v.px; st.overlay = v.planOverlay;
+  st.rays = v.rayReveal; st.wedge = !!v.wedge; st.hint = !!v.hint;
+
+  var e;
+  e = document.getElementById('skewAngleInput'); if (e) e.value = v.skewAngle;
+  e = document.getElementById('skewAngleVal'); if (e) e.value = v.skewAngle;
+  e = document.getElementById('pinholeDragInput'); if (e) e.value = v.px;
+  e = document.getElementById('pinholeDragVal'); if (e) e.value = v.px;
+  e = document.getElementById('planOverlayInput'); if (e) e.value = v.planOverlay;
+  e = document.getElementById('rayRevealInput'); if (e) e.value = v.rayReveal;
+  e = document.getElementById('wedgeShadeInput'); if (e) e.checked = !!v.wedge;
+
+  var n = document.getElementById('demoNarration');
+  if (n) n.innerHTML = '<b>' + s.title + '</b><br>' + s.narration;
+  var lab = document.getElementById('stepLabel');
+  if (lab) lab.textContent = (stepIdx === 0) ? 'start' : stepIdx + ' / ' + (STEPS.length - 1);
+
+  amesRender(); updReadout();
+}
+function nextStep() { applyStep(stepIdx + 1); }
+function prevStep() { applyStep(stepIdx - 1); }
+
+/* ---------- init ---------- */
+applyStep(0);
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

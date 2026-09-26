@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<span style="font-weight:600;font-size:12px">Frasch process — guided demo</span>
+<p id="demoNarration" style="margin:0;font-size:11px;line-height:1.45;color:#222"></p>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="flex:1;text-align:center;font-size:11px;color:#444"></span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<button id="flowBtn" onclick="trigger_flowAnimation()">▶ Play fluid flow</button>
+<label>Process stage:
+  <select id="phaseInput" onchange="update_phase(this.value)">
+    <option value="idle">idle</option>
+    <option value="water down">water down</option>
+    <option value="sulfur melts">sulfur melts</option>
+    <option value="air down">air down</option>
+    <option value="froth rises">froth rises</option>
+    <option value="recovered at surface">recovered at surface</option>
+  </select>
+</label>
+<label>Injected water temperature (°C): <output id="waterTempVal">170</output>
+  <input id="waterTempInput" type="range" min="80" max="200" step="5" value="170"
+    oninput="document.getElementById('waterTempVal').value=this.value;update_waterTemp(+this.value)">
+</label>
+<span id="tempNote" style="font-size:10.5px;color:#666"></span>
+<span style="font-size:10.5px;color:#777;line-height:1.4">Hover a pipe, the casing, the soil or the melt pool for its role; click for a longer explanation.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+(function () {
+  var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+  var W = 656, H = 1280;
+  draw.viewbox(0, 0, W, H);
+
+  // ───────── palette / geometry ─────────
+  var C = { water: '#2f7fd0', air: '#9aa3ab', sulfur: '#e0a12a', ink: '#000' };
+  var cx = 328;
+  var xoL = 215, xoR = 441;      // outer (water) pipe walls
+  var xmL = 272, xmR = 384;      // middle (sulfur) pipe walls
+  var xiL = 305, xiR = 351;      // inner (air) pipe walls
+  var yHeadT = 130, yHeadB = 245;
+  var yOuterT = 385, yBrT = 430, yBrB = 470;
+  var yCaseT = 528, yCaseB = 1168;
+  var ySoil = 727, yDep = 990;
+  var yMidB = 1058, yInnB = 990;
+
+  var gBg = draw.group(), gGlow = draw.group(), gFill = draw.group(),
+    gHi = draw.group(), gStream = draw.group(), gPipe = draw.group(),
+    gArrow = draw.group(), gLabel = draw.group(), gHot = draw.group();
+
+  function T(g, x, y, s, size, color, anchor, bold) {
+    var t = g.plain(String(s)).font({ family: 'sans-serif', size: size, anchor: anchor || 'start', weight: bold ? 'bold' : 'normal' }).fill(color || '#111');
+    t.attr({ x: x, y: y, 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3.5, 'stroke-linejoin': 'round' });
+    return t;
+  }
+  function arrow(g, x1, y1, x2, y2, col, w, hs) {
+    col = col || C.ink; w = w || 3.2; hs = hs || 11;
+    var dx = x2 - x1, dy = y2 - y1, L = Math.sqrt(dx * dx + dy * dy) || 1;
+    var ux = dx / L, uy = dy / L, px = -uy, py = ux;
+    g.line(x1, y1, x2 - ux * hs * 0.75, y2 - uy * hs * 0.75).stroke({ color: col, width: w, linecap: 'butt' });
+    g.polygon([[x2, y2],
+    [x2 - ux * hs + px * hs * 0.58, y2 - uy * hs + py * hs * 0.58],
+    [x2 - ux * hs - px * hs * 0.58, y2 - uy * hs - py * hs * 0.58]]).fill(col);
+  }
+  function headAt(g, x, y, dx, dy, col, hs) {
+    col = col || C.ink; hs = hs || 11;
+    var L = Math.sqrt(dx * dx + dy * dy) || 1, ux = dx / L, uy = dy / L, px = -uy, py = ux;
+    g.polygon([[x, y], [x - ux * hs + px * hs * 0.58, y - uy * hs + py * hs * 0.58],
+    [x - ux * hs - px * hs * 0.58, y - uy * hs - py * hs * 0.58]]).fill(col);
+  }
+
+  // ───────── background strata ─────────
+  gBg.rect(W, H).fill('#ffffff');
+  var soilGrad = draw.gradient('linear', function (add) { add.stop(0, '#c08e6e'); add.stop(1, '#a76e4f'); })
+    .attr({ gradientUnits: 'userSpaceOnUse', x1: 0, y1: ySoil, x2: 0, y2: yDep });
+  gBg.rect(W, yDep - ySoil).move(0, ySoil).fill(soilGrad);
+  gBg.rect(W, H - yDep).move(0, yDep).fill('#e9c04c');
+
+  // ───────── melt glow (clipped to the deposit) ─────────
+  var clip = draw.clip().add(draw.rect(W, H - yDep).move(0, yDep));
+  gGlow.clipWith(clip);
+  var ambGrad = draw.gradient('radial', function (add) {
+    add.stop(0, '#fff9dd', 0.95); add.stop(0.5, '#f6dd8d', 0.55); add.stop(1, '#e9c04c', 0);
+  });
+  gGlow.ellipse(470, 400).center(cx, 1245).fill(ambGrad);
+  var meltGrad = draw.gradient('radial', function (add) {
+    add.stop(0, '#fff3b0', 1); add.stop(0.55, '#f2c council', 0); });
+  // (rebuild meltGrad cleanly)
+  meltGrad = draw.gradient('radial', function (add) {
+    add.stop(0, '#fffbe0', 1); add.stop(0.5, '#f6c93f', 0.85); add.stop(1, '#e8a81f', 0);
+  });
+  var meltEl = gGlow.ellipse(160, 120).center(cx, 1235).fill(meltGrad).attr('display', 'none');
+
+  // ───────── pipe interiors ─────────
+  var pipeGrad = draw.gradient('linear', function (add) {
+    add.stop(0, '#ffffff'); add.stop(0.42, '#fdf8ea'); add.stop(1, '#efdfb0');
+  }).attr({ gradientUnits: 'userSpaceOnUse', x1: 0, y1: yHeadT, x2: 0, y2: yCaseB });
+  gFill.rect(xoR - xoL, yHeadB - yHeadT).move(xoL, yHeadT).fill(pipeGrad);       // wellhead
+  gFill.rect(97, 70).move(118, 145).fill(pipeGrad);                              // outlet branch
+  gFill.rect(xmR - xmL, yOuterT - yHeadB).move(xmL, yHeadB).fill(pipeGrad);      // middle pipe above ground
+  gFill.rect(xoR - xoL, yCaseB - yOuterT).move(xoL, yOuterT).fill(pipeGrad);     // main column
+  gFill.rect(600 - xoR, yBrB - yBrT).move(xoR, yBrT).fill(pipeGrad);             // water inlet branch
+  gFill.rect(xiR - xiL, yHeadT).move(xiL, 8).fill('#ffffff');                    // air pipe above head
+
+  // ───────── hover regions ─────────
+  var regions = [
+    { x: xoL, y: yOuterT, w: xmL - xoL, h: yCaseB - yOuterT, col: C.water, key: 'water' },
+    { x: xmR, y: yOuterT, w: xoR - xmR, h: yCaseB - yOuterT, col: C.water, key: 'water' },
+    { x: xmL, y: yHeadB, w: xiL - xmL, h: yMidB - yHeadB, col: C.sulfur, key: 'froth' },
+    { x: xiR, y: yHeadB, w: xmR - xiR, h: yMidB - yHeadB, col: C.sulfur, key: 'froth' },
+    { x: xiL, y: 60, w: xiR - xiL, h: yInnB - 60, col: C.air, key: 'air' }
+  ];
+  regions.forEach(function (r) { r.hi = gHi.rect(r.w, r.h).move(r.x, r.y).fill(r.col).opacity(0); });
+
+  // ───────── animated streams ─────────
+  var streams = [];
+  function stream(key, d, col, speed, width) {
+    var p = gStream.path(d).fill('none')
+      .stroke({ color: col, width: width || 9, linecap: 'round', dasharray: '16 22' })
+      .opacity(0.65).attr('display', 'none');
+    var s = { key: key, el: p, speed: speed, off: 0, on: false };
+    streams.push(s); return s;
+  }
+  stream('water', 'M648,450 L462,450 C430,450 412,462 412,492 L412,1150', C.water, 95);
+  stream('water', 'M246,402 L246,1150', C.water, 95);
+  stream('air', 'M648,26 L364,26 Q328,26 328,72 L328,972 Q328,1030 300,1046', C.air, 145, 8);
+  stream('froth', 'M288,1046 L288,214 C288,186 268,180 248,180 L46,180', C.sulfur, 72);
+  stream('froth', 'M367,1046 L367,222', C.sulfur, 72);
+  stream('froth', 'M266,1200 C272,1146 284,1104 292,1062', C.sulfur, 72, 7);
+  stream('froth', 'M390,1200 C384,1146 372,1104 364,1062', C.sulfur, 72, 7);
+
+  // ───────── pipe outlines ─────────
+  var ink = { color: C.ink, width: 3.2, linecap: 'butt', linejoin: 'miter' };
+  gPipe.path('M215,145 L215,130 L441,130 L441,245 L384,245').fill('none').stroke(ink);
+  gPipe.path('M215,145 L118,145').fill('none').stroke(ink);
+  gPipe.path('M118,215 L215,215 L215,245 L272,245').fill('none').stroke(ink);
+  gPipe.line(xmL, yHeadB, xmL, yMidB).stroke(ink);
+  gPipe.line(xmR, yHeadB, xmR, yMidB).stroke(ink);
+  gPipe.line(xoL, yOuterT, xoR, yOuterT).stroke(ink);
+  gPipe.line(xoL, yOuterT, xoL, yCaseT + 10).stroke(ink);
+  gPipe.line(xoR, yOuterT, xoR, yBrT).stroke(ink);
+  gPipe.line(xoR, yBrB, xoR, yCaseT + 10).stroke(ink);
+  gPipe.line(xoR, yBrT, 600, yBrT).stroke(ink);
+  gPipe.line(xoR, yBrB, 600, yBrB).stroke(ink);
+  gPipe.path('M600,8 L352,8 Q305,8 305,56 L305,' + yInnB).fill('none').stroke(ink);
+  gPipe.path('M600,45 L398,45 Q351,45 351,92 L351,' + yInnB).fill('none').stroke(ink);
+  gPipe.path('M305,' + (yInnB - 4) + ' C305,1048 287,1048 287,' + (yInnB - 4)).fill('none').stroke(ink);
+  gPipe.path('M351,' + (yInnB - 4) + ' C351,1048 369,1048 369,' + (yInnB - 4)).fill('none').stroke(ink);
+  gPipe.polygon([[xoL, yCaseT], [xoL + 12, yCaseT + 32], [xoL + 12, yCaseB], [xoL, yCaseB]]).fill('#000');
+  gPipe.polygon([[xoR, yCaseT], [xoR - 12, yCaseT + 32], [xoR - 12, yCaseB], [xoR, yCaseB]]).fill('#000');
+
+  // ───────── flow arrows (static, as in the source figure) ─────────
+  [[288, 332, 288, 274], [367, 332, 367, 274],
+  [288, 848, 288, 782], [367, 848, 367, 782],
+  [288, 992, 288, 926], [367, 992, 367, 926],
+  [300, 1158, 300, 1086], [356, 1158, 356, 1086]].forEach(function (a) { arrow(gArrow, a[0], a[1], a[2], a[3]); });
+  [[246, 566, 246, 656], [411, 566, 411, 656],
+  [246, 1048, 246, 1138], [411, 1048, 411, 1138],
+  [328, 498, 328, 596]].forEach(function (a) { arrow(gArrow, a[0], a[1], a[2], a[3]); });
+  arrow(gArrow, 596, 32, 452, 32);          // compressed air in
+  arrow(gArrow, 596, 450, 462, 450);        // superheated water in
+  arrow(gArrow, 168, 180, 46, 180);         // product out
+  gArrow.path('M270,1208 C276,1150 288,1112 296,1074').fill('none').stroke({ color: C.ink, width: 3.2 });
+  headAt(gArrow, 296, 1074, 8, -38);
+  gArrow.path('M386,1208 C380,1150 368,1112 360,1074').fill('none').stroke({ color: C.ink, width: 3.2 });
+  headAt(gArrow, 360, 1074, -8, -38);
+
+  // ───────── labels ─────────
+  var outHi = gLabel.rect(196, 78).move(20, 88).radius(8).fill(C.sulfur).opacity(0.22).attr('display', 'none');
+  T(gLabel, 452, 78, 'Compressed air', 22);
+  T(gLabel, 34, 114, 'Sulfur, water,', 22);
+  T(gLabel, 34, 147, 'and air', 22);
+  T(gLabel, 452, 372, 'Superheated', 22);
+  T(gLabel, 452, 404, 'water', 22);
+  var tempRead = T(gLabel, 452, 512, 'at 170 °C and 10 atm', 16, '#1d5aa0');
+  T(gLabel, 84, 684, 'Soil', 22);
+  gLabel.line(104, 700, 104, 764).stroke({ color: '#000', width: 2.6 });
+  T(gLabel, 494, 1038, 'Solid sulfur', 22);
+  T(gLabel, 494, 1070, 'deposit', 22);
+  T(gLabel, cx, 1248, 'Liquid sulfur', 22, '#111', 'middle');
+
+  // annotations
+  T(gLabel, 22, 258, 'product is 99.5–99.9% pure', 13, '#444');
+  T(gLabel, 22, 276, 'on cooling — no underground', 13, '#444');
+  T(gLabel, 22, 294, 'mining, no miners below', 13, '#444');
+  T(gLabel, 22, 602, 'sulfur melts at 115 °C;', 13, '#444');
+  T(gLabel, 22, 620, 'water at 170 °C and 10 atm', 13, '#444');
+  T(gLabel, 22, 638, 'stays liquid (pressurised)', 13, '#444');
+
+  // legend
+  T(gLabel, 24, 428, 'Flow key', 14, '#333', 'start', true);
+  [[C.water, 'Superheated water ↓'], [C.air, 'Compressed air ↓'], [C.sulfur, 'Sulfur froth ↑']]
+    .forEach(function (row, i) {
+      var y = 452 + i * 25;
+      gLabel.rect(22, 11).move(24, y - 10).fill(row[0]).stroke({ color: '#666', width: 0.8 });
+      T(gLabel, 54, y, row[1], 14, '#333');
+    });
+
+  var st1 = T(gLabel, 22, 1104, '', 15, '#b00020', 'start', true).attr('display', 'none');
+  var st2 = T(gLabel, 22, 1126, '', 15, '#b00020', 'start', true).attr('display', 'none');
+
+  // ───────── hotspots ─────────
+  function hotspot(x, y, w, h, tip, title, body, hi) {
+    var r = gHot.rect(w, h).move(x, y).fill('#fff').opacity(0.001).attr('pointer-events', 'all').css('cursor', 'pointer');
+    r.on('mousemove', function (e) { showTooltip(tip, e); if (hi) hi.opacity(0.22); });
+    r.on('mouseleave', function () { hideTooltip(); if (hi) hi.opacity(0); });
+    r.on('click', function () { showPopup(title, body); });
+    return r;
+  }
+  hotspot(regions[0].x, regions[0].y, regions[0].w, regions[0].h,
+    'Outer annulus — superheated water flows DOWN',
+    'Outer pipe: superheated water',
+    'Water at about 170 °C and 10 atm is pumped down the outermost annulus. The pressure keeps it liquid far above 100 °C, and it escapes through openings at the bottom of the casing to melt the sulfur in place.', regions[0].hi);
+  hotspot(regions[1].x, regions[1].y, regions[1].w, regions[1].h,
+    'Outer annulus — superheated water flows DOWN',
+    'Outer pipe: superheated water',
+    'Water at about 170 °C and 10 atm is pumped down the outermost annulus. The pressure keeps it liquid far above 100 °C, and it escapes through openings at the bottom of the casing to melt the sulfur in place.', regions[1].hi);
+  hotspot(regions[2].x, regions[2].y, regions[2].w, regions[2].h,
+    'Middle annulus — sulfur/water/air froth rises UP',
+    'Middle pipe: the product line',
+    'Molten sulfur enters the intake just above the melt pool and is aerated by compressed air. The froth is much less dense than water, so it is pushed up this annulus and out at the wellhead — counterflowing past the hot water descending just outside it.', regions[2].hi);
+  hotspot(regions[3].x, regions[3].y, regions[3].w, regions[3].h,
+    'Middle annulus — sulfur/water/air froth rises UP',
+    'Middle pipe: the product line',
+    'Molten sulfur enters the intake just above the melt pool and is aerated by compressed air. The froth is much less dense than water, so it is pushed up this annulus and out at the wellhead — counterflowing past the hot water descending just outside it.', regions[3].hi);
+  hotspot(regions[4].x, regions[4].y, regions[4].w, regions[4].h,
+    'Innermost pipe — compressed air flows DOWN to the U-bend',
+    'Inner pipe: compressed air',
+    'Compressed air is forced down the innermost pipe and turns at the U-shaped manifold at the bottom. Bubbling it into the molten sulfur lowers the density of the mixture so the well itself lifts the product to the surface.', regions[4].hi);
+  hotspot(200, yCaseT, 44, yCaseB - yCaseT, 'Borehole casing (steel)', 'Cased borehole',
+    'The heavy black bars are the steel casing that lines the hole through soil and deposit. It keeps the strata out of the pipe annuli and confines the hot water to the sulfur-bearing zone.');
+  hotspot(412, yCaseT, 44, yCaseB - yCaseT, 'Borehole casing (steel)', 'Cased borehole',
+    'The heavy black bars are the steel casing that lines the hole through soil and deposit. It keeps the strata out of the pipe annuli and confines the hot water to the sulfur-bearing zone.');
+  hotspot(0, ySoil, 200, yDep - ySoil, 'Soil / overburden — never excavated', 'Soil overburden',
+    'The Frasch process drills through the overburden instead of removing it. Because everything happens as a fluid inside the well, the deposit is never opened and no one goes underground.');
+  hotspot(456, yDep + 90, 200, 180, 'Solid sulfur deposit (melts at 115 °C)', 'Solid sulfur deposit',
+    'Sulfur deposits sit hundreds of metres down, often under quicksand or limestone. Sulfur melts at only 115 °C, which is what makes fluid recovery with 170 °C water possible.');
+  hotspot(228, 1120, 200, 130, 'Melt pool — liquid sulfur drawn to the intake', 'Melt pool',
+    'Hot water spreading out from the bottom of the casing melts a pool of liquid sulfur around the well. The pool grows with the water temperature; below 115 °C it never forms at all.');
+  hotspot(xoL, yHeadT, xoR - xoL, yHeadB - yHeadT, 'Wellhead — froth leaves here and cools', 'Wellhead recovery',
+    'The sulfur–water–air mixture leaves the wellhead through the left outlet, where it is allowed to cool. The sulfur solidifies at 99.5–99.9% purity and needs no further refining.');
+
+  // ───────── state ─────────
+  var phase = 'idle', temp = 170, playing = false, meltActive = false;
+
+  function setPlaying(on) {
+    playing = on;
+    var b = document.getElementById('flowBtn');
+    if (b) b.textContent = playing ? '❚❚ Pause fluid flow' : '▶ Play fluid flow';
+  }
+  window.trigger_flowAnimation = function () {
+    if (phase === 'idle' && !playing) { document.getElementById('phaseInput').value = 'froth rises'; update_phase('froth rises'); return; }
+    setPlaying(!playing);
+  };
+
+  window.update_phase = function (name) {
+    phase = name;
+    var show = { water: false, air: false, froth: false };
+    if (name === 'water down' || name === 'sulfur melts') { show.water = true; }
+    else if (name === 'air down') { show.water = true; show.air = true; }
+    else if (name === 'froth rises' || name === 'recovered at surface') { show.water = show.air = show.froth = true; }
+    streams.forEach(function (s) { s.on = !!show[s.key]; s.el.attr('display', s.on ? null : 'none'); });
+    meltActive = (name === 'sulfur melts' || name === 'air down' || name === 'froth rises' || name === 'recovered at surface');
+    outHi.attr('display', name === 'recovered at surface' ? null : 'none');
+    setPlaying(name !== 'idle');
+    updateMelt();
+  };
+
+  window.update_waterTemp = function (v) { temp = v; updateMelt(); };
+
+  function updateMelt() {
+    var melting = meltActive && temp >= 115;
+    var f = Math.max(0, Math.min(1, (temp - 115) / 85));
+    if (melting) {
+      meltEl.attr('display', null).radius(70 + f * 180, 52 + f * 115).center(cx, 1232).opacity(0.5 + 0.5 * f);
+    } else {
+      meltEl.attr('display', 'none');
+    }
+    tempRead.plain('at ' + temp + ' °C and 10 atm').fill(temp >= 115 ? '#1d5aa0' : '#b00020');
+    var note = document.getElementById('tempNote');
+    if (phase === 'idle') {
+      st1.attr('display', 'none'); st2.attr('display', 'none');
+    } else if (temp < 115) {
+      st1.attr('display', null).plain('water ' + temp + ' °C  <  115 °C').fill('#b00020');
+      st2.attr('display', null).plain('deposit stays SOLID — no flow').fill('#b00020');
+    } else {
+      st1.attr('display', null).plain('water ' + temp + ' °C  >  115 °C').fill('#8a5a06');
+      st2.attr('display', null).plain('melt pool forming').fill('#8a5a06');
+    }
+    if (note) {
+      note.textContent = temp < 115
+        ? 'Below sulfur\u2019s 115 °C melting point: nothing melts, the well produces nothing.'
+        : 'Above 115 °C: sulfur liquefies; the pool grows with temperature.';
+      note.style.color = temp < 115 ? '#b00020' : '#666';
+    }
+  }
+
+  // ───────── animation loop ─────────
+  var last = performance.now();
+  function tick(now) {
+    var dt = Math.min(0.05, (now - last) / 1000); last = now;
+    if (playing) {
+      for (var i = 0; i < streams.length; i++) {
+        var s = streams[i];
+        if (!s.on) continue;
+        s.off -= s.speed * dt;
+        s.el.attr('stroke-dashoffset', s.off);
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ───────── demo step player ─────────
+  var steps = [
+    { title: 'The well before startup', narration: 'Three concentric pipes are cased down through soil into a solid sulfur deposit. Nothing is flowing yet — the sulfur is a hard yellow solid around the pipe bottom.', state: { phase: 'idle', waterTemp: 170 } },
+    { title: 'Superheated water goes down', narration: 'Water at 170 °C and 10 atm is pumped down the outermost annulus. The pressure keeps it liquid far above its normal boiling point, and it exits through openings at the bottom into the deposit.', state: { phase: 'water down', waterTemp: 170 } },
+    { title: 'Too cool to work', narration: 'Drop the injected water to 100 °C: it is below sulfur\u2019s 115 °C melting point, the deposit stays solid, and no melt pool forms. The entire process hinges on this one physical property.', state: { phase: 'sulfur melts', waterTemp: 100 } },
+    { title: 'The deposit melts', narration: 'Back at 170 °C, a growing pool of molten sulfur collects at the base of the well — a purely physical change, no chemistry and no miners underground.', state: { phase: 'sulfur melts', waterTemp: 170 } },
+    { title: 'Compressed air goes down the core', narration: 'Air is forced down the innermost pipe and turns at the U-shaped manifold, injecting bubbles directly into the molten sulfur at the intake.', state: { phase: 'air down', waterTemp: 170 } },
+    { title: 'Froth rises up the middle pipe', narration: 'Aerated liquid sulfur is far less dense than water, so the froth is pushed up the middle annulus — counterflowing past the hot water descending just outside it.', state: { phase: 'froth rises', waterTemp: 170 } },
+    { title: 'Recovery at the surface', narration: 'The sulfur–water–air mixture leaves at the wellhead, cools, and solidifies as sulfur of 99.5–99.9% purity with no further refining.', state: { phase: 'recovered at surface', waterTemp: 170 } }
+  ];
+  var cur = 0;
+  function applyStep(i) {
+    cur = Math.max(0, Math.min(steps.length - 1, i));
+    var s = steps[cur];
+    var ti = document.getElementById('waterTempInput');
+    if (ti) { ti.value = s.state.waterTemp; document.getElementById('waterTempVal').value = s.state.waterTemp; }
+    temp = s.state.waterTemp;
+    var pi = document.getElementById('phaseInput');
+    if (pi) pi.value = s.state.phase;
+    update_phase(s.state.phase);
+    document.getElementById('demoNarration').textContent = s.narration;
+    document.getElementById('stepLabel').textContent = 'Step ' + (cur + 1) + ' / ' + steps.length + ' — ' + s.title;
+  }
+  window.nextStep = function () { applyStep(cur + 1); };
+  window.prevStep = function () { applyStep(cur - 1); };
+
+  applyStep(0);
+  window.__markRendered();
+})();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

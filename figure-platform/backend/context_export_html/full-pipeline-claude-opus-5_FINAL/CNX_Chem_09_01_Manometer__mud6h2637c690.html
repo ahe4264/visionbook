@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<p id="demoNarration" style="margin:0;font-size:12px;line-height:1.45;color:#222">Three cases, one instrument — All three drawings are the same U-tube of mercury connected to a gas bulb; only the far arm and the liquid levels differ. Each configuration carries its own equation for P<sub>gas</sub>.</p>
+<span style="display:flex;gap:6px;align-items:center">
+  <button onclick="prevStep()">◀</button>
+  <span id="stepLabel" style="font-size:11px;color:#444">Step 1 / 6</span>
+  <button onclick="nextStep()">▶</button>
+</span>
+<label>Manometer configuration
+  <select id="configurationInput" onchange="update_configuration(this.value)">
+    <option value="all">All three</option>
+    <option value="closed">Closed-end (vacuum)</option>
+    <option value="low">Open-end: P_gas &lt; P_atm</option>
+    <option value="high">Open-end: P_gas &gt; P_atm</option>
+  </select>
+</label>
+<label>Gas pressure P<sub>gas</sub> (torr): <output id="gasPressureVal">760</output>
+  <input id="gasPressureInput" type="range" min="0" max="1520" step="10" value="760" oninput="document.getElementById('gasPressureVal').value=this.value;update_gasPressure(+this.value)">
+</label>
+<button id="derivBtn" onclick="trigger_showDerivation()">Show derivation boxes</button>
+<span id="readout" style="font-size:11px;color:#333;line-height:1.55;font-family:ui-monospace,Consolas,monospace"></span>
+<span style="font-size:10.5px;color:#666;line-height:1.4">Hover the parts of a manometer for details; click the <i>h</i> arrow of any panel for its force balance.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var VW = 1170, VH = 512;
+var mDraw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+mDraw.viewbox(0, 0, VW, VH);
+mDraw.rect(VW, VH).fill('#ffffff');
+
+var C = {
+  glass: '#b9c8d6', glassIn: '#f4f8fa',
+  gasTint: '#e9dff1', refTint: '#dfe8ef',
+  mercFlat: '#8c8c8c', mercLite: '#bdbdbd',
+  bulb: '#e6dcef', bulbLine: '#9a93a4', ink: '#141414'
+};
+var SANS = "Helvetica Neue, Helvetica, Arial, sans-serif";
+var SERIF = "Georgia, 'Times New Roman', serif";
+
+var mercGrad = mDraw.gradient('linear', function (add) {
+  add.stop(0, '#6d6d6d'); add.stop(0.28, '#c0c0c0');
+  add.stop(0.52, '#949494'); add.stop(1, '#5c5c5c');
+}).from(0, 0).to(1, 0);
+
+/* ---------- panel-local geometry ---------- */
+var LX = 112, RX = 180, RR = 34, BY = 400, TOPY = 55, CONN = 115;
+var ARROWX = 222, RULEEND = 234, LBLX = 250, PITCH = 388, DY = 12;
+var PPT = 0.155, PATM = 760;
+
+/* ---------- helpers ---------- */
+/* runText: lays out serif/italic runs with real subscripts.
+   part = { t, sub, up, pre (leading gap in em), sans, fill } */
+function runText(parent, cx, cyTop, parts, size, italic, anchor) {
+  var g = parent.group(), items = [], x = 0, i, p, el, fs;
+  for (i = 0; i < parts.length; i++) {
+    p = parts[i];
+    fs = p.sub ? size * 0.68 : size;
+    el = g.text(p.t).font({
+      family: p.sans ? SANS : SERIF, size: fs,
+      style: (italic && !p.up) ? 'italic' : 'normal', anchor: 'start'
+    }).fill(p.fill || C.ink);
+    items.push({ el: el, sub: p.sub, pre: p.pre || 0, w: el.bbox().width });
+  }
+  for (i = 0; i < items.length; i++) {
+    x += items[i].pre * size;
+    items[i].el.move(x, items[i].sub ? size * 0.30 : 0);
+    x += items[i].w;
+    if (items[i].sub) x += size * 0.10;   /* advance after a subscript run */
+  }
+  var dx = (anchor === 'start') ? 0 : (anchor === 'end' ? -x : -x / 2);
+  g.translate(cx + dx, cyTop);
+  return g;
+}
+
+function arrowHead(parent, x, y, dir, s, color) {
+  parent.polygon([[x, y], [x - s * 0.42, y + dir * s], [x + s * 0.42, y + dir * s]]).fill(color);
+}
+
+function halo(t) {
+  t.attr({ 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 5, 'stroke-linejoin': 'round' });
+  return t;
+}
+
+/* ---------- state ---------- */
+var tgt = { Pclosed: 760, Plow: 120, Phigh: 950 };
+var st = { Pclosed: 760, Plow: 120, Phigh: 950 };
+var cfg = 'all';
+var tweening = false;
+
+var panels = [
+  {
+    kind: 'closed', x: 2, base: 250,
+    eq: [{ t: 'P' }, { t: 'gas', sub: 1, up: 1 }, { t: '=', pre: 0.30 }, { t: 'h\u03c1g', pre: 0.26 }],
+    deriv: ['At lowest Hg level:', 'gas arm:   P_gas', 'closed arm:  h\u03c1g', '\u21d2 P_gas = h\u03c1g'],
+    pop: ['Closed-end manometer', 'The far arm is sealed and evacuated, so nothing pushes down on that mercury column. Balancing pressures at the lowest mercury surface gives P_gas = h\u03c1g: the height difference in millimetres of mercury IS the gas pressure in torr.']
+  },
+  {
+    kind: 'low', x: 2 + PITCH, base: 250,
+    eq: [{ t: 'P' }, { t: 'gas', sub: 1, up: 1 }, { t: '=', pre: 0.30 }, { t: 'P', pre: 0.26 }, { t: 'atm', sub: 1, up: 1 }, { t: '\u2212', pre: 0.26 }, { t: 'h\u03c1g', pre: 0.24 }],
+    deriv: ['At lowest Hg level:', 'gas arm:  P_gas + h\u03c1g', 'open arm:  P_atm', '\u21d2 P_gas = P_atm \u2212 h\u03c1g'],
+    pop: ['Open end, gas below atmospheric', 'The atmosphere presses on the open arm with 760 torr. Since the gas is weaker, mercury is pushed toward the gas side and stands higher there. Equating pressures at the lowest surface: P_gas + h\u03c1g = P_atm, so P_gas = P_atm \u2212 h\u03c1g.']
+  },
+  {
+    kind: 'high', x: 2 + 2 * PITCH, base: 185,
+    eq: [{ t: 'P' }, { t: 'gas', sub: 1, up: 1 }, { t: '=', pre: 0.30 }, { t: 'P', pre: 0.26 }, { t: 'atm', sub: 1, up: 1 }, { t: '+', pre: 0.26 }, { t: 'h\u03c1g', pre: 0.24 }],
+    deriv: ['At lowest Hg level:', 'gas arm:  P_gas', 'open arm:  P_atm + h\u03c1g', '\u21d2 P_gas = P_atm + h\u03c1g'],
+    pop: ['Open end, gas above atmospheric', 'Now the gas wins and shoves mercury up the open arm, so the open column stands higher. Balancing at the lowest surface: P_gas = P_atm + h\u03c1g \u2014 the extra mercury height adds to atmospheric pressure.']
+  }
+];
+
+/* ---------- static build ---------- */
+function buildPanel(p) {
+  var g = mDraw.group().translate(p.x, DY);
+  p.g = g;
+  p.hl = g.group();
+  var glass = g.group();
+  p.dyn = g.group();
+  var fr = g.group();
+  p.anno = g.group();
+
+  var ch = 'M58,' + CONN + ' L100,' + CONN + ' Q' + LX + ',' + CONN + ' ' + LX + ',' + (CONN + 13) +
+    ' L' + LX + ',' + BY + ' A' + RR + ',' + RR + ' 0 0 0 ' + RX + ',' + BY + ' L' + RX + ',' + TOPY;
+  var cap = (p.kind === 'closed') ? 'round' : 'butt';
+  glass.path(ch).fill('none').stroke({ color: C.glass, width: 22, linecap: cap, linejoin: 'round' });
+  glass.path(ch).fill('none').stroke({ color: C.glassIn, width: 15.5, linecap: cap, linejoin: 'round' });
+
+  /* gas bulb + stopcock */
+  var bulb = fr.circle(62).center(34, CONN).fill(C.bulb).stroke({ color: C.bulbLine, width: 1.8 });
+  fr.text('Gas').font({ family: SANS, size: 24, anchor: 'middle' }).fill(C.ink).center(34, CONN);
+  bulb.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('Gas sample: P_gas = ' + Math.round(panelP(p)) + ' torr', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup('The unknown gas', 'This bulb holds the gas whose pressure we want. The manometer never reads it directly \u2014 it only balances it against a mercury column, turning a pressure difference into a measurable height h.'); });
+
+  fr.rect(13, 20).center(82, CONN).fill('#dcdce6').stroke({ color: C.bulbLine, width: 1.3 }).radius(2);
+  fr.line(82, CONN - 9, 82, CONN - 20).stroke({ color: C.bulbLine, width: 2.6 });
+  fr.ellipse(24, 8).center(82, CONN - 23).fill('#eceaf2').stroke({ color: C.bulbLine, width: 1.4 });
+
+  /* far-arm end + labels */
+  if (p.kind === 'closed') {
+    var seal = fr.circle(14).center(RX, TOPY - 4).fill('#fff').opacity(0.001).css('cursor', 'pointer');
+    seal.on('mousemove', function (e) { showTooltip('Sealed tip: the space below is a vacuum, so it pushes down with zero pressure.', e); })
+      .on('mouseleave', hideTooltip);
+    fr.text('Closed end').font({ family: SANS, size: 26, anchor: 'start' }).fill(C.ink).move(LBLX, 2);
+    fr.polyline([[LBLX - 5, 18], [212, 34], [192, 52]]).fill('none').stroke({ color: C.ink, width: 1.2 });
+    var t2 = fr.text('Vacuum').font({ family: SANS, size: 26, anchor: 'start' }).fill(C.ink).move(LBLX, 36);
+    fr.polyline([[LBLX - 5, 52], [214, 76], [196, 100]]).fill('none').stroke({ color: C.ink, width: 1.2 });
+    t2.css('cursor', 'pointer')
+      .on('mousemove', function (e) { showTooltip('Evacuated space: pressure = 0, so the mercury feels nothing from above.', e); })
+      .on('mouseleave', hideTooltip);
+  } else {
+    fr.ellipse(30, 9).center(RX, TOPY).fill(C.refTint).stroke({ color: C.glass, width: 3 });
+    var pa = runText(fr, RX, -6, [{ t: 'P' }, { t: 'atm', sub: 1, up: 1 }], 26, true, 'middle');
+    fr.line(RX, 26, RX, TOPY - 16).stroke({ color: '#000', width: 2.2 });
+    arrowHead(fr, RX, TOPY - 7, -1, 9, '#000');
+    pa.css('cursor', 'pointer')
+      .on('mousemove', function (e) { showTooltip('The atmosphere presses down on the open arm with P_atm = 760 torr.', e); })
+      .on('mouseleave', hideTooltip);
+    fr.text('Open end').font({ family: SANS, size: 26, anchor: 'start' }).fill(C.ink).move(LBLX, 42);
+    fr.line(LBLX - 5, 56, 198, 60).stroke({ color: C.ink, width: 1.2 });
+  }
+
+  /* equation caption */
+  var eq = runText(fr, 170, 452, p.eq, 36, true, 'middle');
+  eq.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('Click: where this equation comes from', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup(p.pop[0], p.pop[1]); });
+}
+
+/* ---------- dynamic ---------- */
+function panelP(p) { return p.kind === 'closed' ? st.Pclosed : (p.kind === 'low' ? st.Plow : st.Phigh); }
+function panelH(p) {
+  if (p.kind === 'closed') return Math.max(0, st.Pclosed);
+  if (p.kind === 'low') return Math.max(0, PATM - st.Plow);
+  return Math.max(0, st.Phigh - PATM);
+}
+
+function drawPanel(p) {
+  p.dyn.clear(); p.anno.clear(); p.hl.clear();
+
+  if (p.active) {
+    p.hl.rect(384, 496).move(-4, -8).radius(11)
+      .fill({ color: '#eaf4ff', opacity: 0.85 }).stroke({ color: '#5aabf0', width: 2 });
+  }
+
+  var h = panelH(p);
+  var d = h * PPT;                       /* strictly proportional */
+  var gasHigher = (p.kind === 'low');
+  var L0 = p.base;
+  var yL = gasHigher ? L0 - d / 2 : L0 + d / 2;
+  var yR = gasHigher ? L0 + d / 2 : L0 - d / 2;
+  yL = Math.max(TOPY + 18, Math.min(BY - 14, yL));
+  yR = Math.max(TOPY + 18, Math.min(BY - 14, yR));
+
+  /* tinted empty tube */
+  var gasPath = 'M58,' + CONN + ' L100,' + CONN + ' Q' + LX + ',' + CONN + ' ' + LX + ',' + (CONN + 13) + ' L' + LX + ',' + yL;
+  p.dyn.path(gasPath).fill('none').stroke({ color: C.gasTint, width: 15.5, linecap: 'butt', linejoin: 'round' });
+  if (yR > TOPY + 0.5) {
+    p.dyn.line(RX, TOPY, RX, yR).stroke({ color: C.refTint, width: 15.5, linecap: 'butt' });
+  }
+  if (yL > CONN + 20) p.dyn.line(LX - 4.3, CONN + 18, LX - 4.3, yL).stroke({ color: '#ffffff', width: 2.6, opacity: 0.7 });
+  if (yR > TOPY + 6) p.dyn.line(RX - 4.3, TOPY + 4, RX - 4.3, yR).stroke({ color: '#ffffff', width: 2.6, opacity: 0.7 });
+
+  /* mercury */
+  var m = p.dyn.group();
+  m.rect(15.5, Math.max(0, BY - yL)).move(LX - 7.75, yL).fill(mercGrad);
+  m.rect(15.5, Math.max(0, BY - yR)).move(RX - 7.75, yR).fill(mercGrad);
+  m.path('M' + LX + ',' + BY + ' A' + RR + ',' + RR + ' 0 0 0 ' + RX + ',' + BY)
+    .fill('none').stroke({ color: C.mercFlat, width: 15.5, linecap: 'butt' });
+  m.path('M' + (LX + 4.5) + ',' + BY + ' A29.5,29.5 0 0 0 ' + (RX - 4.5) + ',' + BY)
+    .fill('none').stroke({ color: C.mercLite, width: 3.2, opacity: 0.85, linecap: 'round' });
+  m.line(LX - 7.75, yL, LX + 7.75, yL).stroke({ color: '#6f6f6f', width: 1.5 });
+  m.line(RX - 7.75, yR, RX + 7.75, yR).stroke({ color: '#6f6f6f', width: 1.5 });
+
+  m.css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('Mercury (\u03c1 = 13.6 g/cm\u00b3) \u2014 height difference h = ' + Math.round(h) + ' mm Hg', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () { showPopup('The mercury column', 'Mercury slides until the downward pressures on the two arms balance at the lowest mercury surface. Total mercury is conserved, so whatever one arm drops the other rises \u2014 the height difference h is the whole measurement.'); });
+
+  /* meniscus level rules: thin, shorter than the h arrow's weight */
+  p.anno.line(LX - 16, yL, RULEEND, yL).stroke({ color: '#222', width: 1 });
+  p.anno.line(RX - 16, yR, RULEEND, yR).stroke({ color: '#222', width: 1 });
+
+  /* h arrow + label (label moves outboard when the gap is small) */
+  var y0 = Math.min(yL, yR), y1 = Math.max(yL, yR), gap = y1 - y0, mid = (y0 + y1) / 2;
+  var lblX = 204;
+  if (gap >= 40) {
+    p.anno.line(ARROWX, y0, ARROWX, y1).stroke({ color: '#000', width: 2 });
+    arrowHead(p.anno, ARROWX, y0, 1, 9, '#000');
+    arrowHead(p.anno, ARROWX, y1, -1, 9, '#000');
+  } else {
+    lblX = 254;
+    p.anno.line(ARROWX, y0 - 17, ARROWX, y1 + 17).stroke({ color: '#000', width: 2 });
+    arrowHead(p.anno, ARROWX, y0, -1, 9, '#000');
+    arrowHead(p.anno, ARROWX, y1, 1, 9, '#000');
+    if (gap > 2) p.anno.line(ARROWX + 6, mid, lblX - 12, mid).stroke({ color: '#000', width: 0.9 });
+  }
+  var hl = p.anno.text('h').font({ family: SERIF, size: 32, style: 'italic', anchor: 'middle' }).fill('#000');
+  halo(hl).center(lblX, mid);
+
+  var hitTop = Math.min(y0 - 12, mid - 24), hitH = Math.max(gap + 24, 48);
+  p.anno.rect(88, hitH).move(192, hitTop).fill('#ffffff').opacity(0.001).css('cursor', 'pointer')
+    .on('mousemove', function (e) { showTooltip('h = ' + Math.round(h) + ' mm Hg \u2014 click for the force balance', e); })
+    .on('mouseleave', hideTooltip)
+    .on('click', function () {
+      p.showDeriv = !p.showDeriv;
+      drawPanel(p);
+      showPopup(p.pop[0], p.pop[1]);
+    });
+
+  /* derivation callout, parked in the label whitespace */
+  if (p.showDeriv) {
+    p.anno.rect(156, 108).move(238, 168).radius(7)
+      .fill({ color: '#fffdf3' }).stroke({ color: '#d7b26b', width: 1.3 });
+    for (var i = 0; i < p.deriv.length; i++) {
+      p.anno.text(p.deriv[i]).font({ family: SANS, size: 12.5, anchor: 'start' })
+        .fill(i === p.deriv.length - 1 ? '#8a5a00' : '#333').move(246, 175 + i * 24);
+    }
+  }
+}
+
+function updateReadout() {
+  var el = document.getElementById('readout');
+  if (!el) return;
+  el.innerHTML =
+    'P<sub>atm</sub> = 760 torr<br>' +
+    'closed&nbsp;: P = ' + Math.round(st.Pclosed) + ' torr, h = ' + Math.round(panelH(panels[0])) + ' mm Hg<br>' +
+    'open &lt;&nbsp;: P = ' + Math.round(st.Plow) + ' torr, h = ' + Math.round(panelH(panels[1])) + ' mm Hg<br>' +
+    'open &gt;&nbsp;: P = ' + Math.round(st.Phigh) + ' torr, h = ' + Math.round(panelH(panels[2])) + ' mm Hg';
+}
+
+function renderPanels() {
+  for (var i = 0; i < panels.length; i++) drawPanel(panels[i]);
+  updateReadout();
+}
+
+function applyOpacity() {
+  for (var i = 0; i < panels.length; i++) {
+    var p = panels[i];
+    p.active = (cfg !== 'all') && (cfg === p.kind);
+    p.g.opacity((cfg === 'all' || cfg === p.kind) ? 1 : 0.18);
+  }
+}
+
+/* ---------- tween ---------- */
+function startTween() { if (!tweening) { tweening = true; requestAnimationFrame(tick); } }
+function tick() {
+  var keys = ['Pclosed', 'Plow', 'Phigh'], moving = false;
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], dd = tgt[k] - st[k];
+    if (Math.abs(dd) > 0.5) { st[k] += dd * 0.25; moving = true; } else { st[k] = tgt[k]; }
+  }
+  renderPanels();
+  if (moving) requestAnimationFrame(tick); else tweening = false;
+}
+
+/* ---------- controls ---------- */
+function setSlider(v) {
+  var s = document.getElementById('gasPressureInput');
+  var o = document.getElementById('gasPressureVal');
+  if (s) s.value = v;
+  if (o) o.value = v;
+}
+
+function update_gasPressure(v) {
+  if (cfg === 'closed') { tgt.Pclosed = v; }
+  else if (cfg === 'low') {
+    if (v > PATM) { cfg = 'high'; document.getElementById('configurationInput').value = 'high'; tgt.Phigh = v; }
+    else { tgt.Plow = v; }
+  } else if (cfg === 'high') {
+    if (v < PATM) { cfg = 'low'; document.getElementById('configurationInput').value = 'low'; tgt.Plow = v; }
+    else { tgt.Phigh = v; }
+  } else {
+    tgt.Pclosed = v;
+    if (v < PATM) tgt.Plow = v; else if (v > PATM) tgt.Phigh = v;
+  }
+  applyOpacity(); startTween();
+}
+
+function update_configuration(val) {
+  cfg = val;
+  var v = (val === 'low') ? tgt.Plow : (val === 'high') ? tgt.Phigh : tgt.Pclosed;
+  setSlider(Math.round(v));
+  applyOpacity(); startTween();
+}
+
+function trigger_showDerivation() {
+  var anyOff = false, i;
+  for (i = 0; i < panels.length; i++) if (!panels[i].showDeriv) anyOff = true;
+  for (i = 0; i < panels.length; i++) panels[i].showDeriv = anyOff;
+  document.getElementById('derivBtn').textContent = anyOff ? 'Hide derivation boxes' : 'Show derivation boxes';
+  renderPanels();
+}
+
+/* ---------- demo steps ---------- */
+var steps = [
+  { t: 'Three cases, one instrument', n: 'All three drawings are the same U-tube of mercury connected to a gas bulb; only the far arm and the liquid levels differ. Each configuration carries its own equation for P_gas.', cfg: 'all', P: 760 },
+  { t: 'Closed end: mercury measures pressure outright', n: 'With the far arm sealed and evacuated, nothing pushes back on the mercury from above, so the entire height difference h is produced by the gas alone: P_gas = h\u03c1g.', cfg: 'closed', P: 400 },
+  { t: 'Raise the gas pressure', n: 'Drag P_gas upward and watch h grow in exact proportion. In a closed-end manometer, h in millimetres of mercury IS the gas pressure in torr.', cfg: 'closed', P: 1000 },
+  { t: 'Open end, gas below atmospheric', n: 'Now the far arm feels P_atm pushing down. Because the gas is weaker, atmospheric pressure drives mercury toward the gas side, leaving that column higher: P_gas = P_atm \u2212 h\u03c1g.', cfg: 'low', P: 600 },
+  { t: 'Open end, gas above atmospheric', n: 'Push P_gas past 760 torr and the columns swap: the gas shoves mercury up the open arm, so the extra height adds to atmospheric pressure, giving P_gas = P_atm + h\u03c1g.', cfg: 'high', P: 950 },
+  { t: 'Where the equations come from', n: 'Click the h arrow to see the force balance at the lowest mercury level \u2014 every one of the three formulas is just "pressure down on the left = pressure down on the right" rearranged.', cfg: 'all', P: 950 }
+];
+var stepI = 0;
+
+function applyStep(i) {
+  stepI = Math.max(0, Math.min(steps.length - 1, i));
+  var s = steps[stepI];
+  cfg = s.cfg;
+  document.getElementById('configurationInput').value = cfg;
+  setSlider(s.P);
+  update_gasPressure(s.P);
+  document.getElementById('demoNarration').textContent = s.t + ' \u2014 ' + s.n;
+  document.getElementById('stepLabel').textContent = 'Step ' + (stepI + 1) + ' / ' + steps.length;
+}
+function nextStep() { applyStep(stepI + 1); }
+function prevStep() { applyStep(stepI - 1); }
+
+/* ---------- init ---------- */
+for (var i = 0; i < panels.length; i++) buildPanel(panels[i]);
+applyOpacity();
+renderPanels();
+applyStep(0);
+
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>

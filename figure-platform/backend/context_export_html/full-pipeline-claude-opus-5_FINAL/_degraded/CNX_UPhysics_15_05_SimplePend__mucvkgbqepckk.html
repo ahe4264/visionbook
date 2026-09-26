@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Figure</title>
+
+  <!-- Blocking CDN scripts — no async/defer; must be ready before body <script> runs -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/expr-eval@2/dist/bundle.min.js"></script>
+
+  <style>
+    /* ── Reset ───────────────────────────────────────────────────────────── */
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────────
+       body is a grid so #ui always takes a right-side column instead of covering
+       the figure. The #container ResizeObserver then fires 'fig-resize', so
+       setPlotFrame re-lays the figure out at its new size automatically.        */
+    body {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage";
+    }
+
+    /* ── Figure mount point ──────────────────────────────────────────────── */
+    #container {
+      position: relative;
+      grid-area: stage;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      padding: var(--figure-canvas-padding, 18px);
+    }
+
+    /* ── Control panel (mirrors base_scene_new.html #ui) ─────────────────── */
+    #ui {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: sans-serif;
+      font-size: 11px;
+      max-width: 190px;
+      max-height: 34%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      opacity: 0.88;
+      transform: none;
+      transition: opacity 0.16s ease;
+      z-index: 10;
+    }
+
+    #ui:hover,
+    #ui:focus-within {
+      opacity: 1;
+    }
+
+    #ui button {
+      padding: 4px 10px;
+      cursor: pointer;
+      border: 1px solid #aaa;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+
+    #ui button:hover {
+      background: #e0e0e0;
+    }
+
+    #ui button.active {
+      background: #c8e6ff;
+      border-color: #5aabf0;
+    }
+
+    #ui label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    #ui input[type=range] {
+      width: 86px;
+    }
+
+    /* ── Docked control panel ────────────────────────────────────────────────
+       #ui is a grid cell with its own scroll, an opaque background, and roomier
+       type. Generated code cannot switch it to an overlay or bottom strip.      */
+    body[data-ui-layout="right"] {
+      grid-template-columns: 1fr var(--ui-size, 320px);
+      grid-template-rows: 1fr;
+      grid-template-areas: "stage ui";
+    }
+
+    body[data-ui-layout="bottom"] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr var(--ui-size, 240px);
+      grid-template-areas: "stage" "ui";
+    }
+
+    body[data-ui-layout="right"] #ui,
+    body[data-ui-layout="bottom"] #ui {
+      position: relative;
+      grid-area: ui;
+      left: auto;
+      bottom: auto;
+      max-width: none;
+      max-height: none;
+      min-width: 0;
+      min-height: 0;
+      width: auto;
+      height: auto;
+      gap: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      background: #fbfbfc;
+      opacity: 1;
+      overflow: auto;
+      z-index: 1;
+    }
+
+    body[data-ui-layout="right"] #ui {
+      border-left: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="bottom"] #ui {
+      border-top: 1px solid #dcdfe3;
+    }
+
+    body[data-ui-layout="right"] #ui label,
+    body[data-ui-layout="bottom"] #ui label {
+      text-shadow: none;
+    }
+
+    body[data-ui-layout="right"] #ui input[type=range],
+    body[data-ui-layout="bottom"] #ui input[type=range] {
+      width: 100%;
+    }
+
+    body[data-ui-layout="right"] #ui textarea,
+    body[data-ui-layout="bottom"] #ui textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      tab-size: 2;
+      border: 1px solid #cfd4da;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    body[data-ui-layout="bottom"] #ui textarea {
+      min-height: 110px;
+    }
+
+    /* ── Inline equation parse errors ────────────────────────────────────── */
+    .eq-err {
+      color: #c00000;
+      font-size: 10px;
+      max-width: 180px;
+      white-space: normal;
+      text-shadow: 0 1px 2px #fff;
+    }
+
+    /* ── Hover tooltip ───────────────────────────────────────────────────── */
+    #figTooltip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      display: none;
+      max-width: 210px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      font: 11px/1.35 sans-serif;
+      pointer-events: none;
+      white-space: normal;
+      z-index: 20;
+    }
+  </style>
+</head>
+
+<body data-ui-layout="right">
+  <div id="container"></div>
+  <div id="figTooltip"></div>
+  <div id="ui">
+    <!-- @FIGURE_UI_BEGIN -->
+<label>Displacement angle θ (degrees): <output id="thetaAngleVal">25</output>
+  <input id="thetaAngleInput" type="range" min="-60" max="60" step="1" value="25"
+    oninput="document.getElementById('thetaAngleVal').value=this.value;update_thetaAngle(+this.value)">
+</label>
+<label>Tangential force model
+  <select id="forceModelInput" onchange="toggle_forceModel(this.value)">
+    <option value="Exact: &minus;mg sin &theta;">Exact: −mg sin θ</option>
+    <option value="Small-angle: &minus;mg&theta;">Small-angle: −mgθ</option>
+    <option value="Compare both">Compare both</option>
+  </select>
+</label>
+<button id="swingBtn" onclick="trigger_swing()">▶ Release and swing</button>
+<span style="height:1px;background:#e0e3e7;margin:3px 0"></span>
+<b style="font-size:11px">Guided demo</b>
+<p id="demoNarration" style="margin:0;font-size:11px;line-height:1.45"></p>
+<span style="display:flex;gap:8px;align-items:center">
+  <button onclick="prevStep()">◀</button><span id="stepLabel" style="font-size:11px"></span><button onclick="nextStep()">▶</button>
+</span>
+<button onclick="showPopup('Key insight','Tension and the radial component −mg cos θ merely hold the bob on its circular path; it is the tangential component −mg sin θ, always aimed back at equilibrium and nearly proportional to θ for small swings, that produces simple harmonic oscillation.')">Key insight</button>
+<span style="font-size:10px;color:#666">Hover or click any arrow in the figure for details.</span>
+<!-- @FIGURE_UI_END -->
+  </div>
+
+  <!-- Error overlay: shown if CDN fails or JS throws before rendering -->
+  <div id="err-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:999;
+       flex-direction:column;align-items:center;justify-content:center;
+       font-family:sans-serif;font-size:13px;color:#555;gap:10px;">
+    <span id="err-msg">⚠ Figure failed to load</span>
+    <button onclick="location.reload()" style="padding:5px 14px;border:1px solid #aaa;
+        border-radius:5px;background:#f5f5f5;cursor:pointer;font-size:12px;">↻ Reload</button>
+  </div>
+
+  <script>
+    /* ── Error overlay ───────────────────────────────────────────────────── */
+    var _rendered = false;
+    var _errOverlay = document.getElementById('err-overlay');
+    window.__markRendered = function () { _rendered = true; _errOverlay.style.display = 'none'; };
+    window.addEventListener('error', function (e) {
+      if (!_rendered) {
+        document.getElementById('err-msg').textContent = '⚠ ' + (e.message || 'Figure failed to load');
+        _errOverlay.style.display = 'flex';
+      }
+    });
+    setTimeout(function () { if (!_rendered) { _errOverlay.style.display = 'flex'; } }, 12000);
+
+    /* ── Tooltip + popup helpers ─────────────────────────────────────────── */
+    var _tooltip = document.getElementById('figTooltip');
+
+    function showPopup(title, body) {
+      window.parent.postMessage({ type: 'alex-popup', title: title, body: body }, '*');
+    }
+    function hidePopup() {
+      window.parent.postMessage({ type: 'alex-popup', title: null }, '*');
+    }
+    function showTooltip(text, event) {
+      if (!_tooltip || !text) return;
+      _tooltip.textContent = text;
+      _tooltip.style.display = 'block';
+      _moveTooltip(event);
+    }
+    function _moveTooltip(event) {
+      if (!_tooltip || _tooltip.style.display === 'none') return;
+      var pad = 12;
+      var x = Math.min(event.clientX + pad, window.innerWidth - (_tooltip.offsetWidth || 100) - pad);
+      var y = Math.max(pad, event.clientY - (_tooltip.offsetHeight || 40) - pad);
+      _tooltip.style.left = x + 'px';
+      _tooltip.style.top = y + 'px';
+    }
+    function hideTooltip() {
+      if (_tooltip) _tooltip.style.display = 'none';
+    }
+    document.addEventListener('mousemove', function (e) { _moveTooltip(e); });
+
+    /* ── Resize event ────────────────────────────────────────────────────── */
+    function _containerInnerSize() {
+      var container = document.getElementById('container');
+      var style = getComputedStyle(container);
+      var padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      var padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      return {
+        width: Math.max(0, container.clientWidth - padX),
+        height: Math.max(0, container.clientHeight - padY)
+      };
+    }
+
+    new ResizeObserver(function () {
+      var rect = _containerInnerSize();
+      document.dispatchEvent(new CustomEvent('fig-resize', {
+        detail: { width: rect.width, height: rect.height }
+      }));
+    }).observe(document.getElementById('container'));
+
+    /* ── UI layout: keep controls in a right-side column ─────────────────────
+     * setUiLayout(...) is retained only so older generated payloads do not
+     * crash. It deliberately cannot change the side, overlay state, or size.
+     * Docking resizes #container, which fires 'fig-resize', so setPlotFrame
+     * re-lays the figure out at its new size instead of it being covered.
+     */
+    var _uiEl = document.getElementById('ui');
+
+    function setUiLayout(mode, sizePx) {
+      _autoUiLayout();
+    }
+
+    function _applyUiLayout(mode, sizePx) {
+      var next = 'right';
+      document.body.setAttribute('data-ui-layout', next);
+      if (sizePx) document.body.style.setProperty('--ui-size', sizePx + 'px');
+    }
+
+    // Generated figures do not get to decide panel placement: a stable right
+    // column prevents controls from covering the figure and avoids layout jumps.
+    var _autoUiTimer = 0;
+    function _autoUiLayout() {
+      var hasEditor = Boolean(_uiEl.querySelector('textarea'));
+      var mode = 'right';
+      var start = hasEditor ? 400 : 300;
+      _applyUiLayout(mode, start);
+      _growDockToFit(mode, start);
+    }
+
+    // A fixed dock size still clips a long control stack in a small inline
+    // figure. Grow the dock until the panel stops scrolling, capped so the
+    // figure always keeps the larger share of the frame.
+    function _growDockToFit(mode, startPx) {
+      var cap = Math.round(window.innerWidth * 0.45);
+      // Clamp down too: on a small figure the default dock can itself exceed the
+      // cap, and the figure must always keep the larger share.
+      var size = Math.min(startPx, cap);
+      if (size !== startPx) document.body.style.setProperty('--ui-size', size + 'px');
+      var guard = 0;
+      function step() {
+        if (guard++ > 6) return;
+        if (_uiEl.scrollHeight <= _uiEl.clientHeight + 2 || size >= cap) return;
+        size = Math.min(cap, size + 60);
+        document.body.style.setProperty('--ui-size', size + 'px');
+        requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    window.__autoUiLayout = _autoUiLayout;
+
+    // Re-evaluate when generated code adds controls after first paint.
+    new MutationObserver(function () {
+      clearTimeout(_autoUiTimer);
+      _autoUiTimer = setTimeout(_autoUiLayout, 0);
+    }).observe(_uiEl, { childList: true, subtree: true });
+    window.addEventListener('resize', function () { _autoUiLayout(); });
+
+    /* ── Keyboard dismiss ────────────────────────────────────────────────── */
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { hidePopup(); hideTooltip(); }
+    });
+
+    /* ── Expression parsing ──────────────────────────────────────────────── */
+    /**
+     * compileExpr(src, vars) → function(...args)
+     *   src  : math source, e.g. 'sin(x) + 1', 'x^2', '2*x - 3'
+     *   vars : variable names in argument order, e.g. ['x'] or ['x', 'y']
+     * Throws an Error with a readable message on a syntax error or when the
+     * source references a variable outside `vars`. Never returns a fallback.
+     *
+     * DUPLICATED (deliberately): base_scene_new.html has an equivalent ES-module
+     * copy. Each scaffold is a standalone served HTML file and neither can
+     * import the other, so behaviour changes must be made TWICE.
+     * Keep this in sync with compileExpr in base_scene_new.html.
+     */
+    function compileExpr(src, vars) {
+      if (!window.exprEval || !window.exprEval.Parser) {
+        throw new Error('Expression parser unavailable (expr-eval CDN did not load)');
+      }
+      var names = (vars && vars.length) ? vars : ['x'];
+      var parsed;
+      try {
+        parsed = new window.exprEval.Parser().parse(String(src));
+      } catch (e) {
+        throw new Error('Cannot parse "' + src + '": ' + ((e && e.message) ? e.message : e));
+      }
+      var used = parsed.variables();
+      for (var i = 0; i < used.length; i++) {
+        if (names.indexOf(used[i]) === -1) {
+          throw new Error('Unknown variable "' + used[i] + '" (expected: ' + names.join(', ') + ')');
+        }
+      }
+      return function () {
+        var scope = {};
+        for (var j = 0; j < names.length; j++) scope[names[j]] = arguments[j];
+        var v;
+        try { v = parsed.evaluate(scope); } catch (e) { return NaN; }
+        return (typeof v === 'number') ? v : NaN;
+      };
+    }
+
+    /* ── Plot frame: world → screen mapping (owns resize) ────────────────── */
+    var _plotFrame = null;
+    var _plots = [];
+    var _plotResizeBound = false;
+
+    /**
+     * setPlotFrame({ xDomain, yDomain, margin, draw }) → frame
+     * Establishes the world→screen mapping used by plotX / plotY and by every
+     * plot helper. Call this once, before creating any plots. Registered plots
+     * are re-sampled automatically on resize.
+     */
+    function setPlotFrame(opts) {
+      opts = opts || {};
+      var innerSize = _containerInnerSize();
+      _plotFrame = {
+        xDomain: opts.xDomain || [-5, 5],
+        yDomain: opts.yDomain || [-5, 5],
+        margin: (opts.margin == null) ? 24 : opts.margin,
+        draw: opts.draw || SVG().addTo('#container').size('100%', '100%'),
+        width: innerSize.width || 900,
+        height: innerSize.height || 600
+      };
+      _recomputePlotScale();
+      if (!_plotResizeBound) {
+        _plotResizeBound = true;
+        document.addEventListener('fig-resize', function (e) {
+          if (!_plotFrame) return;
+          _plotFrame.width = e.detail.width || _plotFrame.width;
+          _plotFrame.height = e.detail.height || _plotFrame.height;
+          _recomputePlotScale();
+          for (var i = 0; i < _plots.length; i++) _plots[i].sample();
+        });
+      }
+      return _plotFrame;
+    }
+
+    function _recomputePlotScale() {
+      var f = _plotFrame, m = f.margin;
+      f.sx = (f.width - 2 * m) / (f.xDomain[1] - f.xDomain[0]);
+      f.sy = (f.height - 2 * m) / (f.yDomain[1] - f.yDomain[0]);
+    }
+
+    /** plotX(worldX) → screen px. Requires setPlotFrame() first. */
+    function plotX(wx) {
+      var f = _plotFrame;
+      return f.margin + (wx - f.xDomain[0]) * f.sx;
+    }
+
+    /** plotY(worldY) → screen px (y axis flipped). Requires setPlotFrame() first. */
+    function plotY(wy) {
+      var f = _plotFrame;
+      return f.height - f.margin - (wy - f.yDomain[0]) * f.sy;
+    }
+
+    function _registerPlot(handle) {
+      _plots.push(handle);
+      return handle;
+    }
+
+    function _unregisterPlot(handle) {
+      var i = _plots.indexOf(handle);
+      if (i >= 0) _plots.splice(i, 1);
+    }
+
+    function _resolveFn(value, vars) {
+      if (typeof value === 'function') return value;
+      return compileExpr(value, vars);
+    }
+
+    function _pointsAttr(points) {
+      return points.map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+    }
+
+    /**
+     * plotFunction(id, opts) → handle
+     *   opts: { expr | fn, variables=['x'], domain, samples=200,
+     *           stroke='#1f77b4', width=2, dashed=false }
+     * The drawn polyline is ALWAYS produced by sampling the compiled function
+     * across `domain`. Non-finite samples split the line into segments instead
+     * of drawing a spike.
+     */
+    function plotFunction(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'plot-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fn: opts.fn ? opts.fn : (opts.expr != null ? compileExpr(opts.expr, vars) : null),
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setExpr: function (src) { this.fn = _resolveFn(src, vars); return this.sample(); },
+        setFn: function (f) { this.fn = f; return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          if (!this.fn) return this;
+          var segs = _sampleSegments(this.fn, this.domain, this.samples);
+          for (var s = 0; s < segs.length; s++) {
+            if (segs[s].length < 2) continue;
+            var line = group.polyline(_pointsAttr(segs[s]))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4',
+                width: opts.width || 2,
+                linecap: 'round',
+                linejoin: 'round'
+              });
+            if (opts.dashed) line.attr('stroke-dasharray', '5,4');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** Sample fn across domain, splitting at non-finite values. → [[ [px,py], … ], …] */
+    function _sampleSegments(fn, domain, samples) {
+      var a = domain[0], b = domain[1], n = Math.max(2, samples | 0);
+      var segs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var t = a + (b - a) * (i / (n - 1));
+        var v;
+        try { v = fn(t); } catch (e) { v = NaN; }
+        if (typeof v === 'number' && isFinite(v)) {
+          cur.push([plotX(t), plotY(v)]);
+        } else if (cur.length) {
+          segs.push(cur);
+          cur = [];
+        }
+      }
+      if (cur.length) segs.push(cur);
+      return segs;
+    }
+
+    /**
+     * fillBetween(id, opts) → handle
+     *   opts: { lower, upper, variables=['x'], domain, samples=200,
+     *           fill='#7fb3ff', opacity=0.45, stroke, strokeWidth=1 }
+     * `lower` / `upper` may be expression strings or functions. The polygon is
+     * built from EVERY sampled point on both boundaries, so a curved boundary
+     * produces a curved region with no caller involvement.
+     */
+    function fillBetween(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['x'];
+      var group = _plotFrame.draw.group().attr('id', 'fill-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        lower: opts.lower != null ? _resolveFn(opts.lower, vars) : function () { return 0; },
+        upper: opts.upper != null ? _resolveFn(opts.upper, vars) : function () { return 0; },
+        domain: opts.domain || _plotFrame.xDomain.slice(),
+        samples: opts.samples || 200,
+        setLower: function (src) { this.lower = _resolveFn(src, vars); return this.sample(); },
+        setUpper: function (src) { this.upper = _resolveFn(src, vars); return this.sample(); },
+        setDomain: function (dm) { this.domain = dm; return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.domain[0], b = this.domain[1], n = Math.max(2, this.samples | 0);
+          var top = [], bottom = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var lo, hi;
+            try { lo = this.lower(t); hi = this.upper(t); } catch (e) { lo = NaN; hi = NaN; }
+            if (isFinite(lo) && isFinite(hi)) {
+              top.push([plotX(t), plotY(hi)]);
+              bottom.push([plotX(t), plotY(lo)]);
+            }
+          }
+          if (top.length < 2) return this;
+          bottom.reverse();
+          var poly = group.polygon(_pointsAttr(top.concat(bottom)))
+            .fill({
+              color: opts.fill || '#7fb3ff',
+              opacity: (opts.opacity == null) ? 0.45 : opts.opacity
+            });
+          if (opts.stroke) {
+            poly.stroke({ color: opts.stroke, width: opts.strokeWidth || 1, linejoin: 'round' });
+          } else {
+            poly.stroke('none');
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /**
+     * plotParametric(id, opts) → handle
+     *   opts: { x, y, variables=['t'], tDomain=[0,1], samples=200, stroke, width }
+     */
+    function plotParametric(id, opts) {
+      opts = opts || {};
+      var vars = opts.variables || ['t'];
+      var group = _plotFrame.draw.group().attr('id', 'param-' + id);
+      var handle = {
+        id: id,
+        node: group,
+        fx: _resolveFn(opts.x, vars),
+        fy: _resolveFn(opts.y, vars),
+        tDomain: opts.tDomain || [0, 1],
+        samples: opts.samples || 200,
+        setX: function (src) { this.fx = _resolveFn(src, vars); return this.sample(); },
+        setY: function (src) { this.fy = _resolveFn(src, vars); return this.sample(); },
+        remove: function () { group.remove(); _unregisterPlot(this); },
+        sample: function () {
+          group.clear();
+          var a = this.tDomain[0], b = this.tDomain[1], n = Math.max(2, this.samples | 0);
+          var pts = [];
+          for (var i = 0; i < n; i++) {
+            var t = a + (b - a) * (i / (n - 1));
+            var vx, vy;
+            try { vx = this.fx(t); vy = this.fy(t); } catch (e) { vx = NaN; vy = NaN; }
+            if (isFinite(vx) && isFinite(vy)) pts.push([plotX(vx), plotY(vy)]);
+          }
+          if (pts.length >= 2) {
+            group.polyline(_pointsAttr(pts))
+              .fill('none')
+              .stroke({
+                color: opts.stroke || '#1f77b4', width: opts.width || 2,
+                linecap: 'round', linejoin: 'round'
+              });
+          }
+          return this;
+        }
+      };
+      return _registerPlot(handle).sample();
+    }
+
+    /** integrateSimpson(fn, a, b, n=200) → number. Composite Simpson's rule. */
+    function integrateSimpson(fn, a, b, n) {
+      n = Math.max(2, n || 200);
+      if (n % 2) n++;
+      var h = (b - a) / n, s = fn(a) + fn(b);
+      for (var i = 1; i < n; i++) s += fn(a + i * h) * ((i % 2) ? 4 : 2);
+      return (s * h) / 3;
+    }
+
+    /** findRoot(fn, a, b, tol=1e-9) → number | null. Bisection; null if no sign change. */
+    function findRoot(fn, a, b, tol) {
+      tol = tol || 1e-9;
+      var fa = fn(a), fb = fn(b);
+      if (!isFinite(fa) || !isFinite(fb) || fa * fb > 0) return null;
+      for (var i = 0; i < 200; i++) {
+        var m = (a + b) / 2, fm = fn(m);
+        if (!isFinite(fm)) return null;
+        if (Math.abs(fm) < tol || (b - a) / 2 < tol) return m;
+        if (fa * fm < 0) { b = m; } else { a = m; fa = fm; }
+      }
+      return (a + b) / 2;
+    }
+
+    /* ── Equation input binding ──────────────────────────────────────────── */
+    /**
+     * The error slot is keyed PER INPUT (id "eq-err-<inputId>"), never just
+     * "the first .eq-err under my parent": generated figures routinely put
+     * several equation inputs under one parent, and a shared slot means a valid
+     * edit of field B hides field A's still-current parse error, leaving A's
+     * curve stale with nothing on screen to explain why.
+     * The .eq-err class is kept so the scaffold CSS still applies.
+     *
+     * DUPLICATED: keep in sync with _equationErrorSlot in base_scene_new.html.
+     */
+    function _equationErrorSlot(input) {
+      var parent = input.parentNode || document.getElementById('ui');
+      if (input.id) {
+        var slotId = 'eq-err-' + input.id;
+        var byId = document.getElementById(slotId);
+        if (byId) return byId;
+        var namedSpan = document.createElement('span');
+        namedSpan.id = slotId;
+        namedSpan.className = 'eq-err';
+        namedSpan.style.display = 'none';
+        parent.appendChild(namedSpan);
+        return namedSpan;
+      }
+      var existing = parent.querySelector('.eq-err');
+      if (existing) return existing;
+      var span = document.createElement('span');
+      span.className = 'eq-err';
+      span.style.display = 'none';
+      parent.appendChild(span);
+      return span;
+    }
+
+    /**
+     * _resolveEqTarget(inputId, t) → function(fn, src)
+     * Turns one bindEquationInput target into a concrete applier, and THROWS on
+     * anything it cannot drive. Silently skipping an unrecognised target is the
+     * worst possible outcome: the figure renders, typing changes nothing, and
+     * nothing reports it. Throwing makes verify2dHtml catch the mistake at
+     * generation time instead of the student discovering it.
+     *
+     * DUPLICATED: keep in sync with _resolveEqTarget in base_scene_new.html.
+     */
+    function _resolveEqTarget(inputId, t) {
+      if (typeof t === 'function') {
+        return function (fn, src) { t(fn, src); };
+      }
+      if (t && t.handle) {
+        var method = t.method || 'setFn';
+        if (typeof t.handle[method] !== 'function') {
+          throw new Error(
+            'bindEquationInput("' + inputId + '"): target handle has no method "' + method +
+            '". Use { handle, method: \'...\' } with a method the handle really has ' +
+            '(plotFunction: setExpr, setFn; fillBetween: setLower, setUpper; ' +
+            'plotParametric: setX, setY).'
+          );
+        }
+        return function (fn) { t.handle[method](fn); };
+      }
+      if (t && typeof t.setFn === 'function') {
+        return function (fn) { t.setFn(fn); };
+      }
+      throw new Error(
+        'bindEquationInput("' + inputId + '"): this target cannot be driven — it is not a ' +
+        'function and has no .setFn. Handles without .setFn (fillBetween, plotParametric) ' +
+        'must be passed as { handle, method: \'setUpper\' } naming the setter to call.'
+      );
+    }
+
+    /**
+     * bindEquationInput(inputId, targets, opts) → { apply, input, errorSlot }
+     *   targets: a plot handle, a { handle, method } pair, a function(fn, src),
+     *            or an array of any of those.
+     *   opts   : { variables=['x'], onChange(fn, src) }
+     *
+     * On every valid edit, every target re-samples. On a parse error the last
+     * good curve is kept and the message is shown inline — this function NEVER
+     * substitutes a hardcoded default.
+     * Throws at bind time on a target it cannot drive (see _resolveEqTarget).
+     *
+     * DUPLICATED: keep in sync with bindEquationInput in base_scene_new.html.
+     */
+    function bindEquationInput(inputId, targets, opts) {
+      opts = opts || {};
+      var input = document.getElementById(inputId);
+      if (!input) throw new Error('bindEquationInput: no element with id "' + inputId + '"');
+      var vars = opts.variables || ['x'];
+      var list = Array.isArray(targets) ? targets : [targets];
+      var slot = _equationErrorSlot(input);
+      // Validated once, loudly, before anything is wired up.
+      var appliers = [];
+      for (var k = 0; k < list.length; k++) appliers.push(_resolveEqTarget(inputId, list[k]));
+
+      function apply(src) {
+        try {
+          // The dispatch is INSIDE the try as well: an error thrown while
+          // applying (a target callback that throws, a handle mutated later)
+          // would otherwise escape uncaught from the input event handler and
+          // leave the figure stale with no visible reason.
+          var fn = compileExpr(src, vars);
+          for (var i = 0; i < appliers.length; i++) appliers[i](fn, src);
+          if (typeof opts.onChange === 'function') opts.onChange(fn, src);
+        } catch (e) {
+          slot.textContent = e.message;
+          slot.style.display = '';
+          input.setAttribute('data-eq-valid', 'false');
+          return false;
+        }
+        slot.textContent = '';
+        slot.style.display = 'none';
+        input.setAttribute('data-eq-valid', 'true');
+        return true;
+      }
+
+      input.addEventListener('input', function () { apply(input.value); });
+      apply(input.value);
+      return { apply: apply, input: input, errorSlot: slot };
+    }
+
+    // @FIGURE_CODE_BEGIN
+var draw = SVG().addTo(document.getElementById('container')).size('100%', '100%');
+var W = 450, H = 400;
+draw.viewbox(0, 0, W, H).attr('preserveAspectRatio', 'xMidYMid meet');
+
+var PX = 190, PY = 27, L = 155, FW = 95, BR = 13;
+var RED = '#c8443c', LITE = '#e9a39c', NAVY = '#1b4f7e', INK = '#1a1a1a';
+var SERIF = 'Georgia, "Times New Roman", serif';
+
+var thetaDeg = 25;
+var mode = 'Exact: \u2212mg sin \u03B8';
+
+/* ---------- helpers ---------- */
+function mlabel(g, str, x, y, size, anchor, color, bold) {
+  var t = g.text(str).font({
+    family: SERIF, size: size, style: 'italic',
+    weight: bold ? 'bold' : 'normal'
+  }).fill(color || INK);
+  t.attr({ 'paint-order': 'stroke', stroke: '#ffffff', 'stroke-width': 3.4, 'stroke-linejoin': 'round' });
+  var b = t.bbox();
+  var dx = anchor === 'start' ? 0 : (anchor === 'end' ? -b.width : -b.width / 2);
+  var nx = Math.max(4, Math.min(x + dx, W - 4 - b.width));
+  var ny = Math.max(2, Math.min(y - b.height / 2, H - 2 - b.height));
+  t.move(nx, ny);
+  return t;
+}
+function plabel(g, str, x, y, size, color) {
+  var t = g.text(str).font({ family: SERIF, size: size, style: 'normal' }).fill(color || '#333');
+  var b = t.bbox();
+  t.move(x, y - b.height / 2);
+  return t;
+}
+function arrow(g, x0, y0, dx, dy, len, opts) {
+  opts = opts || {};
+  var G = g.group();
+  if (!(len > 1.5)) return G;
+  var m = Math.hypot(dx, dy) || 1, ux = dx / m, uy = dy / m;
+  var hl = Math.min(opts.head || 14, len * 0.7), hw = opts.headW || 10.5;
+  var tipX = x0 + ux * len, tipY = y0 + uy * len;
+  var bX = tipX - ux * hl, bY = tipY - uy * hl;
+  var ln = G.line(x0, y0, bX, bY).stroke({ color: opts.color, width: opts.width || 3.4, linecap: 'butt' });
+  if (opts.dash) ln.attr('stroke-dasharray', opts.dash);
+  G.polygon([[tipX, tipY], [bX - uy * hw / 2, bY + ux * hw / 2], [bX + uy * hw / 2, bY - ux * hw / 2]])
+    .fill(opts.color).stroke('none');
+  G.remember('tip', [tipX, tipY]);
+  return G;
+}
+function arcPath(cx, cy, r, a0, a1) {
+  var p0 = [cx + r * Math.sin(a0), cy + r * Math.cos(a0)];
+  var p1 = [cx + r * Math.sin(a1), cy + r * Math.cos(a1)];
+  var sweep = (a1 > a0) ? 0 : 1;
+  return 'M' + p0[0] + ',' + p0[1] + ' A' + r + ',' + r + ' 0 0 ' + sweep + ' ' + p1[0] + ',' + p1[1];
+}
+function inter(el, tip, title, body) {
+  el.css('cursor', 'pointer');
+  el.on('mousemove', function (e) { showTooltip(tip, e); });
+  el.on('mouseleave', function () { hideTooltip(); });
+  el.on('click', function () { showPopup(title, body); });
+  return el;
+}
+
+/* ---------- static scenery ---------- */
+var barGrad = draw.gradient('linear', function (add) {
+  add.stop(0, '#e6cfa6'); add.stop(1, '#faf2e4');
+}).from(0, 0).to(0, 1);
+draw.rect(W, 26).fill(barGrad);
+draw.line(0, 26, W, 26).stroke({ color: '#e0cfb0', width: 1 });
+
+var bobGrad = draw.gradient('radial', function (add) {
+  add.stop(0, '#ffffff'); add.stop(0.5, '#dcdcdc'); add.stop(1, '#7d7d7d');
+});
+bobGrad.attr({ cx: 0.36, cy: 0.32, r: 0.78, fx: 0.36, fy: 0.32 });
+
+draw.line(PX, PY, PX, PY + L + 28).stroke({ color: '#222', width: 1.6, dasharray: '7,5' });
+draw.circle(6).center(PX, PY).fill('#222');
+draw.line(PX - 9, PY + L, PX + 9, PY + L).stroke({ color: '#333', width: 1.2 });
+
+var gD = draw.group();
+
+/* ---------- main render ---------- */
+function render() {
+  gD.clear();
+  var th = thetaDeg * Math.PI / 180;
+  var s = Math.sin(th), c = Math.cos(th);
+  var ux = s, uy = c;            /* radial, pivot -> bob (outward) */
+  var tx = c, ty = -s;           /* tangential +x (away from equilibrium for +theta) */
+  var bx = PX + L * ux, by = PY + L * uy;
+  var sgn = s > 0 ? 1 : (s < 0 ? -1 : 0);
+  var sgnL = thetaDeg >= 0 ? 1 : -1;
+  var Frad = FW * Math.abs(c);
+  var Ftan = FW * Math.abs(s);
+  var Flin = FW * Math.min(Math.abs(th), 1.45);
+  var tdx = (sgn === 0 ? -tx : -sgn * tx), tdy = (sgn === 0 ? -ty : -sgn * ty);
+
+  var showExact = mode.indexOf('Exact') === 0 || mode.indexOf('Compare') === 0;
+  var showLin = mode.indexOf('Small') === 0 || mode.indexOf('Compare') === 0;
+  var compare = mode.indexOf('Compare') === 0;
+
+  /* arc s (dashed) through the bob */
+  if (Math.abs(thetaDeg) > 0.4) {
+    var arcS = gD.path(arcPath(PX, PY, L, 0, th)).fill('none')
+      .stroke({ color: '#1a1a1a', width: 1.8, dasharray: '8,5' });
+    inter(arcS, 's = L\u03B8  \u2014 arc-length displacement',
+      'Arc displacement s',
+      'The bob moves along a circular arc of radius L. Its displacement from equilibrium is s = L\u03B8, so a restoring force proportional to \u03B8 is also proportional to s \u2014 the condition for simple harmonic motion.');
+  }
+
+  /* string */
+  var str = gD.line(PX, PY, bx, by).stroke({ color: INK, width: 2.3, linecap: 'round' });
+  inter(str, 'String of length L', 'The string',
+    'The inextensible string of length L constrains the bob to a circular arc. Its tension can only pull along its own direction, so it cannot produce any tangential force.');
+
+  /* parallelogram construction of the weight decomposition */
+  if (showExact && Math.abs(thetaDeg) > 4) {
+    var rt = [bx + ux * Frad, by + uy * Frad];
+    var wt = [bx, by + FW];
+    var tt = [bx + tdx * Ftan, by + tdy * Ftan];
+    gD.line(rt[0], rt[1], wt[0], wt[1]).stroke({ color: '#8a8a8a', width: 1, dasharray: '4,3' });
+    gD.line(tt[0], tt[1], wt[0], wt[1]).stroke({ color: '#8a8a8a', width: 1, dasharray: '4,3' });
+  }
+
+  /* tension (navy) */
+  var aT = arrow(gD, bx, by, -ux, -uy, Frad, { color: NAVY, width: 3.4 });
+  inter(aT, 'F_T = mg cos \u03B8 (tension)', 'Tension F_T',
+    'Tension acts along the string toward the pivot. It exactly cancels the radial weight component \u2212mg cos \u03B8 (plus supplies the centripetal force when moving), so it never speeds the bob up or slows it down.');
+
+  /* weight */
+  var aW = arrow(gD, bx, by, 0, 1, FW, { color: RED, width: 3.4 });
+  inter(aW, 'w = mg (weight, always straight down)', 'Weight w = mg',
+    'The weight is constant in size and direction. Resolving it into components along the string and tangent to the arc is what reveals the restoring force.');
+
+  /* radial component */
+  var aR = arrow(gD, bx, by, ux, uy, Frad, { color: RED, width: 3.2 });
+  inter(aR, '\u2212mg cos \u03B8 (radial component)', 'Radial component \u2212mg cos \u03B8',
+    'This part of the weight pushes outward along the string and is balanced by the tension. It holds the bob on its circular path but produces no motion along the arc.');
+
+  /* tangential components */
+  if (showExact && Ftan > 1.5) {
+    var aTan = arrow(gD, bx, by, tdx, tdy, Ftan, { color: RED, width: 3.4 });
+    inter(aTan, '\u2212mg sin \u03B8 = ' + (Math.abs(s)).toFixed(3) + ' mg (restoring force)',
+      'Tangential component \u2212mg sin \u03B8',
+      'This is the only force component along the direction of motion, and the minus sign means it always points back toward \u03B8 = 0. Its size grows with displacement, so it continually drags the bob back through equilibrium.');
+  }
+  if (showLin && Flin > 1.5) {
+    var ox = compare ? ux * 13 : 0, oy = compare ? uy * 13 : 0;
+    var aLin = arrow(gD, bx + ox, by + oy, tdx, tdy, Flin,
+      { color: compare ? LITE : RED, width: 3.2, dash: compare ? '7,4' : null });
+    inter(aLin, '\u2212mg\u03B8 (small-angle / SHM model)', 'Linear model \u2212mg\u03B8',
+      'Replacing sin \u03B8 by \u03B8 (radians) gives a force strictly proportional to displacement s = L\u03B8 \u2014 Hooke\u2019s law, hence simple harmonic motion. Below about 15\u00B0 the two arrows are nearly identical; at large angles sin \u03B8 < \u03B8 and the real pendulum is softer.');
+  }
+
+  /* bob */
+  var bob = gD.circle(2 * BR).center(bx, by).fill(bobGrad).stroke({ color: '#6a6a6a', width: 0.8 });
+  inter(bob, 'Bob, mass m', 'The bob',
+    'All the mass m is idealised as a point at the end of the string. Only the tangential force component can change its speed along the arc.');
+
+  /* angle arcs */
+  if (Math.abs(thetaDeg) > 1.5) {
+    gD.path(arcPath(PX, PY, 48, 0, th)).fill('none').stroke({ color: '#222', width: 1.2 });
+  }
+  if (Math.abs(thetaDeg) > 6) {
+    gD.path(arcPath(bx, by, 40, 0, th)).fill('none').stroke({ color: '#222', width: 1.2 });
+  }
+
+  /* rotating local axes */
+  var AX = 385, AY = 195, AL = 36;
+  var axg = gD.group();
+  axg.circle(3).center(AX, AY).fill('#333');
+  arrow(axg, AX, AY, -ux, -uy, AL, { color: '#111', width: 1.4, head: 9, headW: 7 });
+  arrow(axg, AX, AY, tx, ty, AL, { color: '#111', width: 1.4, head: 9, headW: 7 });
+  mlabel(axg, '+y', AX - ux * (AL + 13), AY - uy * (AL + 13), 14, 'middle', '#111', true);
+  mlabel(axg, '+x', AX + tx * (AL + 14), AY + ty * (AL + 14), 14, 'middle', '#111', true);
+  inter(axg, 'Local axes: +y along string, +x tangent to arc', 'Rotating local axes',
+    'The natural axes for a pendulum rotate with the string: +y points along the string to the pivot, +x is tangent to the arc. In these axes the weight has components \u2212mg cos \u03B8 (y) and \u2212mg sin \u03B8 (x).');
+
+  /* ---------- labels (drawn last, with white halo) ---------- */
+  mlabel(gD, 'L', PX + ux * (L * 0.45) + tx * 16 * sgnL, PY + uy * (L * 0.45) + ty * 16 * sgnL, 16, 'middle');
+  if (Math.abs(thetaDeg) > 4) {
+    mlabel(gD, '\u03B8', PX + Math.sin(th / 2) * 64, PY + Math.cos(th / 2) * 64, 16, 'middle');
+  }
+  mlabel(gD, 'm', bx + (BR + 12) * (thetaDeg < -30 ? -1 : 1), by - 4, 16,
+    thetaDeg < -30 ? 'end' : 'start');
+  if (Math.abs(thetaDeg) > 3) {
+    mlabel(gD, 's', PX + Math.sin(th * 0.55) * (L - 20), PY + Math.cos(th * 0.55) * (L - 20), 15, 'middle');
+  }
+  /* F_T (with subscript) */
+  var fmx = bx - ux * Frad * 0.55 + tx * 20, fmy = by - uy * Frad * 0.55 + ty * 20;
+  mlabel(gD, 'F', fmx - 4, fmy, 16, 'end', NAVY);
+  mlabel(gD, 'T', fmx - 2, fmy + 5, 11, 'start', NAVY);
+  /* weight */
+  mlabel(gD, 'w = mg', bx, by + FW + 24, 16, 'middle');
+  /* radial label */
+  if (Math.abs(thetaDeg) > 5) {
+    mlabel(gD, '\u2212mg cos \u03B8',
+      bx + ux * (Frad + 14) + tx * 26 * sgnL,
+      by + uy * (Frad + 14) + ty * 26 * sgnL, 15, 'middle');
+    mlabel(gD, '\u03B8', bx + Math.sin(th / 2) * 55, by + Math.cos(th / 2) * 55, 15, 'middle');
+  }
+  /* tangential labels */
+  if (showExact && Ftan > 14) {
+    mlabel(gD, '\u2212mg sin \u03B8', bx + tdx * (Ftan + 16), by + tdy * (Ftan + 16) + 14,
+      15, tdx < 0 ? 'end' : 'start');
+  }
+  if (showLin && Flin > 14) {
+    var lx = bx + (compare ? ux * 13 : 0) + tdx * (Flin + 16);
+    var ly = by + (compare ? uy * 13 : 0) + tdy * (Flin + 16) + (compare ? 30 : 14);
+    mlabel(gD, '\u2212mg\u03B8', lx, ly, 15, tdx < 0 ? 'end' : 'start', compare ? '#b06a63' : INK);
+  }
+
+  /* ---------- readout panel ---------- */
+  var pg = gD.group();
+  pg.rect(212, 60).move(8, 328).radius(4).fill('#ffffff').opacity(0.86).stroke({ color: '#dcdcdc', width: 1 });
+  var thr = Math.abs(th), sn = Math.abs(s);
+  plabel(pg, '\u03B8 = ' + thetaDeg.toFixed(1) + '\u00B0     s = L\u03B8 = ' + thr.toFixed(2) + ' L', 15, 342, 12.5, '#222');
+  plabel(pg, 'exact   |\u2212mg sin \u03B8| = ' + sn.toFixed(3) + ' mg', 15, 360, 12.5, RED);
+  var l3 = 'linear  |\u2212mg\u03B8| = ' + thr.toFixed(3) + ' mg';
+  if (sn > 0.002) l3 += '  (+' + ((thr / sn - 1) * 100).toFixed(1) + '%)';
+  plabel(pg, l3, 15, 377, 12.5, '#a8615a');
+  inter(pg, 'Numerical readout', 'Reading the numbers',
+    'The exact restoring force is mg|sin \u03B8|; the small-angle model gives mg|\u03B8| (radians). The percentage shows how much the linear model over-estimates the force \u2014 under 1% near 15\u00B0, but around 10% at 60\u00B0.');
+}
+
+/* ---------- interaction handlers ---------- */
+function setTheta(v) {
+  thetaDeg = v;
+  var inp = document.getElementById('thetaAngleInput');
+  var out = document.getElementById('thetaAngleVal');
+  if (inp) inp.value = Math.round(v);
+  if (out) out.value = v.toFixed(0);
+  render();
+}
+function update_thetaAngle(v) {
+  stopSwing();
+  setTheta(v);
+}
+function toggle_forceModel(v) {
+  mode = v;
+  render();
+}
+
+/* animation */
+var anim = { on: false, t0: 0, A: 25, raf: 0 };
+function startSwing() {
+  anim.A = Math.abs(thetaDeg) > 3 ? Math.abs(thetaDeg) : 25;
+  anim.on = true;
+  anim.t0 = (window.performance || Date).now();
+  var b = document.getElementById('swingBtn');
+  if (b) { b.textContent = '\u275A\u275A Pause'; b.classList.add('active'); }
+  swingLoop();
+}
+function stopSwing() {
+  if (anim.raf) cancelAnimationFrame(anim.raf);
+  anim.raf = 0; anim.on = false;
+  var b = document.getElementById('swingBtn');
+  if (b) { b.textContent = '\u25B6 Release and swing'; b.classList.remove('active'); }
+}
+function swingLoop() {
+  if (!anim.on) return;
+  var t = ((window.performance || Date).now() - anim.t0) / 1000;
+  var T = 2.3;
+  setTheta(anim.A * Math.cos(2 * Math.PI * t / T));
+  anim.raf = requestAnimationFrame(swingLoop);
+}
+function trigger_swing() { anim.on ? stopSwing() : startSwing(); }
+
+/* ---------- demo step player ---------- */
+var steps = [
+  { title: 'The hanging pendulum',
+    narration: 'At \u03B8 = 0 the bob hangs on the dashed vertical: the weight mg points straight down along the string and the tension F_T balances it exactly. There is no tangential arrow, so nothing pushes the bob sideways \u2014 this is equilibrium.',
+    state: { thetaAngle: 0, forceModel: 'Exact: \u2212mg sin \u03B8' } },
+  { title: 'Pull the bob aside',
+    narration: 'Displace the bob to about 25\u00B0. The weight now splits into \u2212mg cos \u03B8 pressing outward along the string (opposed by tension) and \u2212mg sin \u03B8 tangent to the arc, pointing back toward the vertical. Only the tangential piece can change the bob\u2019s speed.',
+    state: { thetaAngle: 25, forceModel: 'Exact: \u2212mg sin \u03B8' } },
+  { title: 'Sign flips across equilibrium',
+    narration: 'Swing the bob to the other side. The tangential arrow reverses direction while the radial arrow does not \u2014 the restoring force always points toward \u03B8 = 0, which is exactly what makes the motion oscillatory.',
+    state: { thetaAngle: -40, forceModel: 'Exact: \u2212mg sin \u03B8' } },
+  { title: 'Small-angle approximation',
+    narration: 'Switch to the compare view at a small angle: sin \u03B8 \u2248 \u03B8, so the exact and linear arrows nearly coincide. The restoring force becomes proportional to displacement s = L\u03B8, the defining condition for simple harmonic motion.',
+    state: { thetaAngle: 10, forceModel: 'Compare both' } },
+  { title: 'Where the approximation breaks',
+    narration: 'Push \u03B8 out to 60\u00B0 and the two arrows separate noticeably \u2014 sin \u03B8 falls well below \u03B8, so the real pendulum is \u201Csofter\u201D than the SHM model and its period lengthens.',
+    state: { thetaAngle: 60, forceModel: 'Compare both' } },
+  { title: 'Watch it oscillate',
+    narration: 'Released! Follow the tangential arrow: it is longest at the turning points, vanishes at the bottom, and reverses each pass \u2014 the force continually chases the bob back toward the center.',
+    state: { thetaAngle: 25, forceModel: 'Exact: \u2212mg sin \u03B8' } }
+];
+var cur = 1;
+function setStep(i) {
+  cur = (i + steps.length) % steps.length;
+  var st = steps[cur];
+  stopSwing();
+  var sel = document.getElementById('forceModelInput');
+  if (sel) sel.value = st.state.forceModel;
+  mode = st.state.forceModel;
+  setTheta(st.state.thetaAngle);
+  var n = document.getElementById('demoNarration');
+  if (n) n.innerHTML = '<b>' + st.title + '</b><br>' + st.narration;
+  var lab = document.getElementById('stepLabel');
+  if (lab) lab.textContent = 'Step ' + (cur + 1) + ' / ' + steps.length;
+  if (cur === steps.length - 1) startSwing();
+}
+function nextStep() { setStep(cur + 1); }
+function prevStep() { setStep(cur - 1); }
+
+/* ---------- init ---------- */
+render();
+setStep(1);
+window.__markRendered();
+// @FIGURE_CODE_END
+
+    // Decide the panel layout once the generated UI exists. Runs last so it sees
+    // the final #ui content; a setUiLayout() call in the block above wins.
+    _autoUiLayout();
+  </script>
+</body>
+
+</html>
