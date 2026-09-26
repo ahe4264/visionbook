@@ -278,6 +278,11 @@ const MODEL_REGISTRY = {
   'o4-mini': { provider: 'openai', apiModel: 'o4-mini', label: 'o4-mini' },
 
   // Anthropic (Claude)
+  'claude-opus-5': { provider: 'anthropic', apiModel: 'claude-opus-5', label: 'Claude Opus 5' },
+  // Same model and prompts as 'claude-opus-5', routed through the Claude Code
+  // runtime so it bills the Claude subscription instead of ANTHROPIC_API_KEY.
+  // See claude_code_provider.js for what differs (no maxTokens control).
+  'claude-opus-5-cc': { provider: 'claude-code', apiModel: 'claude-opus-5', label: 'Claude Opus 5 (Claude Code sub)' },
   'claude-opus-4.7': { provider: 'anthropic', apiModel: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
   'claude-sonnet-4.6': { provider: 'anthropic', apiModel: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
   'claude-haiku-4.5': { provider: 'anthropic', apiModel: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
@@ -739,6 +744,13 @@ async function generateWithModel(modelId, { systemPrompt, userContent, maxTokens
     case 'google':
       return withRetry(modelId, () =>
         callGemini(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
+          .then(settle)
+          .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; })
+      );
+    case 'claude-code':
+      return withRetry(modelId, () =>
+        require('./claude_code_provider')
+          .callClaudeCode(apiModel, systemPrompt, userContent, maxTokens, fewShotExamples)
           .then(settle)
           .catch((e) => { finalize(null, e, e?.usage ?? null); throw e; })
       );

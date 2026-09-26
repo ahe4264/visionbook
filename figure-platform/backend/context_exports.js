@@ -198,11 +198,15 @@ function readContextExportRows() {
 // tagged with a `new_*` domain (new_math / new_physics / new_chemistry / new_cs);
 // none of the original 100 benchmark rows use that prefix. Keeping only those
 // rows pins the Context Exports tab to the new batch.
-// To show everything again: delete INCLUDED_DOMAIN_PREFIX, isIncludedRow, and the
-// .filter() call in listContextExports below.
+// To show everything again: set CONTEXT_EXPORT_DOMAINS=all, which lifts the
+// filter without touching the default — benchmark subsets that span both
+// batches (e.g. the 20-figure set) need the original 100 rows visible too.
+// Read per call rather than at module load: this file is required before
+// dotenv populates process.env, so a load-time read would miss backend/.env.
 const INCLUDED_DOMAIN_PREFIX = 'new_';
 
 function isIncludedRow(row) {
+  if (String(process.env.CONTEXT_EXPORT_DOMAINS || '').trim().toLowerCase() === 'all') return true;
   return String(row?.domain || '').toLowerCase().startsWith(INCLUDED_DOMAIN_PREFIX);
 }
 

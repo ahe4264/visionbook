@@ -14,6 +14,56 @@
 const fs = require('fs');
 const path = require('path');
 const { generateWithModel } = require('./models');
+
+// Generation output budget. Two figures (15.2.2, geometry_reconstruction_12)
+// truncated at exactly 50000 output tokens — on Opus 5 thinking bills inside
+// output_tokens, so a complex figure can spend the whole budget reasoning and
+// emit no closing marker, or none at all. The default stays 50000 so already
+// generated figures remain comparable; set FIGURE_GEN_MAX_TOKENS (max 128000)
+// to give a specific re-run more room.
+const GEN_MAX_TOKENS = Number(process.env.FIGURE_GEN_MAX_TOKENS) || 50000;
+// The refine path carries its own, smaller budget. 15.2.2 cleared generation at
+// 128000 and then died here at exactly 32768, so raising only the generation
+// cap moves the failure rather than fixing it. Same default-preserving gate.
+const REFINE_MAX_TOKENS = Number(process.env.FIGURE_REFINE_MAX_TOKENS) || 32768;
+
+/**
+ * Blank out string literals, template literals and comments so a scan sees only
+ * executable code. Contents are replaced with spaces rather than removed, so
+ * offsets stay aligned with the original text.
+ */
+function stripStringsAndComments(code) {
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i];
+    const next = code[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < code.length && code[i] !== '\n') { out += ' '; i += 1; }
+    } else if (c === '/' && next === '*') {
+      out += '  '; i += 2;
+      while (i < code.length && !(code[i] === '*' && code[i + 1] === '/')) {
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      out += '  '; i += 2;
+    } else if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      out += ' '; i += 1;
+      while (i < code.length && code[i] !== quote) {
+        if (code[i] === '\\') { out += '  '; i += 2; continue; }
+        out += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      out += ' '; i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
 const {
   mergePayloadIntoScaffold,
   extractPayloadFromText,
@@ -271,7 +321,12 @@ function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
     throw contractError('Model response left FIGURE_CODE empty; generated 2D figures must include drawing JavaScript.');
   }
 
-  if (/<\/?(?:div|label|input|button|span|p|select|option|textarea)\b/i.test(payload.codeJs)) {
+  // Scan the code, not the strings inside it. A dynamic readout legitimately
+  // builds markup as a JS string ("<span style=…>" + value + "</span>") and
+  // assigns it to innerHTML; that is correct JavaScript, not UI HTML misplaced
+  // into FIGURE_CODE. Testing the raw text failed four otherwise-valid figures
+  // whose only offence was a <span> inside a quoted string.
+  if (/<\/?(?:div|label|input|button|span|p|select|option|textarea)\b/i.test(stripStringsAndComments(payload.codeJs))) {
     throw contractError('Model response placed HTML inside FIGURE_CODE; UI HTML must stay inside FIGURE_UI.');
   }
 
@@ -282,7 +337,7 @@ function finalize2dOutput(scaffold, rawText, label = 'generate-2d') {
 /**
  * Generate a figure-faithful interactive HTML page.
  */
-async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, noPlanner = false, maxTokens = 50000 }) {
+async function generate2dFigureHtml({ modelId, base64, mediaType, plan, userText, noPlanner = false, maxTokens = GEN_MAX_TOKENS }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');
 
@@ -349,7 +404,7 @@ Return ONLY the updated marker-wrapped payload.`;
 
 async function generate2dRefinedFigureHtml({
   modelId, base64, mediaType, plan, prevHtml, evaluation, userText,
-  prevScreenshot, prevScreenshotMediaType, noPlanner = false, maxTokens = 32768,
+  prevScreenshot, prevScreenshotMediaType, noPlanner = false, maxTokens = REFINE_MAX_TOKENS,
 }) {
   if (!modelId) throw new Error('modelId is required.');
   if (!base64 || !mediaType) throw new Error('base64 and mediaType are required.');

@@ -1,5 +1,14 @@
 const { generateWithModel } = require('./models');
 
+// Generation output budget. Two figures (15.2.2, geometry_reconstruction_12)
+// truncated at exactly 50000 output tokens — on Opus 5 thinking bills inside
+// output_tokens, so a complex figure can spend the whole budget reasoning and
+// emit no closing marker, or none at all. The default stays 50000 so already
+// generated figures remain comparable; set FIGURE_GEN_MAX_TOKENS (max 128000)
+// to give a specific re-run more room.
+const GEN_MAX_TOKENS = Number(process.env.FIGURE_GEN_MAX_TOKENS) || 50000;
+
+
 // === Code Divider =============================================================
 const BASE_ROLE = 'You are an expert Three.js developer who converts 2D textbook figures into interactive 3D web visualizations.';
 
@@ -549,7 +558,7 @@ async function generateFigureHtml({
     plan,
     userText,
     noPlanner = false,
-    maxTokens = 50000,
+    maxTokens = GEN_MAX_TOKENS,
     applyFixes = true,
 }) {
     if (!modelId) throw new Error('modelId is required.');
@@ -598,7 +607,7 @@ async function generateRefinedFigureHtml({
     noPlanner = false,
     prevScreenshot,
     prevScreenshotMediaType,
-    maxTokens = 50000,
+    maxTokens = GEN_MAX_TOKENS,
     applyFixes = true,
 }) {
     if (!modelId) throw new Error('modelId is required.');
@@ -671,7 +680,7 @@ async function generateCode(opts) {
         noPlanner = false,
         prevScreenshot,
         prevScreenshotMediaType,
-        maxTokens = 50000,
+        maxTokens = GEN_MAX_TOKENS,
         applyFixes = true,
         figureLabel,
     } = opts;

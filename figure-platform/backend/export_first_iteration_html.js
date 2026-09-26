@@ -30,6 +30,7 @@ const MODEL_FAMILIES = [
   { match: /^gpt/i, folder: 'no-iteration-gpt_FINAL' },
   { match: /^kimi/i, folder: 'no-iteration-kimi_FINAL' },
   { match: /^qwen/i, folder: 'no-iteration-qwen_FINAL' },
+  { match: /^claude-opus-5/i, folder: 'no-iteration-claude-opus-5_FINAL' },
 ];
 
 function folderForModel(model) {
